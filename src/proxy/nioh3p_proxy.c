@@ -98,17 +98,6 @@ int strncmp(const char *a, const char *b, size_t n)
     return n == (size_t)-1 ? 0 : (unsigned char)*a - (unsigned char)*b;
 }
 
-void *memmove(void *d, const void *s, size_t n)
-{
-    unsigned char *dp = d;
-    const unsigned char *sp = s;
-    if (dp < sp)
-        while (n--) *dp++ = *sp++;
-    else
-        while (n--) dp[n] = sp[n];
-    return d;
-}
-
 int memcmp(const void *a, const void *b, size_t n)
 {
     const unsigned char *x = a, *y = b;
@@ -746,7 +735,6 @@ typedef struct {
 
 static Hook g_hooks[MAX_HOOKS];
 static int g_hook_count;
-static int g_steam_hooks;
 
 static int add_slot(Hook *h, void **slot)
 {
@@ -891,23 +879,6 @@ static int scan_and_patch_range(Hook *h, uint8_t *mod_base, size_t mod_size)
     return hits;
 }
 
-static int scan_and_patch(Hook *h)
-{
-    return scan_and_patch_range(h, g_base, g_img_size);
-}
-
-static size_t module_image_size(void *module)
-{
-    IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)module;
-    IMAGE_NT_HEADERS64 *nh;
-    if (dos->e_magic != IMAGE_DOS_SIGNATURE)
-        return 0;
-    nh = (IMAGE_NT_HEADERS64 *)((uint8_t *)module + dos->e_lfanew);
-    if (nh->Signature != IMAGE_NT_SIGNATURE)
-        return 0;
-    return nh->OptionalHeader.SizeOfImage;
-}
-
 /* Re-apply after the game or the protector restores a slot. */
 static int repair_slots(Hook *h)
 {
@@ -953,7 +924,7 @@ static int install_hook(const char *dll_name, const char *name, void *target,
         LOG("hook: %s not usable in the import table (present=%d), scanning writable memory",
             name, saw_iat);
     if (h->nslots == 0) {
-        int hits = scan_and_patch(h);
+        int hits = scan_and_patch_range(h, g_base, g_img_size);
         LOG("hook: pointer scan patched %d location(s) for %s", hits, name);
     }
     if (h->nslots == 0) {
@@ -1572,12 +1543,6 @@ static void steam_apply_table(void *iface, SteamHook *tbl, int n)
 {
     if (!iface || !readable(iface, sizeof(void *)))
         return;
-    int known = 0;
-    for (int i = 0; i < n; i++)
-        if (tbl[i].slot_index && (g_cfg.trace || !tbl[i].trace_only))
-            known = 1;
-    if (!known)
-        return;
     void **vt = *(void ***)iface;
     if (!readable(vt, 8))
         return;
@@ -1614,12 +1579,6 @@ static void steam_apply_table(void *iface, SteamHook *tbl, int n)
         LOG("steam: vtable[%u] (offset 0x%x, %s) %p -> %p",
             index, index * 8, h->name, prev, h->det);
     }
-    g_steam_hooks = 1;
-}
-
-static void steam_apply_vtable(void *iface)
-{
-    steam_apply_table(iface, g_steam, NSTEAM);
 }
 
 static int steam_repair(void)
@@ -1815,16 +1774,6 @@ static struct {
 } g_cbrun[MAX_CBRUN];
 static int g_cbrun_n;
 
-static void log_hex(const char *tag, const void *p, int n)
-{
-    const uint8_t *b = (const uint8_t *)p;
-    if (!readable(p, (size_t)n))
-        return;
-    LOG("%s: %02x %02x %02x %02x %02x %02x %02x %02x  %02x %02x %02x %02x %02x %02x %02x %02x",
-        tag, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-        b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
-}
-
 static void watch_callback(void *cb, int cb_id, const char *how)
 {
     if (!cb || !readable(cb, sizeof(void *)))
@@ -1874,8 +1823,12 @@ static void EOS_CALL det_CallbackRun(void *self, void *param, uint8_t io_failure
             LOG("steam cb: Run id=%d obj=%p class %s param=%p ioFailure=%u call=%llu",
                 g_cbrun[i].cb_id, self, site_exact(vtbl, cb_, sizeof cb_), param,
                 (unsigned)io_failure, (unsigned long long)call);
-            if (param)
-                log_hex("steam cb: payload", param, 16);
+            if (param && readable(param, 16)) {
+                const uint8_t *b = (const uint8_t *)param;
+                LOG("steam cb: payload: %02x %02x %02x %02x %02x %02x %02x %02x  %02x %02x %02x %02x %02x %02x %02x %02x",
+                    b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+                    b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
+            }
             g_cbrun[i].hits++;
         }
         PFN_CallbackRun o = (PFN_CallbackRun)g_cbrun[i].run;
@@ -2227,7 +2180,7 @@ static void *EOS_CALL det_FindOrCreateInterface(void *user, const char *version)
         LOG("Steam FindOrCreateUserInterface(\"%s\") -> %p", version ? version : "(null)", iface);
     if (iface && version) {
         if (!strcmp(version, "SteamMatchMaking009")) {
-            steam_apply_vtable(iface);
+            steam_apply_table(iface, g_steam, NSTEAM);
             if (g_cfg.trace)
                 log_backtrace("Steam matchmaking interface");
         } else if (g_cfg.trace && !strcmp(version, "SteamFriends017")) {
@@ -2249,12 +2202,10 @@ static void install_steam_hooks(void)
     HMODULE st = GetModuleHandleA("steam_api64.dll");
     if (!st)
         return;
-    LOG("steam: steam_api64 at %p (%u bytes)", (void *)st, (unsigned)module_image_size(st));
+    LOG("steam: steam_api64 at %p", (void *)st);
 
     /* Version strings and vtable slots are bound explicitly in the interface
      * dispatch above; unsupported Steam interfaces pass through untouched. */
-    /* The proxy is mapped before the game's entry point, so interface lookups
-     * are intercepted before the game caches their objects. */
     FARPROC f;
     if (g_cfg.trace) {
         /* Callback watching and exit tracing are instrumentation only. */
@@ -2606,7 +2557,6 @@ static DWORD WINAPI worker(LPVOID unused)
             "P2P/friends/callback tracing %s",
             g_cfg.trace ? "research" : "player", g_cfg.trace,
             steam_method_count(), g_eos_hooks, g_cfg.trace ? "on" : "off");
-        install_game_visitor_allowance();
     }
 
     if (g_cfg.dump_image) {
@@ -2637,6 +2587,9 @@ static DWORD WINAPI worker(LPVOID unused)
             }
         }
     }
+    /* the allowance poll can wait up to 10 minutes; keep it from delaying dumps */
+    if (g_cfg.hook_eos && mod_active)
+        install_game_visitor_allowance();
     if (disk)
         VirtualFree(disk, 0, MEM_RELEASE);
 
