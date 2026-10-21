@@ -1,0 +1,15 @@
+LIBRARY steamclient64
+EXPORTS
+    nioh3p_sc_iface
+    nioh3p_sc_create_max
+    nioh3p_sc_setmax
+    nioh3p_sc_friends_iface
+    nioh3p_sc_rp_friend
+    nioh3p_sc_last_value
+    nioh3p_sc_slots_calls
+    nioh3p_sc_filter_calls
+    nioh3p_sc_list_calls
+    nioh3p_sc_invite_calls
+    nioh3p_sc_memberdata_calls
+    nioh3p_sc_calls
+    nioh3p_sc_reset

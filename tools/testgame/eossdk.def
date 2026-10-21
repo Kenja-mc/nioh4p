@@ -1,0 +1,9 @@
+LIBRARY EOSSDK-Win64-Shipping.dll
+EXPORTS
+    EOS_Lobby_CreateLobby
+    EOS_LobbyModification_SetMaxMembers
+    EOS_Lobby_JoinLobby
+    EOS_LobbyDetails_GetMemberCount
+    EOS_LobbyModification_AddAttribute
+    EOS_LobbyDetails_CopyInfo
+    EOS_LobbySearch_SetParameter

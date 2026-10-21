@@ -1,0 +1,4 @@
+LIBRARY EOSSDK-Win64-Shipping.dll
+EXPORTS
+    EOS_LobbyDetails_CopyInfo
+    EOS_LobbyDetails_Info_Release
