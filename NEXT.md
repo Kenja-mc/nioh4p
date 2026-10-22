@@ -6,7 +6,7 @@ State file for resuming work. Evidence lives in `docs/FINDINGS.md` and
 ## Current build
 
 - `dist/nioh3p-player.zip`: `dinput8.dll` + `nioh3p.ini` + player `README.md`.
-  DLL SHA-256 `502c55081dc0336fd292486f990d6b6b1f0098a078dbbb752cde6190fa08cb9a`.
+  DLL SHA-256 `0ea869a5638360cd57810fc6d6dad0fc43f956627be52cae3f116afe69d237cb`.
   Rebuild with `tools/package.sh`; the zip hash changes with every build.
 - The same DLL and the player ini are installed in the real Steam folder
   (`~/.local/share/Steam/steamapps/common/Nioh`). A save backup taken before
@@ -15,7 +15,7 @@ State file for resuming work. Evidence lives in `docs/FINDINGS.md` and
 
 ## Next actions
 
-1. Send the zip to the two Windows friends. Send the DLL SHA-256 above in the
+1. Send the zip to the two Windows friends (tell them to look for `preflight: exe=ok`). Send the DLL SHA-256 above in the
    same message; the README tells them to compare it with `certutil`.
 2. First real session, three Steam accounts online: collect `nioh3p.log` from
    all three (and `nioh3p.prev.log` if the problem was in an earlier launch).

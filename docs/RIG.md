@@ -90,6 +90,14 @@ model → deterministic key table loop. The model only reports what it sees
 per-state table sends keys only from the verified recipes, so an unclear frame
 cannot turn into an improvised keypress.
 
+The engine is now a reusable harness: perception lives in
+`tools/rig/perceive.py`, execution in `tools/rig/drive.py`, and all Nioh
+choices/rules in `tools/rig/profiles/nioh-coop.json`. `coop.py` is the thin
+Nioh front-end (CLI plus a few named hooks). To drive another game or window
+manager, add a profile instead of editing the loop; see
+[`docs/RIG_HARNESS.md`](RIG_HARNESS.md) for the question-spec format, the
+`CommandCapture`/`CommandActuator` route, and confidence guidance.
+
 Two backends, chosen with `--backend {mercury,luna}` or `COOP_BACKEND`
 (default `mercury`):
 
@@ -129,8 +137,13 @@ python3 tools/rig/coop.py visit a
 python3 tools/rig/coop.py visit c --relieve a
 python3 tools/rig/coop.py run --host b --visitors a c   # offer, A, then C (A paused)
 python3 tools/rig/coop.py host b --dry-run              # perceive + print action only
+python3 tools/rig/coop.py decide a --role visitor       # one frame, no keys sent
 python3 tools/rig/coop.py visit a --backend luna        # use Experiential Labs
+python3 tools/rig/coop.py visit a --profile my-game.json
 ```
+
+`decide` captures one frame, prints the perception and the action the
+guard/table would take as JSON, and exits 0 without sending anything.
 
 Safety rules:
 

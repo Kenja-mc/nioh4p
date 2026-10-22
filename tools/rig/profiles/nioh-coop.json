@@ -1,0 +1,92 @@
+{
+  "game": "nioh",
+  "prompt": "Screenshot from a Nioh test rig, 1280x720. Answer every question about this frame only.",
+  "screen_instructions": "Classify the current Nioh screen with exactly one choice.",
+  "highlight_instructions": "Which menu item or map node is currently highlighted/selected by the cursor?",
+  "screens": [
+    {"value": "title", "description": "Title screen menu: NEW GAME / CONTINUE / LOAD GAME / SYSTEM."},
+    {"value": "notice", "description": "Boot notice, logo, \"press any button\", or a black/loading screen with only a spinner."},
+    {"value": "lore", "description": "Full-screen artwork with a paragraph of tip/lore text and a CONTINUE prompt bottom right."},
+    {"value": "world_map", "description": "The world map with region name top-left; no menu panel open."},
+    {"value": "map_menu", "description": "World map with a left menu panel: Shrine, Blacksmith, Dojo, Torii Gate, Hidden Teahouse, Storehouse."},
+    {"value": "torii_menu", "description": "Torii Gate menu: Yokai Realm with a Companion / Random Encounters."},
+    {"value": "become_visitor", "description": "\"Become a Visitor\" panel with With Conditions, Secret Word and a Search button."},
+    {"value": "searching", "description": "Searching for a co-op partner / matchmaking wait dialog."},
+    {"value": "shrine_menu", "description": "Shrine menu of wooden ema plaques (Make Offering, Level Up, Summon Visitor, Boons...)."},
+    {"value": "summon_status", "description": "Summon Visitor status panel: 'Invoke Visitor (will remain active until you stop the offering)' with STOP OFFERING / BACK prompts."},
+    {"value": "dialog", "description": "A yes/no or confirmation dialog box over the game."},
+    {"value": "in_mission", "description": "Third-person gameplay in a mission with health bars top-left, no menu open."},
+    {"value": "other", "description": "Anything else."}
+  ],
+  "highlights": [
+    {"value": "continue", "description": "CONTINUE on the title menu"},
+    {"value": "new_game", "description": "Title menu: NEW GAME"},
+    {"value": "load_or_system", "description": "Title menu: LOAD GAME or SYSTEM"},
+    {"value": "starting_point_node", "description": "World map: the selected node is the shrine-like STARTING POINT (label STARTING POINT shown above the highlighted node)"},
+    {"value": "other_map_node", "description": "World map: a mission or other node is selected (a mission info panel on the right, or a label other than STARTING POINT)"},
+    {"value": "shrine_item", "description": "Map menu: Shrine"},
+    {"value": "torii_gate", "description": "Map menu: Torii Gate"},
+    {"value": "other_map_menu_item", "description": "Map menu: Blacksmith, Dojo, Hidden Teahouse or Storehouse"},
+    {"value": "random_encounters", "description": "Torii menu: Random Encounters"},
+    {"value": "yokai_realm_companion", "description": "Torii menu: Yokai Realm with a Companion"},
+    {"value": "search_button", "description": "Become a Visitor: the Search button"},
+    {"value": "other_visitor_field", "description": "Become a Visitor: With Conditions or Secret Word row"},
+    {"value": "summon_visitor", "description": "Shrine ema plaques: SUMMON VISITOR plaque enlarged in front"},
+    {"value": "other_plaque", "description": "Shrine ema plaques: another plaque in front"},
+    {"value": "confirm_button", "description": "Information dialog with a single CONFIRM/OK button highlighted"},
+    {"value": "yes", "description": "Yes/No dialog: YES highlighted"},
+    {"value": "no", "description": "Yes/No dialog: NO highlighted"},
+    {"value": "none", "description": "No menu cursor visible"}
+  ],
+  "predicates": {"pray_prompt": {"type": "predicate", "instructions": "Is a PRAY button prompt visible near the shrine?"}, "coop_partner": {"type": "predicate", "instructions": "Is another player character (gold-outlined visitor, or a name plate like Nioh-LAN-A/B/C) visible or listed in the party HUD at top-left?"}},
+  "fallbacks": {"screen": "other", "highlight": "uncertain"},
+  "safety": {"confidence_min": 0.6, "predicate_min": 0.5, "step_limit": 60, "timeout": 600.0, "sent_key_limit": 6, "return_un": 3, "return_settle": 1.5, "loading_screens": ["searching", "notice", "other"], "other_limit": 15, "uncertain_highlight": "uncertain", "host_walk": {"long_ms": 300, "short_ms": 150, "stuck": 4}},
+  "oracles": {
+    "host": {"file": "$RIG/lan-{slot}/nioh3p.log", "needle": "Steam_ISteamMatchmaking::CreateLobby"},
+    "visitor": {"file": "$RIG/lan-{slot}/nioh3p.log", "needle": "Steam JoinLobby:"}
+  },
+  "relief": {"seconds": 5.0, "pause": 2.0},
+  "rules": {
+    "host": [
+      {"screen": "notice", "action": {"kind": "tap", "key": "Return", "settle": 1.5}},
+      {"screen": "title", "action": {"kind": "tap", "key": "Return", "settle": 1.5}, "when": {"highlight": ["continue"], "confidence_min": 0.9}},
+      {"screen": "title", "action": {"kind": "tap", "key": "Down", "ms": 90, "settle": 0.6}, "when": {"highlight": ["new_game"]}},
+      {"screen": "title", "action": {"kind": "tap", "key": "Up", "ms": 90, "settle": 0.6}, "when": {"highlight": ["load_or_system"]}},
+      {"screen": "title", "action": {"kind": "wait", "seconds": 1.5}},
+      {"screen": "lore", "action": {"kind": "tap", "key": "Return", "settle": 1.5}},
+      {"screen": "in_mission", "action": {"kind": "hold", "key": "e", "seconds": 1.7, "settle": 1.5}, "when": {"pray_prompt": {"min": 0.5}}},
+      {"screen": "summon_status", "action": {"kind": "tap", "key": "BackSpace", "ms": 90, "settle": 0.6}},
+      {"screen": "shrine_menu", "name": "summon", "limit": 2, "action": {"kind": "tap", "key": "Return", "settle": 1.2}, "when": {"highlight": ["summon_visitor"]}},
+      {"screen": "shrine_menu", "action": {"kind": "tap", "key": "BackSpace", "ms": 90, "settle": 0.6}, "when": {"highlight": ["summon_visitor"]}},
+      {"screen": "shrine_menu", "action": {"kind": "tap", "key": "Up", "ms": 90, "settle": 0.6}},
+      {"screen": "dialog", "action": {"kind": "tap", "key": "Return", "settle": 1.2}},
+      {"screen": "other", "action": {"kind": "wait", "seconds": 3.0}}
+    ],
+    "visitor": [
+      {"screen": "notice", "action": {"kind": "tap", "key": "Return", "settle": 1.5}},
+      {"screen": "title", "action": {"kind": "tap", "key": "Return", "settle": 1.5}, "when": {"highlight": ["continue"], "confidence_min": 0.9}},
+      {"screen": "title", "action": {"kind": "tap", "key": "Down", "ms": 90, "settle": 0.6}, "when": {"highlight": ["new_game"]}},
+      {"screen": "title", "action": {"kind": "tap", "key": "Up", "ms": 90, "settle": 0.6}, "when": {"highlight": ["load_or_system"]}},
+      {"screen": "title", "action": {"kind": "wait", "seconds": 1.5}},
+      {"screen": "lore", "action": {"kind": "tap", "key": "Return", "settle": 1.5}},
+      {"screen": "world_map", "action": {"kind": "tap", "key": "Return", "settle": 1.5}, "when": {"highlight": ["starting_point_node"], "confidence_min": 0.9}},
+      {"screen": "world_map", "action": {"kind": "tap", "key": "BackSpace", "ms": 90, "settle": 0.6}},
+      {"screen": "map_menu", "action": {"kind": "tap", "key": "Return", "settle": 1.2}, "when": {"highlight": ["torii_gate"]}},
+      {"screen": "map_menu", "action": {"kind": "tap", "key": "Down", "ms": 90, "settle": 0.6}, "when": {"highlight": ["shrine_item", "other_map_menu_item"]}},
+      {"screen": "map_menu", "action": {"kind": "tap", "key": "Down", "ms": 90, "settle": 0.6}},
+      {"screen": "torii_menu", "action": {"kind": "tap", "key": "Return", "settle": 1.2}, "when": {"highlight": ["random_encounters"]}},
+      {"screen": "torii_menu", "action": {"kind": "tap", "key": "Down", "ms": 90, "settle": 0.6}},
+      {"screen": "become_visitor", "action": {"kind": "tap", "key": "Return", "settle": 1.2}, "when": {"highlight": ["search_button"]}},
+      {"screen": "become_visitor", "action": {"kind": "tap", "key": "Down", "ms": 90, "settle": 0.6}},
+      {"screen": "dialog", "action": {"kind": "tap", "key": "Return", "settle": 1.2}, "when": {"highlight": ["confirm_button"]}},
+      {"screen": "dialog", "action": {"kind": "tap", "key": "BackSpace", "ms": 90, "settle": 0.6}},
+      {"screen": "searching", "action": {"kind": "wait", "seconds": 4.0}},
+      {"screen": "in_mission", "action": {"kind": "wait", "seconds": 4.0}},
+      {"screen": "other", "action": {"kind": "wait", "seconds": 3.0}}
+    ]
+  },
+  "roles": {
+    "host": {"oracle": "host", "flag": "host_offering", "guard": "host_guard", "check": "host_check"},
+    "visitor": {"oracle": "visitor", "flag": "join_seen", "guard": "visitor_guard", "check": "visitor_check", "uncertain_settle": 1.5, "uncertain_safe_keys": ["BackSpace", "Up", "Down"]}
+  }
+}

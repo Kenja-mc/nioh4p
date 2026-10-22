@@ -30,8 +30,10 @@ have not been tested.
 | `tools/quiet.sh` | runs the smoke tests *without disturbing the desktop* (idle gate, offscreen display, capped cgroup) |
 | `tools/quiet-launch.sh` | Steam launch-option wrapper: normal play as before, headless gamescope when a flag file is armed |
 | `tools/package.sh` | builds `dist/nioh3p-player.zip` (DLL, player ini, player README) |
-| `tools/rig/coop.py` | headless 3-instance rig driver: screenshot → decision model (Mercury Decide / GPT-6 Luna Decisions) → verified key recipes; see `docs/RIG.md` |
+| `tools/rig/coop.py` | Nioh front-end for the rig harness: CLI, named hooks, `host`/`visit`/`run`/`decide`; see `docs/RIG.md` |
+| `tools/rig/perceive.py`, `tools/rig/drive.py`, `tools/rig/profiles/` | reusable screenshot → decision model → key-table harness; add a profile to drive another game/UI; see `docs/RIG_HARNESS.md` |
 | `docs/RIG.md` | the headless three-instance test rig |
+| `docs/RIG_HARNESS.md` | perception/driver/profile architecture, question specs, `decide` smoke check |
 | `docs/NAV_OPTIONS.md` | ranked options for faster rig navigation (memory oracle, save templates, vision) |
 | `docs/FINDINGS.md` | evidence, co-op limits, what a real 3-player mod needs |
 
@@ -124,7 +126,9 @@ installs no EOS, Steam or game hooks; the image dump still works.
 
 **Player mode (`trace=0`)** installs only what changes behaviour: the Steam
 matchmaking `CreateLobby`, `SetLobbyMemberLimit`, `SetLobbyData` (also the
-metadata-guard trigger), the two search filters, `JoinLobby`/`LeaveLobby`;
+metadata-guard trigger), the string, numerical and slots-available search
+filters (the numerical one only forwards, but its key names reach the log),
+`JoinLobby`/`LeaveLobby`;
 the EOS `CreateLobby`, `SetMaxMembers`, `SetParameter`, `AddAttribute`; and the
 game-side patches. Nothing on the per-packet P2P path is hooked, and the log
 holds about a hundred lines per launch. The research build logged every P2P call
@@ -132,7 +136,8 @@ holds about a hundred lines per launch. The research build logged every P2P call
 
 Log: `nioh3p.log` next to the DLL (or in `out_dir`); the previous launch is
 kept as `nioh3p.prev.log`. If that directory is not writable the proxy falls
-back to `%TEMP%\nioh3p.log`. A healthy player log contains
+back to `%TEMP%\nioh3p.log` (never the Windows directory). A healthy player log
+contains `preflight: exe=ok eos=… steam=… game_patch=ok log=…`,
 `mode: player (trace=0)`, `game capacity hook: create request is clamped before
 native member allocation` and `game visitor allowance: recruitment opens 2
 visitor slot(s) (shrine setter 2)`.
@@ -145,15 +150,18 @@ lobby-info, with call-site names (`nioh3p.sites.txt`, copy it manually) and
 backtraces in module-relative form:
 
 ```
-[...] EOS_Lobby_CreateLobby: api=3 max=2 perm=1 presence=1 invites=1 bucket=Nioh
+[...] EOS_Lobby_CreateLobby: api=7 max=2 perm=2 presence=1 invites=0 bucket=Nioh
 [...] EOS_Lobby_CreateLobby: raising MaxLobbyMembers 2 -> 3
 [...] EOS_Lobby_CreateLobby: 5 frame(s): nioh.exe+0x5d915d nioh.exe+0x5e27a1 ...
 ```
 
-The `api=3 perm=1 invites=1` values are from the test harness. In the shipping
-game the image shows ApiVersion 7, permission level in {0,2}, invites 0, and six
-`EOS_Lobby_CreateLobby` call sites; the frame `nioh.exe+0x5d915d` is one of them
-(`docs/RE_EOS_CALLSITES.md`). `dump_image=1` (with `redump_after_s`,
+`api=7 max=2 perm=2 invites=0 bucket=Nioh` is what the shipping game builds at
+all six `EOS_Lobby_CreateLobby` call sites; the frame `nioh.exe+0x5d915d` is one
+of them (`docs/RE_EOS_CALLSITES.md` §4.1). The proxy writes through the option
+structs only for the ApiVersions it was verified with (`CreateLobby` 7,
+`SetMaxMembers` 2, `SetParameter` 1); any other value is forwarded unmodified
+and logged as `eos: <call> ApiVersion <n> != <expected>; forwarded unmodified`.
+`dump_image=1` (with `redump_after_s`,
 `dump_every_s`) writes the decrypted runtime image; `max_players=0` turns the
 clamps off. Expect gigabytes of log per hour of online play with `trace=1`.
 
