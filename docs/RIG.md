@@ -353,6 +353,8 @@ stayed in co-op. Evidence and remaining gaps are in `FINDINGS.md`
   The research build grew ~120 KB/s on the host. Safety-build evidence:
   `shots/safe-b-3p.png` (host sees both visitors), `shots/safe-c-after.png`
   (C in co-op after moving and attacking).
+- Stock-filter run (build `1003e4e7…`, `drop_lock_filter=0 drop_slots_filter=0`):
+  B, A and C in one mission; both joins used the game's own search filters.
 - `tools/rig/coop.py run --host b --visitors a c` took all three cold-booted
   slots into one mission with no manual input: 6 min 17 s, 72 Mercury Decide
   decisions (B 25, A 26, C 21 with A relieved), trace

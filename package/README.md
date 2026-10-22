@@ -22,6 +22,9 @@ Linux / Steam Deck: same steps. If it doesn't work, set the launch option
 - **Secret Word:** the Summon Visitor screen has no word field, so leave the
   visitors' Secret Word **Off** for this flow. A word only helps on the Torii
   Gate → *Yokai Realm with a Companion* path, where the host chooses it too.
+- **Finding the host:** the mod keeps the game's normal search rules. If a host
+  cannot be found, set `drop_lock_filter=1` in `nioh3p.ini` on the visitors (or
+  `force_unlock=1` on the host).
 
 ## If something goes wrong
 

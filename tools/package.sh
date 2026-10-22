@@ -3,7 +3,7 @@
 #
 # The zip holds exactly three files at its root:
 #   dinput8.dll    the mod (built by ./build.sh, proxy only)
-#   nioh3p.ini     the tested three-player configuration
+#   nioh3p.ini     the shipped player configuration (stock search filters)
 #   README.md      the player-facing instructions (from package/README.md)
 #
 # The two text files are converted to CRLF line endings in the zip so that

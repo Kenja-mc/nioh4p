@@ -429,23 +429,30 @@ typedef struct {
     int redump_after_s;
     int dump_every_s;
     int hook_eos;
-    int drop_lock_filter;   /* search: do not filter on ktol_*lock_status */
+    /* 0 = keep the game's own search filters (stock behaviour): the stock
+     * "locked" filter still hides hosting sessions. 1 is an opt-in workaround
+     * for a host that cannot be found and swallows the ktol_*lock_status
+     * filter. drop_slots_filter is the same opt-in workaround for the stock
+     * "free slots" filter that hides full sessions. */
+    int drop_lock_filter;
     int force_unlock;       /* host: advertise the session as unlocked */
-    int drop_slots_filter;  /* search: do not filter on free slots */
+    int drop_slots_filter;
     int trace;              /* 0 = player mode, 1 = full research instrumentation */
 } Config;
 
-/* Compiled-in defaults equal the shipped player config. Designated init: a
- * field reorder or addition can never move a value to the wrong key. */
+/* Compiled-in defaults equal the shipped player config. The search filters are
+ * kept by default, so an unmodified game has exactly the stock discovery rules;
+ * the two drops are opt-in workarounds only. Designated init: a field reorder
+ * or addition can never move a value to the wrong key. */
 static Config g_cfg = {
     .max_players       = 3,
     .dump_image        = 0,
     .redump_after_s    = 0,
     .dump_every_s      = 0,
     .hook_eos          = 1,
-    .drop_lock_filter  = 1,
+    .drop_lock_filter  = 0,
     .force_unlock      = 0,
-    .drop_slots_filter = 1,
+    .drop_slots_filter = 0,
     .trace             = 0,
 };
 

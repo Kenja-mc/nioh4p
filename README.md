@@ -137,11 +137,15 @@ player in the group installs it. `./install.sh` backs up a differing installed
 `nioh3p.ini` (`nioh3p.ini.bak`, then timestamped) before replacing it;
 `./install.sh uninstall` restores a stock game.
 
-The shipped `nioh3p.ini` is the configuration three-player co-op was verified
-with, and the DLL's built-in defaults are the same values, so a missing line
-changes nothing:
-`max_players=3 hook_eos=1 drop_lock_filter=1 drop_slots_filter=1 force_unlock=0`,
-no dumps, `trace=0`. `max_players` accepts 0 (clamps off) or 2 to 4; any other
+The shipped `nioh3p.ini` carries the capacity settings three-player co-op was
+verified with, and the DLL's built-in defaults are the same values, so a missing
+line changes nothing:
+`max_players=3 hook_eos=1 drop_lock_filter=0 drop_slots_filter=0 force_unlock=0`,
+no dumps, `trace=0`. The two `drop_*` filters ship at `0`, so the mod keeps the
+game's own lobby search rules (locked and full sessions stay hidden, as in the
+unmodded game); setting either to `1` is an opt-in workaround when a host cannot
+be found, and `force_unlock=1` is the host-side alternative that advertises the
+session as unlocked. `max_players` accepts 0 (clamps off) or 2 to 4; any other
 value is replaced by 3 and logged.
 
 `nioh.exe` is identified by its PE headers. On any other `nioh.exe` build

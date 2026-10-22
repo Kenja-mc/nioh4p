@@ -697,6 +697,17 @@ Verified in the harness: option off ⇒ the filter reaches the fake service
 (1 call); option on ⇒ **0** calls, and the log shows
 `Steam lobby filter: "ktol_lock_status" = "ktol_session_unlock" DROPPED (drop_lock_filter=1)`.
 
+**Shipped default changed to 0 (2026-10-21).** The player package must not
+disable the game's lobby filters: `nioh3p.ini` and the compiled-in defaults now
+ship `drop_lock_filter=0 drop_slots_filter=0`, so a stock install keeps the
+game's normal search rules and a locked or full session stays hidden. The
+earlier three-player run was verified with both drops at `1`; that combination
+is now the documented opt-in workaround, not the shipped configuration. The
+headless rig's generated ini (`tools/rig/setup.sh`) still sets both to `1`, so a
+three-player discovery run with the shipped defaults (both `0`) is still
+outstanding; that run is what makes the new default verified end to end.
+`force_unlock=1` remains the host-side alternative.
+
 ### 11.5 What else the analysis settled
 
 * **Join-time validation** exists at `0x5F2010`: it builds `integer_<n>` keys,
@@ -1184,13 +1195,23 @@ screen has no word field at all (`shots/safe-b-offer1.png`). The mod's tested
 flow therefore needs the word Off; a word can only match a host that advertises
 the same word, i.e. on the Torii Gate *Yokai Realm with a Companion* path.
 
-The mod changes exactly two filters: the `lock_status` string filter and the
-slots-available filter, each behind its own ini key. Every other call is
+The mod can change exactly two filters: the `lock_status` string filter and the
+slots-available filter, each behind its own ini key and both off (`0`) in the
+shipped configuration, so the default build forwards both. Every other call is
 forwarded byte-identically, and player mode now logs each distinct filter key
 once (`lobby filter: pass-through "<key>"`, key only, never the value), so a
 player log from a Secret Word session shows the word-bearing filter. The
 harness proves it: two unknown probe keys (`nioh3p_probe_key`,
 `nioh3p_probe_num`) must appear as pass-through lines in the mod's own log.
+
+**Stock filters are sufficient (2026-10-21, build `1003e4e7…`).** With
+`drop_lock_filter=0 drop_slots_filter=0` — the shipped defaults from this build
+— host B raised the lobby to 3 and **both** visitors found and joined it
+(JoinLobby 22:44 and 22:47, `giochi` partner HUD, `shots/stock-3p.png`); the
+visitor logs contain zero `DROPPED` lines and the host installed the metadata
+guard at the second join. So the earlier filter drops were a workaround from
+before the create-request clamp, not a requirement. They stay as opt-in
+diagnostics for a host that cannot be found.
 
 Hardening in the same build: EOS option structs are gated on their `ApiVersion`
 (game: 7 for `EOS_Lobby_CreateLobby`) and forwarded unmodified on mismatch;

@@ -27,9 +27,14 @@ cp -f "$ROOT/build/dinput8.dll" "$SMOKE/game/"
 cp -f "$ROOT/nioh3p.ini" "$SMOKE/game/"
 # The harness modes exercise the full research instrumentation by default; the
 # game run defaults to player mode with image dumps, as tools/quiet.sh game does.
+# The shipped ini keeps the stock search filters (both drop_* keys are 0), so the
+# harness turns the two opt-in drops on explicitly: its filter pass-through /
+# drop tests must keep covering that path.
 case "$MODE" in
   proxy|ownership)
     echo "trace=${NIOH3P_TRACE:-1}" >> "$SMOKE/game/nioh3p.ini"
+    echo "drop_lock_filter=1" >> "$SMOKE/game/nioh3p.ini"
+    echo "drop_slots_filter=1" >> "$SMOKE/game/nioh3p.ini"
     ;;
   game)
     echo "trace=${NIOH3P_TRACE:-0}" >> "$SMOKE/game/nioh3p.ini"
