@@ -1310,8 +1310,13 @@ reCAPTCHA image challenge, which is not something this session solves. The
 binary itself is unchanged in behaviour and verified with three players in the
 rig (host raised the lobby 2 -> 3, the metadata guard installed at the second
 visitor's join, `preflight: exe=ok eos=3/3 game_patch=ok`, manifest reported as
-present). To finish the scan, upload `dist/nioh3p-player.zip`'s `dinput8.dll`
-from a browser, or use a VirusTotal API key (`/files` endpoint, no captcha).
+present). The rescan was completed in a visible browser session (no captcha was asked on
+that attempt): the patched build is still **5/71**, same five generic verdicts
+(Avast/AVG `Win64:Evo-gen`, Avira `TR/W64.Evo`, WithSecure `Trojan.TR/W64.Evo`,
+Cynet `Malicious`), and VirusTotal now recognises it as a normal PE32+ DLL
+(TrID "Win64 Executable (generic)"). Resources, manifest, checksum and W^X
+therefore do not move these heuristics. The remaining levers are code signing
+and vendor false-positive reports; drafts are in `docs/FP_REPORTS.md`.
 The four heuristic hits are Avast/AVG `Win64:Evo-gen`, Avira `TR/W64.Evo`,
 WithSecure `Trojan.TR/W64.Evo` and Cynet; only a code-signing certificate or
 vendor false-positive reports are likely to clear them, since the media they
