@@ -40,6 +40,7 @@ evidence for each claim is in `docs/FINDINGS.md`.
 | `tools/rig/coop.py` | Nioh front-end for the rig harness: CLI, named hooks, `host`/`visit`/`run`/`decide`. See `docs/RIG.md` |
 | `tools/rig/perceive.py`, `tools/rig/drive.py`, `tools/rig/profiles/` | reusable screenshot → decision model → key-table harness. Add a profile to drive another game/UI. See `docs/RIG_HARNESS.md` |
 | `docs/RIG.md` | the headless three-instance test rig |
+| `docs/SAFETY.md` | what the mod changes, what it never does, and how to check it yourself |
 | `docs/RIG_HARNESS.md` | perception/driver/profile architecture, question specs, `decide` smoke check |
 | `docs/NAV_OPTIONS.md` | ranked options for faster rig navigation (memory oracle, save templates, vision) |
 | `docs/FINDINGS.md` | evidence, co-op limits, what a real 3-player mod needs |

@@ -6,6 +6,9 @@ Publish only after the pre-publish checklist passes.
 
 ## 0. What is verified today
 
+The player README in the zip answers the safety question for players. Long
+version: `docs/SAFETY.md` in the repository. Link both from the mod page.
+
 The table below records the state of each check.
 A "Yes" entry passed on the rig or on a real machine.
 A "No" entry is still open, and an "N/A" entry does not apply while the filters are stock.
