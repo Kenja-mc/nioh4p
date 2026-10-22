@@ -26,6 +26,10 @@ Linux / Steam Deck: same steps. If it doesn't work, set the launch option
 ## If something goes wrong
 
 - **Game won't start:** delete `dinput8.dll`. Antivirus can block it.
+- **Antivirus alert:** Avast, AVG and WithSecure may call this file a
+  generic "Evo" trojan. That is a heuristic on any unsigned DLL that
+  patches a game; 66 of 71 VirusTotal engines report it clean. Choose
+  "restore" and add the game folder as an exclusion, or delete the file.
 - **Send a log:** close the game and send `nioh3p.log` from the game folder
   (and `nioh3p.prev.log` if the problem was in the launch before).
   The log contains lobby IDs, search settings and file paths.
