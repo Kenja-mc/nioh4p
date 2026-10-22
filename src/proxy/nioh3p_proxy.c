@@ -304,7 +304,10 @@ static int fmt(char *dst, int cap, const char *f, ...)
 
 static HANDLE open_append(const char *path)
 {
-    return CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+    /* Share read only: another process must not be able to open this log for
+     * writing while the game runs (a log a second process can rewrite is a
+     * generic AV heuristic). Readers still open it concurrently. */
+    return CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ,
                        NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 }
 
@@ -2578,7 +2581,9 @@ static void install_game_metadata_guard(void)
     memcpy(&have.lo, patch, 8);
     memcpy(&have.hi, patch + 8, 8);
     DWORD old;
-    if (!VirtualProtect(site, sizeof patch, PAGE_EXECUTE_READWRITE, &old)) {
+    /* W^X and AV heuristics: write code through a non-executable RW mapping,
+     * flush, then leave the page explicitly RX instead of restoring RWX. */
+    if (!VirtualProtect(site, sizeof patch, PAGE_READWRITE, &old)) {
         LOG("game metadata guard: cannot make publisher writable (err %lu)", GetLastError());
         return;
     }
@@ -2593,7 +2598,8 @@ static void install_game_metadata_guard(void)
         : "cc", "memory");
     if (ok)
         FlushInstructionCache(GetCurrentProcess(), site, sizeof patch);
-    VirtualProtect(site, sizeof patch, old, &old);
+    if (!VirtualProtect(site, sizeof patch, PAGE_EXECUTE_READ, &old))
+        LOG("game metadata guard: cannot restore execute protection (err %lu)", GetLastError());
     if (!ok) {
         LOG("game metadata guard: publisher bytes changed during install; not installed");
         return;
@@ -2662,16 +2668,45 @@ static void install_game_visitor_allowance(void)
         const AllowanceSite *s = &g_allowance_sites[i];
         uint8_t *imm = g_base + s->rva + s->imm;
         DWORD old;
-        if (!VirtualProtect(imm, 1, PAGE_EXECUTE_READWRITE, &old)) {
+        /* W^X and AV heuristics: RW for the write, then RX again - never RWX. */
+        if (!VirtualProtect(imm, 1, PAGE_READWRITE, &old)) {
             LOG("game visitor allowance: cannot write %#x (err %lu)", s->rva, GetLastError());
             continue;
         }
         *imm = s->setter ? setter_allowance : allowance;
         FlushInstructionCache(GetCurrentProcess(), imm, 1);
-        VirtualProtect(imm, 1, old, &old);
+        if (!VirtualProtect(imm, 1, PAGE_EXECUTE_READ, &old))
+            LOG("game visitor allowance: cannot restore execute protection at %#x (err %lu)",
+                s->rva, GetLastError());
     }
     LOG("game visitor allowance: recruitment opens %u visitor slot(s) (shrine setter %u)",
         allowance, setter_allowance);
+}
+
+/* Does the loaded proxy DLL carry an RT_MANIFEST resource? Walk the resource
+ * directory root of this module's PE image; the startup log then proves that
+ * the embedded manifest actually reached the linked DLL. */
+static int manifest_resource_present(HMODULE self)
+{
+    uint8_t *base = (uint8_t *)self;
+    IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)base;
+    if (!dos || dos->e_magic != IMAGE_DOS_SIGNATURE)
+        return 0;
+    IMAGE_NT_HEADERS64 *n = (IMAGE_NT_HEADERS64 *)(base + dos->e_lfanew);
+    if (n->Signature != IMAGE_NT_SIGNATURE)
+        return 0;
+    DWORD rva = n->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_RESOURCE].VirtualAddress;
+    if (!rva)
+        return 0;
+    IMAGE_RESOURCE_DIRECTORY *root = (IMAGE_RESOURCE_DIRECTORY *)(base + rva);
+    IMAGE_RESOURCE_DIRECTORY_ENTRY *entry = (IMAGE_RESOURCE_DIRECTORY_ENTRY *)(root + 1);
+    unsigned count = root->NumberOfNamedEntries + root->NumberOfIdEntries;
+    for (unsigned i = 0; i < count; i++) {
+        DWORD name = entry[i].Name;   /* Id in the low 16 bits */
+        if (!(name & IMAGE_RESOURCE_NAME_IS_STRING) && (name & 0xFFFF) == 24)
+            return 1;                 /* RT_MANIFEST */
+    }
+    return 0;
 }
 
 /* ------------------------------------------------------------ main worker */
@@ -2701,6 +2736,8 @@ static DWORD WINAPI worker(LPVOID unused)
         else
             LOG("log: writing %s", g_log_path);
     }
+    LOG(manifest_resource_present(self) ? "build: resource manifest present"
+                                        : "build: no manifest resource");
     cfg_report();
 
     g_base = (uint8_t *)GetModuleHandleA(NULL);

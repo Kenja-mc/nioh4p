@@ -385,6 +385,10 @@ void mainCRTStartup(void)
             {
                 static char logbuf[65536];
                 DWORD got = 0;
+                /* The proxy opens the log with FILE_SHARE_READ, so no other
+                 * process can rewrite it. This reader still opens with
+                 * read+write sharing (a reader's share mode only permits other
+                 * handles; the proxy's GENERIC_READ access is allowed). */
                 HANDLE lh = CreateFileA("nioh3p.log", GENERIC_READ,
                                         FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
                                         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);

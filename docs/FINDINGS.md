@@ -1283,3 +1283,36 @@ a friend using one may see an alert and Defender-class quarantine would stop
 steps (restore the file, add a folder exclusion, compare the SHA-256), or a
 vendor false-positive report. Only a code-signing certificate would remove the
 heuristic entirely.
+
+Build hardening added in response (2026-10-21, behaviour unchanged): the DLL now
+has a `.rsrc` section built from `src/proxy/nioh3p.rc` — a `VERSIONINFO` block
+(ProductName `nioh3p`, FileDescription "DirectInput 8 proxy (Nioh three-player
+co-op mod)", OriginalFilename `dinput8.dll`, version 1.0.0.0) and an embedded
+application manifest (`RT_MANIFEST` id 1: `asInvoker`, Windows 10/11
+`supportedOS`, per-monitor DPI). A resource-less, version-less unsigned DLL is
+a standard Evo-gen trigger. Code patches (the metadata guard and the five
+visitor-allowance immediate writes) now follow W^X: `PAGE_READWRITE` for the
+store, `FlushInstructionCache`, then an explicit `PAGE_EXECUTE_READ`; no
+`VirtualProtect` call requests `PAGE_EXECUTE_READWRITE` any more (the constant
+survives only in read-only `VirtualQuery` bitmask tests). The PE
+optional-header checksum, previously 0, is recomputed by
+`tools/pechecksum.py` after the link, and the log is opened with
+`FILE_SHARE_READ` so another process cannot rewrite it. The proxy logs
+`build: resource manifest present` at startup as proof that the manifest
+reached the linked image. These measures reduce the surface the generic
+heuristics look at; they cannot prove intent, so a fresh VirusTotal submission
+is required before quoting a new detection count.
+
+Rescan of the patched build (`9224d415…`: VERSIONINFO + `asInvoker` manifest in a
+`.rsrc` section, real PE checksum, no RWX — code pages go RW then RX — and the
+log opened share-read) was blocked: the anonymous web upload now asks for a
+reCAPTCHA image challenge, which is not something this session solves. The
+binary itself is unchanged in behaviour and verified with three players in the
+rig (host raised the lobby 2 -> 3, the metadata guard installed at the second
+visitor's join, `preflight: exe=ok eos=3/3 game_patch=ok`, manifest reported as
+present). To finish the scan, upload `dist/nioh3p-player.zip`'s `dinput8.dll`
+from a browser, or use a VirusTotal API key (`/files` endpoint, no captcha).
+The four heuristic hits are Avast/AVG `Win64:Evo-gen`, Avira `TR/W64.Evo`,
+WithSecure `Trojan.TR/W64.Evo` and Cynet; only a code-signing certificate or
+vendor false-positive reports are likely to clear them, since the media they
+flag is "unsigned DLL that patches code".

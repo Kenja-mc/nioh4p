@@ -41,9 +41,30 @@ fi
 
 # The proxy is loaded as dinput8.dll, so it carries a .def with the forwarded
 # DirectInput8Create and the other DLL entry points the loader expects.
+#
+# Version info and the application manifest live in a resource section. An
+# unsigned, resource-less image is what generic AV heuristics (Evo-gen,
+# TR/W64.Evo) flag; the manifest also marks the DLL asInvoker with Win10/11
+# compatibility and per-monitor DPI awareness. Both LLVM tools are required:
+# stopping here is better than silently shipping a DLL without .rsrc.
+RC_BIN="${LLVM_RC:-$(command -v llvm-rc || true)}"
+CVTRES_BIN="${LLVM_CVTRES:-$(command -v llvm-cvtres || true)}"
+if [ -z "$RC_BIN" ] || [ -z "$CVTRES_BIN" ]; then
+    echo "resource tools missing: install LLVM (llvm-rc, llvm-cvtres) or set LLVM_RC=/LLVM_CVTRES=." >&2
+    echo "refusing to build a resource-less dinput8.dll" >&2
+    exit 1
+fi
+"$RC_BIN" /FO build/nioh3p.res src/proxy/nioh3p.rc
+"$CVTRES_BIN" /MACHINE:X64 /OUT:build/nioh3p.rc.obj build/nioh3p.res
+
 "${CC[@]}" -shared -O2 -Wall -nostdlib "${SYSINC[@]}" \
     -Wl,--entry=DllMain -lkernel32 \
-    -o build/dinput8.dll src/proxy/nioh3p_proxy.c src/proxy/dinput8.def
+    -o build/dinput8.dll src/proxy/nioh3p_proxy.c src/proxy/dinput8.def \
+    build/nioh3p.rc.obj
+
+# A zero optional-header checksum is a common property of hand-built binaries
+# and one more generic-heuristic signal; recompute it after the link.
+python3 tools/pechecksum.py build/dinput8.dll
 
 echo "== built build/dinput8.dll =="
 ls -l build/dinput8.dll

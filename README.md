@@ -17,7 +17,9 @@ have not been tested.
 |---|---|
 | `src/proxy/nioh3p_proxy.c` | the mod: a `dinput8.dll` proxy for Windows x64, freestanding (KERNEL32 only) |
 | `src/proxy/dinput8.def` | exports, so the real DirectInput keeps working |
-| `build.sh` | builds `build/dinput8.dll` (zig or mingw-w64) |
+| `src/proxy/nioh3p.rc` | `VERSIONINFO` + embedded application manifest (`.rsrc`) |
+| `build.sh` | builds `build/dinput8.dll` (zig or mingw-w64, plus `llvm-rc`/`llvm-cvtres`) |
+| `tools/pechecksum.py` | recomputes the PE optional-header checksum after the link |
 | `install.sh` / `install.sh uninstall` | puts two files in the game dir / removes them |
 | `nioh3p.ini` | config: `max_players`, dump, hooks |
 | `tools/pe.py`, `tools/analyze.py` | PE reader + `.pdata`-driven disassembly used for the analysis |
@@ -98,6 +100,29 @@ work went (details in `docs/FINDINGS.md` 6.2/6.3):
 
 ## Install / use
 
+### Building from source
+
+```sh
+./build.sh              # build/dinput8.dll
+./build.sh --harness    # plus the fake EOS/Steam DLLs and the test harness
+```
+
+`build.sh` uses zig cc (or mingw-w64) and needs `llvm-rc` plus `llvm-cvtres`
+from LLVM for the resource section. If either is missing the build stops with
+an error instead of producing a resource-less DLL; set `LLVM_RC=`/`LLVM_CVTRES=`
+to point at other installs.
+
+The DLL carries a `VERSIONINFO` block (product name, file description,
+`dinput8.dll` original filename) and an embedded application manifest
+(`RT_MANIFEST` id 1: `asInvoker`, Windows 10/11 `supportedOS`, per-monitor
+DPI). `tools/pechecksum.py` then writes the PE optional-header checksum,
+which the linker leaves at 0. Code patches use W^X: the pages are made
+`PAGE_READWRITE` for the store, flushed with `FlushInstructionCache`, and set
+to `PAGE_EXECUTE_READ` afterwards instead of being restored as RWX. The log is
+opened with `FILE_SHARE_READ` only, so another process cannot rewrite it while
+the game runs. These are hardening steps against generic AV heuristics, not a
+substitute for code signing; `docs/FINDINGS.md` has the VirusTotal context.
+
 ### Playing (player package)
 
 ```sh
@@ -138,9 +163,10 @@ Log: `nioh3p.log` next to the DLL (or in `out_dir`); the previous launch is
 kept as `nioh3p.prev.log`. If that directory is not writable the proxy falls
 back to `%TEMP%\nioh3p.log` (never the Windows directory). A healthy player log
 contains `preflight: exe=ok eos=… steam=… game_patch=ok log=…`,
-`mode: player (trace=0)`, `game capacity hook: create request is clamped before
-native member allocation` and `game visitor allowance: recruitment opens 2
-visitor slot(s) (shrine setter 2)`. The `eos=` ratio counts only exports this
+`build: resource manifest present`, `mode: player (trace=0)`,
+`game capacity hook: create request is clamped before native member allocation`
+and `game visitor allowance: recruitment opens 2 visitor slot(s) (shrine setter
+2)`. The `eos=` ratio counts only exports this
 build actually calls; a `eos: N hook(s) have no call site in this build:` line
 names the exports the game never references (`EOS_LobbyModification_SetMaxMembers`
 in 1.24.08) and is informational, not a failure.

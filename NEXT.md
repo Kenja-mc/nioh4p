@@ -23,7 +23,8 @@ State file for resuming work. Evidence lives in `docs/FINDINGS.md` and
    capacity/allowance lines.
 3. Still untested with three players: finishing a mission, deaths/revives,
    rewards, re-offering after a visitor leaves. The party HUD shows one name.
-4. Not testable here: Windows Defender / Smart App Control on the unsigned DLL.
+4. VirusTotal rescan of the resource build: blocked by captcha; upload from a browser or with an API key.
+5. Not testable here: Windows Defender / Smart App Control on the unsigned DLL.
    If a friend's game stops starting, the fix is deleting `dinput8.dll`.
 5. Rig navigation: `tools/rig/coop.py run --host b --visitors a c` drives a
    co-op join end to end (set `OPENROUTER_ENV_FILE` or `OPENROUTER_API_KEY`).
