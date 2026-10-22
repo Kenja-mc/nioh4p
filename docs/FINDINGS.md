@@ -1405,3 +1405,12 @@ Limits: one machine and one point in time. Defender's cloud verdict can change,
 and the VirusTotal `Wacatac.C!ml` hit on the previous build shows that it does.
 Smart App Control was switched on through the registry, not through the
 Windows Security UI. The mission and multiplayer path did not run in the VM.
+
+Release scan of `48415ff0…` (player build without research code, 38,400
+bytes), uploaded through the VirusTotal web UI on 2026-10-22 with no captcha:
+5/71. Avast and AVG `Win64:Evo-gen [Trj]`, Avira `TR/W64.Evo`, WithSecure
+`Trojan.TR/W64.Evo` and Cynet `Malicious (score: 99)`. Microsoft reports it as
+clean, so the `Wacatac.C!ml` verdict on `1003e4e7…` did not carry over. The CAPA
+sandbox reported 0 malicious behavior. Zenbox and CAPE were still running at the
+time of writing. Report:
+https://www.virustotal.com/gui/file/48415ff045d11e34cb8e76ca9fc17afa2c8965b3d4f1c447ad96e01c646223a7

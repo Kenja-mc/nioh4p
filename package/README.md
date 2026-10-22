@@ -51,9 +51,10 @@ The full explanation, with the checks you can repeat yourself, is in
 If the game does not start, delete `dinput8.dll`. The game starts normally
 again.
 
-Microsoft Defender, Avast, AVG, Avira and WithSecure can flag the file as a
-generic trojan. That warning is a heuristic on an unsigned DLL that changes game
-memory. Compare the SHA-256 with the value that you got with the download.
+Avast, AVG, Avira and WithSecure can flag the file as a generic trojan.
+Microsoft Defender can too, although it reports this build as clean. That
+warning is a heuristic on an unsigned DLL that changes game memory.
+Compare the SHA-256 with the value that you got with the download.
 Then restore the file and exclude the game folder, or delete the file.
 
 To send a log, close the game and send `nioh3p.log` from the game folder. Send

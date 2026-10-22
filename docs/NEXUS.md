@@ -106,9 +106,9 @@ If it says [font=Courier New]exe=unsupported[/font], your game build differs fro
 the mod left the game unmodified — update the game on all three PCs.
 
 [size=4]Antivirus[/size]
-The DLL is unsigned. The previous build had 6 detections out of 71 on
-VirusTotal, all generic heuristics ("Evo"/"generic trojan") that an unsigned
-DLL patching game memory receives. No sandbox found malicious behaviour. If your antivirus blocks it,
+The DLL is unsigned. VirusTotal reports 5 detections out of 71, all generic
+heuristics ("Evo"/"generic trojan") that an unsigned DLL patching game memory
+receives. Microsoft Defender reports it as clean. The CAPA sandbox found no malicious behaviour. If your antivirus blocks it,
 restore the file and exclude the game folder, or delete
 [font=Courier New]dinput8.dll[/font] and the game is stock again.
 Report: https://www.virustotal.com/gui/file/48415ff045d11e34cb8e76ca9fc17afa2c8965b3d4f1c447ad96e01c646223a7

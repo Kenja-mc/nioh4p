@@ -92,12 +92,13 @@ again.
 
 ## About the antivirus warning
 
-Some antivirus engines flag the file as a generic trojan. On VirusTotal, six of
-71 engines flagged the previous build, `1003e4e7…`. The names were
-`Win64:Evo-gen`, `TR/W64.Evo`, `Wacatac.C!ml` and one plain `Malicious` score.
-These names describe groups, not a known malware family. The current build,
-`48415ff0…`, is half the size because it leaves out the research code. Its scan
-result is on the download page.
+Some antivirus engines flag the file as a generic trojan. On VirusTotal, five of
+71 engines flag the current build, `48415ff0…`: Avast and AVG
+`Win64:Evo-gen`, Avira `TR/W64.Evo`, WithSecure `Trojan.TR/W64.Evo` and Cynet
+`Malicious`. These names describe groups, not a known malware family.
+Microsoft Defender, Kaspersky, ESET, Bitdefender and the other engines report
+the file as clean. The report is at
+https://www.virustotal.com/gui/file/48415ff045d11e34cb8e76ca9fc17afa2c8965b3d4f1c447ad96e01c646223a7.
 
 The engines react to three things. The file is unsigned. The file changes code
 in memory. The file name is one that malware also uses for DLL hijacking. All

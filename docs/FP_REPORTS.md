@@ -1,8 +1,8 @@
-# False-positive reports for `dinput8.dll` (submitted 2026-10-21)
+# False-positive report drafts for `dinput8.dll` (not submitted yet)
 
-Six vendors flag the player build.
-All six flags are generic heuristics.
-The CAPA and CAPE sandboxes found no malicious behavior.
+Five vendors flag the player build `48415ff0…`: Avast, AVG, Avira, WithSecure
+and Cynet. All five flags are generic heuristics.
+The CAPA sandbox found no malicious behavior. Zenbox and CAPE were still running.
 Submit the text below to each vendor form with the file, or with its SHA-256 and
 the VirusTotal link.
 Only the vendor can whitelist a hash.
@@ -53,7 +53,11 @@ The text is the same, with the WithSecure verdict named in place of the Avast ve
 
 The text is the same, with the Cynet verdict named in place of the Avast verdict.
 
-## Microsoft Defender: `Trojan:Win32/Wacatac.C!ml`
+## Microsoft Defender: `Trojan:Win32/Wacatac.C!ml` (previous build only)
+
+Defender flagged the previous build `1003e4e7…` on VirusTotal. It reports
+`48415ff0…` as clean on VirusTotal and in a Windows 11 VM. Use this text only if
+Defender flags the current build later.
 
 > This is a false positive from the Defender machine-learning model. The file
 > (SHA-256 48415ff045d11e34cb8e76ca9fc17afa2c8965b3d4f1c447ad96e01c646223a7) is an unsigned open-source DirectInput 8 proxy for Nioh. It has
