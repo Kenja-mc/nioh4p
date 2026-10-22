@@ -1157,6 +1157,16 @@ join. `nioh.exe` has no CFG (`DllCharacteristics 0x8160`) and imports only
 Control behaviour on an unsigned DLL (the player README covers the recovery:
 delete `dinput8.dll`).
 
+The lean build (`502c5508…`: dead code and one-caller wrappers removed, the
+visitor-allowance poll moved after the image dump) repeated the run: B
+offered, A joined in 38 s, C in 39 s with A paused in bursts, the host's
+guard installed at C's join (19:03:29), B rendered both visitors
+(`shots/lean-b-3p.png`), and logs grew 0 bytes over a minute of play. The
+first C launch crashed in the intro movie, before any lobby activity, with a
+null COM pointer inside `nioh.exe` (`0x14052f321`, DirectShow playback; no
+frame in the proxy). The relaunch was fine. At quit, two gamescope wrappers
+exited 134 on a libei teardown assertion after the game had shut down.
+
 #### Rig artifact: second-visitor load stall
 
 On this rig the visitor that joins second can sit on the loading screen for

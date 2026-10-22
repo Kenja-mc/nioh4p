@@ -1,12 +1,12 @@
 # Next
 
 State file for resuming work. Evidence lives in `docs/FINDINGS.md` and
-`docs/RIG.md`; the repo has no git, so this file records what is uncommitted.
+`docs/RIG.md`. `build/`, `dist/` and `.local/` are not tracked by git.
 
 ## Current build
 
 - `dist/nioh3p-player.zip`: `dinput8.dll` + `nioh3p.ini` + player `README.md`.
-  DLL SHA-256 `fd4a58249fdadb208e1f10124cb786f8108f207876d278089e3f9b5dffe2df1c`.
+  DLL SHA-256 `502c55081dc0336fd292486f990d6b6b1f0098a078dbbb752cde6190fa08cb9a`.
   Rebuild with `tools/package.sh`; the zip hash changes with every build.
 - The same DLL and the player ini are installed in the real Steam folder
   (`~/.local/share/Steam/steamapps/common/Nioh`). A save backup taken before
@@ -25,14 +25,16 @@ State file for resuming work. Evidence lives in `docs/FINDINGS.md` and
    rewards, re-offering after a visitor leaves. The party HUD shows one name.
 4. Not testable here: Windows Defender / Smart App Control on the unsigned DLL.
    If a friend's game stops starting, the fix is deleting `dinput8.dll`.
+5. Rig navigation: `tools/rig/coop.py run --host b --visitors a c` drives a
+   co-op join end to end (set `OPENROUTER_ENV_FILE` or `OPENROUTER_API_KEY`).
+   Next speedups from `docs/NAV_OPTIONS.md`, in order: per-role save templates
+   so CONTINUE lands at the shrine / Starting Point; a read-only memory state
+   oracle (loader phase, session root) to replace fixed waits.
 
 ## Open decisions
 
-- Over-engineering review (2026-10-21) listed about 30 removable lines in
-  `src/proxy/nioh3p_proxy.c` (dead `g_steam_hooks`, one-caller wrappers
-  `steam_apply_vtable`/`scan_and_patch`, the `known` pre-pass in
-  `steam_apply_table`, a duplicate comment in `install_steam_hooks`). Not
-  applied; any change needs a rebuild and a rig run because it alters the
-  shipped DLL.
 - Research data kept: `~/.cache/nioh3p/out/text.dis` (270 MB disassembly),
   `~/.cache/nioh3p/dumps/`.
+- The rig's first C launch of 2026-10-21 18:49 crashed in the intro movie
+  (null COM pointer in `nioh.exe+0x52f321`, DirectShow); a relaunch was fine.
+  Wine log kept at `$RIG/logs-c/steam-485510.crash-movie-20261021.log`.
