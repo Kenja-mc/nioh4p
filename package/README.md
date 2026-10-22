@@ -19,8 +19,9 @@ Linux / Steam Deck: same steps. If it doesn't work, set the launch option
 - **Host:** in a mission, pray at a shrine → **Summon Visitor** → make the offering.
 - **Visitors:** Torii Gate → **Random Encounters** → **Search**.
   The second visitor searches only after the first one has loaded in.
-- To keep strangers out, all three set the same **Secret Word**.
-  If you can't find each other, set it to **Off**.
+- **Secret Word:** the Summon Visitor screen has no word field, so leave the
+  visitors' Secret Word **Off** for this flow. A word only helps on the Torii
+  Gate → *Yokai Realm with a Companion* path, where the host chooses it too.
 
 ## If something goes wrong
 
@@ -28,6 +29,9 @@ Linux / Steam Deck: same steps. If it doesn't work, set the launch option
 - **Send a log:** close the game and send `nioh3p.log` from the game folder
   (and `nioh3p.prev.log` if the problem was in the launch before).
   The log contains lobby IDs, search settings and file paths.
+- **Did the mod load?** The log's `preflight:` line says so: `preflight: exe=ok …`
+  means it loaded. If it says `exe=unsupported`, your game build differs from the
+  tested one and the mod left the game unmodified.
 
 ## Uninstall
 

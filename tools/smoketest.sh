@@ -9,6 +9,10 @@
 # Env: NIOH3P_TRACE (default 1 for proxy/ownership, 0 for game),
 #      NIOH3P_DUMP (dump_image, default 1, game only),
 #      NIOH3P_DUMP_EVERY (dump_every_s, default 8, game only).
+# The harness's "filter pass-through" PASS lines exist in player mode only:
+#   NIOH3P_TRACE=0 tools/smoketest.sh proxy
+# (trace=1 logs every filter call in full instead and makes the harness print
+# SKIP for those two checks.)
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

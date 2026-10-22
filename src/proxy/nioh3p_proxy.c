@@ -25,12 +25,15 @@
  * Config: nioh3p.ini next to this DLL. Log: nioh3p.log in out_dir when that
  * key is set, otherwise next to this DLL. When the log cannot be written
  * there, the proxy retries next to this DLL and finally in %TEMP% (the
- * directory GetTempPathA reports), so a read-only install still leaves a log.
+ * directory GetTempPathA reports, never the Windows directory), so a read-only
+ * install still leaves a log.
  *
  * Two modes, selected by the `trace` key in nioh3p.ini:
  *   trace=0 (player mode, the default): only the hooks that change behaviour
  *     (lobby capacity, filter drops, force_unlock, the metadata guard) plus
- *     the rare lobby events (create/join/leave) are installed. The
+ *     the rare lobby events (create/join/leave) and the numerical search
+ *     filter (forwarded unchanged, but its key names go to the log) are
+ *     installed. The
  *     per-P2P-packet, friends, socket and callback instrumentation is not
  *     installed at all - no hook, no log line - so the network path is
  *     untouched and a multi-hour session writes a small log.
@@ -320,6 +323,18 @@ static HANDLE g_log = INVALID_HANDLE_VALUE;
 static char g_dir[MAX_PATH];
 static char g_out[MAX_PATH];
 static const char *g_out_dir = g_dir;   /* where the log and the dumps go */
+static int g_loglock_ready;
+
+/* DllMain creates the lock while the loader lock is held (that is cheap and
+ * needs no file I/O); worker() calls this first as well, so LOG() can never
+ * enter an uninitialised critical section if the thread ever starts alone. */
+static void loglock_init(void)
+{
+    if (g_loglock_ready)
+        return;
+    InitializeCriticalSection(&g_loglock);
+    g_loglock_ready = 1;
+}
 
 static void LOG(const char *f, ...)
 {
@@ -378,7 +393,19 @@ static void log_init(const char *game_dir)
     if (n && n < MAX_PATH) {
         while (n > 0 && (tmp[n - 1] == '\\' || tmp[n - 1] == '/'))
             tmp[--n] = 0;
-        if (log_open_dir(tmp)) {
+        /* GetTempPathA falls back to %USERPROFILE%, then %SYSTEMROOT%, which is
+         * the Windows directory itself when the variables are missing or
+         * broken. A log is never written there: it would need administrator
+         * rights and no player could find it. */
+        char *leaf = tmp;
+        for (char *p = tmp; *p; p++)
+            if (*p == '\\' || *p == '/')
+                leaf = p + 1;
+        if (!tmp[0] || !stricmp_a(leaf, "windows")) {
+            /* No log exists, so LOG() cannot carry this: the debugger is the
+             * only sink left. */
+            OutputDebugStringA("nioh3p: log: no writable temp directory; log not created\n");
+        } else if (log_open_dir(tmp)) {
             if (g_out_dir != game_dir)
                 fmt(g_log_note, MAX_PATH, "cannot write %s or %s, using %s",
                     g_out_dir, game_dir, g_log_path);
@@ -977,6 +1004,18 @@ static void log_backtrace(const char *what)
 
 /* ------------------------------------------------------------- EOS detours */
 
+/* ApiVersion values the tested build uses, and therefore the layouts below are
+ * valid for. The shipping game builds CreateLobbyOptions with ApiVersion = 7
+ * (six identical sites, docs/RE_EOS_CALLSITES.md §4.1; the sample log's api=3
+ * line is the harness's value - README.md says so, and §8 of that document
+ * flags the discrepancy). The game never issues SetMaxMembers, so the harness
+ * (its only caller) sets the value; SetParameter carries the SDK's current
+ * version. A call from another version would place every field after
+ * ApiVersion at a different offset, so it is forwarded unmodified. */
+#define EOS_API_CREATE_LOBBY    7
+#define EOS_API_SET_MAX_MEMBERS 2
+#define EOS_API_SET_PARAMETER   1
+
 /* EOS_Lobby_CreateLobbyOptions (EOS SDK 1.x, x64 layout). ApiVersion is logged,
  * which validates the field offsets at runtime. */
 typedef struct {
@@ -1001,6 +1040,12 @@ static int32_t (EOS_CALL *orig_SetMaxMembers)(void *, const void *);
 static void EOS_CALL det_CreateLobby(void *handle, const void *opts, void *client_data, const void *completion)
 {
     CreateLobbyOptions *o = (CreateLobbyOptions *)opts;
+    if (o && o->ApiVersion != EOS_API_CREATE_LOBBY) {
+        LOG("eos: EOS_Lobby_CreateLobby ApiVersion %d != %d; forwarded unmodified",
+            o->ApiVersion, EOS_API_CREATE_LOBBY);
+        orig_CreateLobby(handle, opts, client_data, completion);
+        return;
+    }
     if (o) {
         LOG("EOS_Lobby_CreateLobby: api=%d max=%u perm=%d presence=%d invites=%d bucket=%s",
             o->ApiVersion, o->MaxLobbyMembers, o->PermissionLevel, o->bPresenceEnabled,
@@ -1021,6 +1066,11 @@ static void EOS_CALL det_CreateLobby(void *handle, const void *opts, void *clien
 static int32_t EOS_CALL det_SetMaxMembers(void *handle, const void *opts)
 {
     SetMaxMembersOptions *o = (SetMaxMembersOptions *)opts;
+    if (o && o->ApiVersion != EOS_API_SET_MAX_MEMBERS) {
+        LOG("eos: EOS_LobbyModification_SetMaxMembers ApiVersion %d != %d; forwarded unmodified",
+            o->ApiVersion, EOS_API_SET_MAX_MEMBERS);
+        return orig_SetMaxMembers(handle, opts);
+    }
     if (o) {
         LOG("EOS_LobbyModification_SetMaxMembers: api=%d max=%u", o->ApiVersion, o->MaxMembers);
         if (g_cfg.max_players && o->MaxMembers < g_cfg.max_players) {
@@ -1052,6 +1102,11 @@ typedef struct {
 static int32_t EOS_CALL det_LobbySearchSetParameter(void *handle, const void *options)
 {
     const LobbySearchSetParameterOptions *o = (const LobbySearchSetParameterOptions *)options;
+    if (o && o->ApiVersion != EOS_API_SET_PARAMETER) {
+        LOG("eos: EOS_LobbySearch_SetParameter ApiVersion %d != %d; forwarded unmodified",
+            o->ApiVersion, EOS_API_SET_PARAMETER);
+        return orig_LobbySearchSetParameter(handle, options);
+    }
     const char *name = o && o->Parameter ? o->Parameter->Key : 0;
     if (g_cfg.drop_lock_filter && name && strstr_a(name, "lock_status")) {
         LOG("EOS_LobbySearch_SetParameter: dropping \"%.60s\" (drop_lock_filter=1)", name);
@@ -1448,7 +1503,9 @@ typedef struct {
     void *orig;
     void **slot;
 } SteamHook;
-/* Behaviour-changing hooks: installed in both modes. */
+/* Behaviour-changing hooks: installed in both modes. The numerical filter
+ * changes nothing, but it sits here because player mode needs its keys in the
+ * log (filter_key_note) and a trace-only detour would never see them. */
 #define STEAM_HOOK(name, target, index) \
     { name, (void *)(uintptr_t)target, (index) + 1, 0, 0, 0 }
 /* Observational hooks: not installed at all in player mode, so the game's
@@ -1477,7 +1534,7 @@ static SteamHook g_steam[] = {
     STEAM_TRACE_HOOK("SetLobbyMemberData", det_SteamSetLobbyMemberData, 25),
     STEAM_TRACE_HOOK("RequestLobbyList", det_SteamRequestLobbyList, 4),
     STEAM_HOOK("AddRequestLobbyListStringFilter", det_SteamAddStringFilter, 5),
-    STEAM_TRACE_HOOK("AddRequestLobbyListNumericalFilter", det_SteamAddNumericalFilter, 6),
+    STEAM_HOOK("AddRequestLobbyListNumericalFilter", det_SteamAddNumericalFilter, 6),
     STEAM_TRACE_HOOK("AddRequestLobbyListNearValueFilter", det_SteamAddNearValueFilter, 7),
     STEAM_HOOK("AddRequestLobbyListFilterSlotsAvailable", det_SteamAddSlotsFilter, 8),
     STEAM_TRACE_HOOK("AddRequestLobbyListDistanceFilter", det_SteamAddDistanceFilter, 9),
@@ -1909,6 +1966,29 @@ static uint64_t EOS_CALL det_SteamRequestLobbyList(void *self)
     return r;
 }
 
+/* Player-mode filter visibility. The search filters are the only place a
+ * Secret Word can hide, and a player cannot run trace=1: the first eight
+ * distinct keys that pass through the string and numerical filter detours are
+ * logged by name alone (never the value), so a player log from a Secret Word
+ * session lists every key the game filters on. Bounded: eight keys, no more. */
+#define FILTER_KEYS 8
+static char g_filter_keys[FILTER_KEYS][64];
+static int  g_filter_keys_n;
+
+static void filter_key_note(const char *key)
+{
+    if (g_cfg.trace || !key || !*key)
+        return;                 /* trace=1 already logs each call in full */
+    for (int i = 0; i < g_filter_keys_n; i++)
+        if (!strcmp(g_filter_keys[i], key))
+            return;
+    if (g_filter_keys_n >= FILTER_KEYS)
+        return;
+    char *seen = g_filter_keys[g_filter_keys_n++];
+    fmt(seen, 64, "%.63s", key);
+    LOG("lobby filter: pass-through \"%s\"", seen);
+}
+
 static void EOS_CALL det_SteamAddStringFilter(void *self, const char *key, const char *value, int cmp)
 {
     SITE_NOTE("AddRequestLobbyListStringFilter");
@@ -1917,6 +1997,7 @@ static void EOS_CALL det_SteamAddStringFilter(void *self, const char *key, const
             "locked sessions stay visible in the search", key, value ? value : "");
         return;
     }
+    filter_key_note(key);
     LOG("Steam lobby filter: \"%.60s\" %s(\"%s\") = \"%.80s\"",
         key ? key : "", lobby_cmp_name(cmp), (const char *[]){"-2","-1","0","1","2","3","?"}[cmp < -2 || cmp > 3 ? 6 : cmp + 2],
         value ? value : "");
@@ -1927,6 +2008,7 @@ static void EOS_CALL det_SteamAddStringFilter(void *self, const char *key, const
 static void EOS_CALL det_SteamAddNumericalFilter(void *self, const char *key, int value, int cmp)
 {
     SITE_NOTE("AddRequestLobbyListNumericalFilter");
+    filter_key_note(key);
     LOG("Steam lobby filter: \"%.60s\" %s %d (numeric)", key ? key : "", lobby_cmp_name(cmp), value);
     if (g_steam[19].orig)
         ((void EOS_CALL (*)(void *, const char *, int, int))g_steam[19].orig)(self, key, value, cmp);
@@ -1944,6 +2026,11 @@ static void EOS_CALL det_SteamAddSlotsFilter(void *self, int slots)
 {
     SITE_NOTE("AddRequestLobbyListFilterSlotsAvailable");
     if (g_cfg.drop_slots_filter) {
+        static int noted;
+        if (!noted && !g_cfg.trace) {
+            noted = 1;          /* trace=1 already logs every dropped call */
+            LOG("lobby filter: slots-available filter dropped (drop_slots_filter=1)");
+        }
         LOG("Steam lobby filter: slots available >= %d DROPPED (drop_slots_filter=1) - "
             "full sessions stay visible in the search", slots);
         return;
@@ -2240,44 +2327,103 @@ static void install_steam_hooks(void)
 }
 
 static int g_eos_hooks;     /* successfully installed EOS entry-point hooks */
+static int g_eos_polls;     /* install_eos_hooks calls that saw the module */
 
+typedef struct {
+    const char *name;
+    void *detour;
+    void **orig;
+    int trace_only;     /* installed only when trace=1 */
+} EosHook;
+
+static EosHook g_eos_tbl[] = {
+    { "EOS_Lobby_CreateLobby",               (void *)(uintptr_t)det_CreateLobby,    (void **)&orig_CreateLobby,    0 },
+    { "EOS_LobbyModification_SetMaxMembers", (void *)(uintptr_t)det_SetMaxMembers,  (void **)&orig_SetMaxMembers,  0 },
+    { "EOS_Lobby_JoinLobby",                 (void *)(uintptr_t)det_JoinLobby,      (void **)&orig_JoinLobby,      1 },
+    { "EOS_LobbyDetails_GetMemberCount",     (void *)(uintptr_t)det_GetMemberCount, (void **)&orig_GetMemberCount, 1 },
+    { "EOS_LobbySearch_SetParameter",        (void *)(uintptr_t)det_LobbySearchSetParameter,
+                                                                                      (void **)&orig_LobbySearchSetParameter, 0 },
+    { "EOS_LobbyModification_AddAttribute",  (void *)(uintptr_t)det_AddAttribute,   (void **)&orig_AddAttribute,   0 },
+    { "EOS_LobbyDetails_CopyInfo",           (void *)(uintptr_t)det_CopyInfo,       (void **)&orig_CopyInfo,       1 },
+};
+#define NEOS (int)(sizeof g_eos_tbl / sizeof g_eos_tbl[0])
+
+/* *orig unset means the entry is not resolved yet: GetProcAddress has failed
+ * so far (module still initialising), so only that entry is retried. Once a
+ * hook was attempted, install_hook has published *orig and the entry is never
+ * rescanned. */
+static uint8_t g_eos_tried[NEOS];   /* an earlier poll already attempted this one */
+
+static int eos_configured(void)
+{
+    int n = 0;
+    for (int i = 0; i < NEOS; i++)
+        if (!g_eos_tbl[i].trace_only || g_cfg.trace)
+            n++;
+    return n;
+}
+
+static int eos_unresolved(void)
+{
+    int n = 0;
+    for (int i = 0; i < NEOS; i++)
+        if (!*g_eos_tbl[i].orig && (!g_eos_tbl[i].trace_only || g_cfg.trace))
+            n++;
+    return n;
+}
+
+static void eos_unresolved_names(char *dst, int cap)
+{
+    int n = 0;
+    dst[0] = 0;
+    for (int i = 0; i < NEOS; i++) {
+        const char *name = g_eos_tbl[i].name;
+        if (*g_eos_tbl[i].orig || (g_eos_tbl[i].trace_only && !g_cfg.trace))
+            continue;
+        n += fmt(dst + n, cap - n, "%s%s", n ? ", " : "", name);
+        if (n >= cap - 1)
+            break;
+    }
+}
+
+/* EOSSDK may be mapped after this DLL (the loader resolves imports in order),
+ * so the worker keeps polling while the module is absent: only entries whose
+ * *orig is still unset are resolved and hooked, never the whole table again. */
 static void install_eos_hooks(void)
 {
     HMODULE eos = GetModuleHandleA("EOSSDK-Win64-Shipping.dll");
     if (!eos)
-        return;
-    LOG("eos: EOSSDK module at %p", (void *)eos);
-    if (g_cfg.trace)
-        bt_resolve();
-
-    struct {
-        const char *name;
-        void *detour;
-        void **orig;
-        int trace_only;     /* installed only when trace=1 */
-    } tbl[] = {
-        { "EOS_Lobby_CreateLobby",               (void *)(uintptr_t)det_CreateLobby,    (void **)&orig_CreateLobby,    0 },
-        { "EOS_LobbyModification_SetMaxMembers", (void *)(uintptr_t)det_SetMaxMembers,  (void **)&orig_SetMaxMembers,  0 },
-        { "EOS_Lobby_JoinLobby",                 (void *)(uintptr_t)det_JoinLobby,      (void **)&orig_JoinLobby,      1 },
-        { "EOS_LobbyDetails_GetMemberCount",     (void *)(uintptr_t)det_GetMemberCount, (void **)&orig_GetMemberCount, 1 },
-        { "EOS_LobbySearch_SetParameter",        (void *)(uintptr_t)det_LobbySearchSetParameter,
-                                                                                          (void **)&orig_LobbySearchSetParameter, 0 },
-        { "EOS_LobbyModification_AddAttribute",  (void *)(uintptr_t)det_AddAttribute,   (void **)&orig_AddAttribute,   0 },
-        { "EOS_LobbyDetails_CopyInfo",           (void *)(uintptr_t)det_CopyInfo,       (void **)&orig_CopyInfo,       1 },
-    };
-    for (unsigned i = 0; i < sizeof tbl / sizeof tbl[0]; i++) {
-        FARPROC target;
-        if (tbl[i].trace_only && !g_cfg.trace)
-            continue;
-        target = GetProcAddress(eos, tbl[i].name);
+        return;                 /* not mapped yet: no entry to retry */
+    if (!g_eos_polls++) {
+        LOG("eos: EOSSDK module at %p", (void *)eos);
+        if (g_cfg.trace)
+            bt_resolve();
+    }
+    for (int i = 0; i < NEOS; i++) {
+        EosHook *h = &g_eos_tbl[i];
+        if (*h->orig || (h->trace_only && !g_cfg.trace))
+            continue;           /* hooked already, or not part of this mode */
+        int retry = g_eos_tried[i];
+        g_eos_tried[i] = 1;
+        FARPROC target = GetProcAddress(eos, h->name);
         if (!target) {
-            LOG("eos: %s is not exported", tbl[i].name);
+            if (!retry)
+                LOG("eos: %s is not exported", h->name);
             continue;
         }
-        LOG("eos: %s resolved at %p", tbl[i].name, (void *)target);
-        if (install_hook("EOSSDK-Win64-Shipping.dll", tbl[i].name, (void *)target,
-                         tbl[i].detour, tbl[i].orig))
+        if (!retry)
+            LOG("eos: %s resolved at %p", h->name, (void *)target);
+        if (install_hook("EOSSDK-Win64-Shipping.dll", h->name, (void *)target,
+                         h->detour, h->orig)) {
             g_eos_hooks++;
+            if (retry)
+                LOG("eos: %s hooked on poll %d", h->name, g_eos_polls);
+            if (!*h->orig)
+                *h->orig = (void *)target;  /* registered by name earlier */
+        }
+        /* A failed install_hook leaves *orig set: install_hook already logged
+         * why, and a call site that is absent now will not appear later, so
+         * the entry is not scanned again. */
     }
 }
 
@@ -2493,7 +2639,31 @@ static void install_game_visitor_allowance(void)
 
 static DWORD WINAPI worker(LPVOID unused)
 {
-    (void)unused;
+    HINSTANCE self = (HINSTANCE)unused;
+    /* No file I/O under the loader lock: the config, the log and the banner are
+     * opened here, never in DllMain. The critical section comes first, so LOG()
+     * is safe from the first line on. */
+    loglock_init();
+    DWORD dlen = GetModuleFileNameA(self, g_dir, MAX_PATH);
+    if (!dlen || dlen >= MAX_PATH) {
+        g_dir[0] = '.';         /* unknown module path: stay relative */
+        g_dir[1] = 0;
+    } else {
+        char *slash = strrchr_a(g_dir, '\\');
+        if (slash)
+            *slash = 0;
+    }
+    cfg_load(g_dir);            /* records its outcome for cfg_report */
+    log_init(g_dir);            /* the only log open in this process */
+    LOG("=== nioh3p proxy loading: module=%p dir=%s ===", (void *)self, g_dir);
+    if (g_log != INVALID_HANDLE_VALUE) {
+        if (g_log_note[0])
+            LOG("log: %s", g_log_note);
+        else
+            LOG("log: writing %s", g_log_path);
+    }
+    cfg_report();
+
     g_base = (uint8_t *)GetModuleHandleA(NULL);
     IMAGE_NT_HEADERS64 *h = nt();
     if (!h) {
@@ -2539,15 +2709,24 @@ static DWORD WINAPI worker(LPVOID unused)
         install_game_capacity_hook();
         /* EOSSDK may not be mapped yet: the loader resolves imports in order and
          * dinput8.dll can precede EOSSDK-Win64-Shipping.dll. Poll quickly so the
-         * hooks are in place before the game can open a lobby. */
+         * hooks are in place before the game can open a lobby. Once the module
+         * is mapped, every configured name is either resolved or absent, so a
+         * later poll cannot change anything. */
         for (int tries = 0; tries < 2000; tries++) {
-            if (!g_hook_count)
+            if (eos_unresolved())
                 install_eos_hooks();
             if (!g_steam_ready && tries < 600)      /* Steam is optional: 3 s */
                 install_steam_hooks();
-            if (g_hook_count && (g_steam_ready || tries >= 600))
+            int eos_waiting = eos_unresolved() && !g_eos_polls;  /* module not mapped */
+            if (!eos_waiting && (g_steam_ready || tries >= 600))
                 break;
             Sleep(5);
+        }
+        if (eos_unresolved()) {
+            char names[400];
+            eos_unresolved_names(names, (int)sizeof names);
+            LOG("eos: giving up on %d hook(s) (module %s): %s",
+                eos_unresolved(), g_eos_polls ? "mapped" : "not mapped", names);
         }
         LOG("worker: steam ready=%d create slot(one-based)=%u setmax slot=%u",
             g_steam_ready, g_steam[0].slot_index, g_steam[1].slot_index);
@@ -2557,6 +2736,38 @@ static DWORD WINAPI worker(LPVOID unused)
             "P2P/friends/callback tracing %s",
             g_cfg.trace ? "research" : "player", g_cfg.trace,
             steam_method_count(), g_eos_hooks, g_cfg.trace ? "on" : "off");
+    }
+
+    /* One line a player can be asked to read back: it names every part of the
+     * mod that is in place, and a second line names what is not. */
+    {
+        int exe_ok = exe_supported();
+        int active = g_cfg.hook_eos && mod_active;
+        int patched = g_game_create_param_hook.nslots > 0;
+        int configured = active ? eos_configured() : 0;
+        LOG("preflight: exe=%s eos=%d/%d steam=%d game_patch=%s log=%s",
+            exe_ok ? "ok" : "unsupported", g_eos_hooks, configured,
+            steam_method_count(), patched ? "ok" : "skipped",
+            g_log != INVALID_HANDLE_VALUE ? g_log_path : "none");
+        char why[320];
+        int wn = 0;
+        if (!exe_ok)
+            wn += fmt(why + wn, (int)sizeof why - wn, "exe=unsupported");
+        if (!g_cfg.hook_eos)
+            wn += fmt(why + wn, (int)sizeof why - wn, "%shook_eos=0", wn ? ", " : "");
+        if (g_eos_hooks < configured)
+            wn += fmt(why + wn, (int)sizeof why - wn, "%seos hooks %d/%d",
+                      wn ? ", " : "", g_eos_hooks, configured);
+        if (active && !patched)
+            wn += fmt(why + wn, (int)sizeof why - wn, "%sgame patch not installed",
+                      wn ? ", " : "");
+        if (g_log == INVALID_HANDLE_VALUE)
+            wn += fmt(why + wn, (int)sizeof why - wn, "%slog not created", wn ? ", " : "");
+        if (!g_steam_ready)
+            wn += fmt(why + wn, (int)sizeof why - wn, "%ssteam interface not seen",
+                      wn ? ", " : "");
+        if (wn)
+            LOG("preflight: INCOMPLETE %s", why);
     }
 
     if (g_cfg.dump_image) {
@@ -2708,26 +2919,15 @@ BOOL WINAPI DllMain(HINSTANCE self, DWORD reason, LPVOID reserved)
         if (stricmp_a(base, "nioh.exe") && stricmp_a(base, "testgame.exe"))
             return TRUE;
         g_host_nioh = !stricmp_a(base, "nioh.exe");
-        InitializeCriticalSection(&g_loglock);
-        GetModuleFileNameA(self, g_dir, MAX_PATH);
-        char *slash = strrchr_a(g_dir, '\\');
-        if (slash)
-            *slash = 0;
-        cfg_load(g_dir);        /* no log yet: the outcome is recorded */
-        log_init(g_dir);        /* the only log open in this process */
-        LOG("=== nioh3p proxy loading: module=%p dir=%s ===", (void *)self, g_dir);
-        if (g_log != INVALID_HANDLE_VALUE) {
-            if (g_log_note[0])
-                LOG("log: %s", g_log_note);
-            else
-                LOG("log: writing %s", g_log_path);
-        }
-        cfg_report();
-        HANDLE t = CreateThread(NULL, 0, worker, NULL, 0, NULL);
+        /* Nothing here opens a file: the loader lock is held. worker() loads the
+         * config, opens the log, prints the banner and reports every failure. */
+        loglock_init();
+        HANDLE t = CreateThread(NULL, 0, worker, (LPVOID)self, 0, NULL);
         if (t)
             CloseHandle(t);
         else
-            LOG("DllMain: CreateThread failed (err %lu)", GetLastError());
+            /* No worker, so no log: the debugger is the only sink left. */
+            OutputDebugStringA("nioh3p: CreateThread failed; mod inactive\n");
     }
     return TRUE;
 }

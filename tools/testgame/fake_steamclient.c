@@ -18,6 +18,7 @@
 #define SLOT_MEMBERS 17
 #define SLOT_REQUESTLIST 4
 #define SLOT_STRINGFILTER 5
+#define SLOT_NUMFILTER 6
 #define SLOT_BYINDEX 12
 #define SLOT_OWNER 35
 #define SLOT_SLOTSFILTER 8
@@ -115,6 +116,14 @@ static void sc_add_string_filter(void *self, const char *key, const char *value,
     g_filter_calls++;
 }
 
+/* The proxy now watches this slot in both modes (player mode logs the key
+ * names), so the fixture must provide an executable target for it: a slot that
+ * holds NULL is never patched. */
+static void sc_add_numerical_filter(void *self, const char *key, int value, int cmp)
+{
+    (void)self; (void)key; (void)value; (void)cmp;
+}
+
 static uint64_t *sc_get_lobby_by_index(void *self, uint64_t *out, int index)
 {
     (void)self;
@@ -193,6 +202,7 @@ static void sc_init(void)
     g_vtable[SLOT_SETDATA] = (void *)sc_set_lobby_data;
     g_vtable[SLOT_REQUESTLIST] = (void *)sc_request_lobby_list;
     g_vtable[SLOT_STRINGFILTER] = (void *)sc_add_string_filter;
+    g_vtable[SLOT_NUMFILTER] = (void *)sc_add_numerical_filter;
     g_vtable[SLOT_BYINDEX] = (void *)sc_get_lobby_by_index;
     g_vtable[SLOT_INVITE] = (void *)sc_invite_user_to_lobby;
     g_vtable[SLOT_MEMBERDATA] = (void *)sc_set_lobby_member_data;

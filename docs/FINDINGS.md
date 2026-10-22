@@ -1167,6 +1167,39 @@ null COM pointer inside `nioh.exe` (`0x14052f321`, DirectShow playback; no
 frame in the proxy). The relaunch was fine. At quit, two gamescope wrappers
 exited 134 on a libei teardown assertion after the game had shut down.
 
+#### Secret Word, and hardening for players (2026-10-21)
+
+The matchmaking search filters were recorded on the real game (trace=1, one
+visitor searching with Secret Word **Off**): `integer_80`=69, `integer_76` ≥1,
+`integer_77` ≤4, `integer_78` ≤1, the `binary_84` blob
+`MDE2NgEBAQEBATIwAA==`, `ktol_lock_status`=ktol_session_unlock, distance 3, max
+results 20; the game repeats the search with `integer_81`=4 and `integer_83`=0
+variants. No filter key contains "secret" or "password", and the same keys
+appear in a 12-hour trace, so the Secret Word is not a separate key.
+
+The UI explains why: on *Become a Visitor* the Secret Word row is a preset
+selector (`< Off >`) that stays on Off until conditions are set
+(`shots/sw-bv4.png`, `shots/sw-sw5.png`), and the **Summon Visitor** offering
+screen has no word field at all (`shots/safe-b-offer1.png`). The mod's tested
+flow therefore needs the word Off; a word can only match a host that advertises
+the same word, i.e. on the Torii Gate *Yokai Realm with a Companion* path.
+
+The mod changes exactly two filters: the `lock_status` string filter and the
+slots-available filter, each behind its own ini key. Every other call is
+forwarded byte-identically, and player mode now logs each distinct filter key
+once (`lobby filter: pass-through "<key>"`, key only, never the value), so a
+player log from a Secret Word session shows the word-bearing filter. The
+harness proves it: two unknown probe keys (`nioh3p_probe_key`,
+`nioh3p_probe_num`) must appear as pass-through lines in the mod's own log.
+
+Hardening in the same build: EOS option structs are gated on their `ApiVersion`
+(game: 7 for `EOS_Lobby_CreateLobby`) and forwarded unmodified on mismatch;
+unresolved EOS hooks are retried; config and log files are opened from the
+worker thread instead of `DllMain` (nothing under the loader lock); a `%TEMP%`
+that resolves to the Windows directory is refused; and every launch ends with
+one `preflight:` line stating whether the exe is supported, how many hooks are
+installed and where the log is.
+
 #### Rig artifact: second-visitor load stall
 
 On this rig the visitor that joins second can sit on the loading screen for

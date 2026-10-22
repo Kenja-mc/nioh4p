@@ -87,6 +87,18 @@ size_t strlen(const char *s)
     return (size_t)(p - s);
 }
 
+/* Freestanding substring search for the log checks (the harness has no CRT). */
+static int contains(const char *h, const char *n)
+{
+    for (; *h; h++) {
+        const char *a = h, *b = n;
+        while (*a && *b && *a == *b) { a++; b++; }
+        if (!*b)
+            return 1;
+    }
+    return 0;
+}
+
 static void out(const char *s)
 {
     HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -175,7 +187,7 @@ void mainCRTStartup(void)
     Sleep(1500);   /* let the proxy install its hooks before we exercise them */
 
     CreateLobbyOptions o;
-    o.ApiVersion = 3;
+    o.ApiVersion = 7;   /* what the game image builds (docs/RE_EOS_CALLSITES.md §4.1) */
     o.LocalUserId = 0;
     o.MaxLobbyMembers = 2;
     o.PermissionLevel = 1;
@@ -361,6 +373,44 @@ void mainCRTStartup(void)
             out("TEST: filters/lists seen by the fake service = ");
             num("", (unsigned long)nioh3p_test_filter_calls());
             num("", (unsigned long)nioh3p_test_list_calls());
+
+            /* Player-mode filter visibility: keys with no drop rule must be
+             * forwarded unchanged and named in a `lobby filter: pass-through`
+             * line. The proxy writes the log synchronously and keeps it
+             * share-readable, so it can be read right after the calls. */
+            void (*nnf)(void *, const char *, int, int) =
+                (void (*)(void *, const char *, int, int))vt[6];
+            sff(iface, "nioh3p_probe_key", "probe", 0);
+            nnf(iface, "nioh3p_probe_num", 5, 0);
+            {
+                static char logbuf[65536];
+                DWORD got = 0;
+                HANDLE lh = CreateFileA("nioh3p.log", GENERIC_READ,
+                                        FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+                if (lh != INVALID_HANDLE_VALUE) {
+                    if (!ReadFile(lh, logbuf, sizeof logbuf - 1, &got, NULL))
+                        got = 0;
+                    CloseHandle(lh);
+                }
+                logbuf[got] = 0;
+                if (!contains(logbuf, "mode: player (trace=0)")) {
+                    /* trace=1 logs every filter call in full by design and has
+                     * no pass-through summary: nothing to check in that mode. */
+                    out("SKIP: filter pass-through lines need player mode (trace=0)\n");
+                } else {
+                    int str_ok = contains(logbuf,
+                        "lobby filter: pass-through \"nioh3p_probe_key\"");
+                    int num_ok = contains(logbuf,
+                        "lobby filter: pass-through \"nioh3p_probe_num\"");
+                    out(str_ok ? "PASS: unknown string filter key logged as pass-through\n"
+                               : "FAIL: unknown string filter key not logged as pass-through\n");
+                    out(num_ok ? "PASS: unknown numerical filter key logged as pass-through\n"
+                               : "FAIL: unknown numerical filter key not logged as pass-through\n");
+                    if (!str_ok || !num_ok)
+                        ExitProcess(8);
+                }
+            }
 
             /* A second interface type uses its own CSteamID-returning wrapper. */
             void *fi = SteamInternal_FindOrCreateUserInterface(0, "SteamFriends017");
