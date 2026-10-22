@@ -923,13 +923,20 @@ static int repair_slots(Hook *h)
     return fixed;
 }
 
+/* Why install_hook last returned 0. The EOS installer needs to tell "this
+ * build never calls the export" (known, harmless) from a real failure. */
+enum { HOOK_FAIL_NONE = 0, HOOK_FAIL_TABLE_FULL, HOOK_FAIL_NO_CALLSITE };
+static int g_hook_fail;
+
 static int install_hook(const char *dll_name, const char *name, void *target,
                         void *detour, void **orig_out)
 {
+    g_hook_fail = HOOK_FAIL_NONE;
     for (int i = 0; i < g_hook_count; i++)      /* installer runs repeatedly */
         if (!strcmp(g_hooks[i].name, name))
             return 1;
     if (g_hook_count >= MAX_HOOKS) {
+        g_hook_fail = HOOK_FAIL_TABLE_FULL;
         LOG("hook: table full, cannot hook %s", name);
         return 0;
     }
@@ -955,6 +962,7 @@ static int install_hook(const char *dll_name, const char *name, void *target,
         LOG("hook: pointer scan patched %d location(s) for %s", hits, name);
     }
     if (h->nslots == 0) {
+        g_hook_fail = HOOK_FAIL_NO_CALLSITE;
         LOG("hook: %s NOT hooked (no call site found in this build)", name);
         return 0;
     }
@@ -2353,14 +2361,41 @@ static EosHook g_eos_tbl[] = {
  * hook was attempted, install_hook has published *orig and the entry is never
  * rescanned. */
 static uint8_t g_eos_tried[NEOS];   /* an earlier poll already attempted this one */
+static uint8_t g_eos_nocall[NEOS];  /* resolved, but this build never calls it */
 
-static int eos_configured(void)
+/* Entries that count towards the preflight ratio: export resolved and the
+ * build actually calls it. A name the game never references cannot be hooked
+ * and is not a defect, so it is excluded and reported on its own line. */
+static int eos_expected(void)
 {
     int n = 0;
     for (int i = 0; i < NEOS; i++)
-        if (!g_eos_tbl[i].trace_only || g_cfg.trace)
+        if (*g_eos_tbl[i].orig && !g_eos_nocall[i] &&
+            (!g_eos_tbl[i].trace_only || g_cfg.trace))
             n++;
     return n;
+}
+
+static int eos_nocall_count(void)
+{
+    int n = 0;
+    for (int i = 0; i < NEOS; i++)
+        if (g_eos_nocall[i] && (!g_eos_tbl[i].trace_only || g_cfg.trace))
+            n++;
+    return n;
+}
+
+static void eos_nocall_names(char *dst, int cap)
+{
+    int n = 0;
+    dst[0] = 0;
+    for (int i = 0; i < NEOS; i++) {
+        if (!g_eos_nocall[i] || (g_eos_tbl[i].trace_only && !g_cfg.trace))
+            continue;
+        n += fmt(dst + n, cap - n, "%s%s", n ? ", " : "", g_eos_tbl[i].name);
+        if (n >= cap - 1)
+            break;
+    }
 }
 
 static int eos_unresolved(void)
@@ -2420,10 +2455,14 @@ static void install_eos_hooks(void)
                 LOG("eos: %s hooked on poll %d", h->name, g_eos_polls);
             if (!*h->orig)
                 *h->orig = (void *)target;  /* registered by name earlier */
+        } else if (g_hook_fail == HOOK_FAIL_NO_CALLSITE) {
+            /* The game never calls this export (EOS_LobbyModification_
+             * SetMaxMembers in the tested build): not a defect, and not
+             * retried, because the call site cannot appear later. */
+            g_eos_nocall[i] = 1;
         }
-        /* A failed install_hook leaves *orig set: install_hook already logged
-         * why, and a call site that is absent now will not appear later, so
-         * the entry is not scanned again. */
+        /* Any other failure leaves *orig set and is not rescanned either:
+         * install_hook has already logged why. */
     }
 }
 
@@ -2728,6 +2767,14 @@ static DWORD WINAPI worker(LPVOID unused)
             LOG("eos: giving up on %d hook(s) (module %s): %s",
                 eos_unresolved(), g_eos_polls ? "mapped" : "not mapped", names);
         }
+        /* Informational, not a degradation: the build simply never calls these
+         * exports, so there is no call site to hook. */
+        if (eos_nocall_count()) {
+            char names[400];
+            eos_nocall_names(names, (int)sizeof names);
+            LOG("eos: %d hook(s) have no call site in this build: %s",
+                eos_nocall_count(), names);
+        }
         LOG("worker: steam ready=%d create slot(one-based)=%u setmax slot=%u",
             g_steam_ready, g_steam[0].slot_index, g_steam[1].slot_index);
         LOG("worker: %d EOS hook(s) installed", g_eos_hooks);
@@ -2744,7 +2791,7 @@ static DWORD WINAPI worker(LPVOID unused)
         int exe_ok = exe_supported();
         int active = g_cfg.hook_eos && mod_active;
         int patched = g_game_create_param_hook.nslots > 0;
-        int configured = active ? eos_configured() : 0;
+        int configured = active ? eos_expected() : 0;
         LOG("preflight: exe=%s eos=%d/%d steam=%d game_patch=%s log=%s",
             exe_ok ? "ok" : "unsupported", g_eos_hooks, configured,
             steam_method_count(), patched ? "ok" : "skipped",

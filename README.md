@@ -140,7 +140,10 @@ back to `%TEMP%\nioh3p.log` (never the Windows directory). A healthy player log
 contains `preflight: exe=ok eos=… steam=… game_patch=ok log=…`,
 `mode: player (trace=0)`, `game capacity hook: create request is clamped before
 native member allocation` and `game visitor allowance: recruitment opens 2
-visitor slot(s) (shrine setter 2)`.
+visitor slot(s) (shrine setter 2)`. The `eos=` ratio counts only exports this
+build actually calls; a `eos: N hook(s) have no call site in this build:` line
+names the exports the game never references (`EOS_LobbyModification_SetMaxMembers`
+in 1.24.08) and is informational, not a failure.
 
 ### Research mode (`trace=1`)
 

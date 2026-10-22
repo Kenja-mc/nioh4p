@@ -6,7 +6,7 @@ State file for resuming work. Evidence lives in `docs/FINDINGS.md` and
 ## Current build
 
 - `dist/nioh3p-player.zip`: `dinput8.dll` + `nioh3p.ini` + player `README.md`.
-  DLL SHA-256 `0ea869a5638360cd57810fc6d6dad0fc43f956627be52cae3f116afe69d237cb`.
+  DLL SHA-256 `f239e4c1c8c227190ff2ef1978002c4e4571ab826f83164a57f7c40a1b053cd2`.
   Rebuild with `tools/package.sh`; the zip hash changes with every build.
 - The same DLL and the player ini are installed in the real Steam folder
   (`~/.local/share/Steam/steamapps/common/Nioh`). A save backup taken before
