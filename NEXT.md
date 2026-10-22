@@ -16,6 +16,10 @@ Git does not track `build/`, `dist/` or `.local/`.
   ini installed. A save backup from before that install is at
   `~/Backups/nioh-savedata-20261021-174429.tar.gz`.
 - Rig slots `lan-{a,b,c}` run the same build. The rig is shut down.
+- VirusTotal: 5/71 generic heuristics (Avast, AVG, Avira, WithSecure, Cynet);
+  Microsoft reports it clean. Report link is in `docs/FP_REPORTS.md`.
+- A Windows 11 VM for Defender tests is stopped and kept in
+  `~/nioh3p-test/winvm` (13 GB). Usage is in `docs/RIG.md`.
 
 ## Next actions
 
@@ -30,13 +34,17 @@ Git does not track `build/`, `dist/` or `.local/`.
 3. These items are still untested with three players: finishing a mission,
    deaths and revives, rewards, and a new offering after a visitor leaves. The
    party HUD shows one name.
-4. The VirusTotal rescan of the resource build is blocked by a captcha. Upload
-   the file from a browser or with an API key.
+4. Send the false-positive reports to Avast/AVG, Avira, WithSecure and Cynet
+   with the texts in `docs/FP_REPORTS.md`. Each vendor has its own web form.
+   Keep the Defender draft unless Defender flags this build later.
 5. The Nexus upload kit in `docs/NEXUS.md` is ready and is prepare-only. Publish
    the mod after the pre-publish checklist passes, including the FP reports.
-6. Windows Defender and Smart App Control on the unsigned DLL are not testable
-   here. If a friend's game stops starting, delete `dinput8.dll` to correct it.
-7. For rig navigation, `tools/rig/coop.py run --host b --visitors a c` drives a
+6. Signing: no free option fits today (`docs/SIGNING.md`). Before a Nexus
+   release, decide on a license and a public repository; both are needed for
+   SignPath Foundation. The paid fallback is Certum open source (€49, real name
+   on the certificate).
+7. If a friend's game stops starting, delete `dinput8.dll` to correct it.
+8. For rig navigation, `tools/rig/coop.py run --host b --visitors a c` drives a
    co-op join end to end. Set `OPENROUTER_ENV_FILE` or `OPENROUTER_API_KEY`
    first. `docs/NAV_OPTIONS.md` lists the next speedups in order. The first is
    per-role save templates, so CONTINUE lands at the shrine or Starting Point.
@@ -51,3 +59,8 @@ Git does not track `build/`, `dist/` or `.local/`.
   The cause was a null COM pointer in `nioh.exe+0x52f321` (DirectShow). A
   relaunch was fine. The Wine log is at
   `$RIG/logs-c/steam-485510.crash-movie-20261021.log`.
+- The Experiential Labs key in `~/Documents/tempKey.txt` is world-readable
+  (mode 644). Moving it is your decision.
+- Smart App Control did not block the unsigned harness exe in the VM when it
+  was forced on through the registry. A friend's UI-enabled Smart App Control
+  can behave differently; their first launch log will show it.
