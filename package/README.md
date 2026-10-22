@@ -1,46 +1,64 @@
-# Nioh 3-player co-op
+# Nioh three-player co-op
 
-Lets one host and two visitors play a Nioh mission together.
-All three players need it installed, on the same Steam version of the game.
+This mod lets one host and two visitors play one Nioh mission together.
+All three players must install it. All three must use the same Steam build of
+the game.
 
 ## Install
 
 1. Close Nioh.
-2. In Steam: right-click **Nioh: Complete Edition** → **Manage** → **Browse local files**.
-3. Copy `dinput8.dll` and `nioh3p.ini` into that folder (next to `nioh.exe`).
-   If a `dinput8.dll` is already there, it belongs to another mod: rename it to `dinput8.dll.backup` first.
+2. In Steam, right-click Nioh: Complete Edition, then choose Manage, then
+   Browse local files.
+3. Copy `dinput8.dll` and `nioh3p.ini` into that folder, next to `nioh.exe`.
+   If a `dinput8.dll` is already there, it belongs to another mod. Rename it to
+   `dinput8.dll.backup` first and do not overwrite it.
 4. Start the game from Steam.
 
-Linux / Steam Deck: same steps. If it doesn't work, set the launch option
-`WINEDLLOVERRIDES="dinput8=n,b" %command%`.
+On Linux and Steam Deck, use the same steps. If no log appears, add this
+launch option in Steam: `WINEDLLOVERRIDES="dinput8=n,b" %command%`.
 
 ## Play
 
-- **Host:** in a mission, pray at a shrine → **Summon Visitor** → make the offering.
-- **Visitors:** Torii Gate → **Random Encounters** → **Search**.
-  The second visitor searches only after the first one has loaded in.
-- **Secret Word:** the Summon Visitor screen has no word field, so leave the
-  visitors' Secret Word **Off** for this flow. A word only helps on the Torii
-  Gate → *Yokai Realm with a Companion* path, where the host chooses it too.
-- **Finding the host:** the mod keeps the game's normal search rules. If a host
-  cannot be found, set `drop_lock_filter=1` in `nioh3p.ini` on the visitors (or
-  `force_unlock=1` on the host).
+1. The host starts a mission, prays at the starting shrine, chooses Summon
+   Visitor and makes the offering.
+2. Each visitor goes to the Torii Gate, then Random Encounters, then Search.
+3. The second visitor starts searching only after the first visitor has
+   loaded in.
+4. Leave the visitors' Secret Word Off. The Summon Visitor screen has no word
+   field, so a word cannot match.
+
+## Make sure that the mod loaded
+
+Open `nioh3p.log` in the game folder. The line `preflight: exe=ok eos=3/3 …`
+means that the mod loaded. The line `preflight: exe=unsupported` means that
+your game build differs from the tested build. The mod then leaves the game
+unmodified.
+
+## Why the mod is safe
+
+The mod passes every DirectInput call to the real Windows file. It changes
+three things inside the game process: the lobby member limit, the host visitor
+allowance, and a text log. It has no network code. It never opens the save
+folder. It writes only `nioh3p.log` and `nioh3p.prev.log`. It does nothing in
+any program except `nioh.exe`.
+
+The full explanation, with the checks you can repeat yourself, is in
+`docs/SAFETY.md` in the source repository.
 
 ## If something goes wrong
 
-- **Game won't start:** delete `dinput8.dll`. Antivirus can block it.
-- **Antivirus alert:** Avast, AVG and WithSecure may call this file a
-  generic "Evo" trojan. That is a heuristic on any unsigned DLL that
-  patches a game; 66 of 71 VirusTotal engines report it clean. Choose
-  "restore" and add the game folder as an exclusion, or delete the file.
-- **Send a log:** close the game and send `nioh3p.log` from the game folder
-  (and `nioh3p.prev.log` if the problem was in the launch before).
-  The log contains lobby IDs, search settings and file paths.
-- **Did the mod load?** The log's `preflight:` line says so: `preflight: exe=ok …`
-  means it loaded. If it says `exe=unsupported`, your game build differs from the
-  tested one and the mod left the game unmodified.
+If the game does not start, delete `dinput8.dll`. The game starts normally
+again.
+
+Avast, AVG and WithSecure can flag the file as a generic trojan. That warning
+is a heuristic on any unsigned DLL that changes game memory. Restore the file
+and exclude the game folder, or delete the file.
+
+To send a log, close the game and send `nioh3p.log` from the game folder. Send
+`nioh3p.prev.log` too if the problem happened in the earlier launch. The log
+contains lobby IDs, search settings and file paths.
 
 ## Uninstall
 
-Delete `dinput8.dll`, `nioh3p.ini` and the `nioh3p*.log` files from the game folder.
-Your saves are never touched.
+Delete `dinput8.dll`, `nioh3p.ini` and the `nioh3p*.log` files from the game
+folder. Your saves are never touched.

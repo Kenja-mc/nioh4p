@@ -1,8 +1,6 @@
 # Rig harness: perceive -> drive -> profile
 
-The co-op driver is split into two reusable, UI-agnostic modules plus a profile
-that holds everything game-specific. Adding another game or window manager
-means writing a profile (or a ~30-line script), not editing the loop.
+The co-op driver is split into two reusable modules that do not depend on the UI, plus a profile that holds everything game-specific. To add another game or window manager, write a profile (or a ~30-line script) instead of editing the loop. The table below lists the four files and their roles.
 
 | file | role |
 |---|---|
@@ -11,13 +9,11 @@ means writing a profile (or a ~30-line script), not editing the loop.
 | `tools/rig/profiles/nioh-coop.json` | Nioh screens, highlights, predicates, rules, thresholds, oracles, relief |
 | `tools/rig/coop.py` | Nioh CLI and the few named Python hooks the profile references |
 
-The loop is: capture a frame, ask the model about it, degrade uncertain
-answers to safe defaults, pick the first matching rule, then send that rule's
-keys or wait. The model only classifies; it never chooses a keypress.
+The loop works in this order. Capture a frame, then ask the model about it. Degrade uncertain answers to safe defaults, then pick the first matching rule. Send the keys of that rule or wait. The model only classifies, and it never chooses a keypress.
 
 ## Adding a game
 
-Use a command capturer and a command actuator; no Python abstraction needed:
+Use a command capturer and a command actuator. No Python abstraction is needed. The script below drives a window with ImageMagick and xdotool.
 
 ```python
 import drive, perceive
@@ -52,21 +48,13 @@ driver = drive.Driver(rules, perceiver.perceive, actuator=actuator, check=check,
 print(driver.run())
 ```
 
-`CommandCapture` substitutes `{name}` and `{path}`; the actuator substitutes
-`{key}`, `{ms}` and `{seconds}`. For a hold use a separate template, e.g.
-`CommandActuator("xdotool key --delay {ms} {key}",
-                 "xdotool keydown {key} && sleep {seconds} && xdotool keyup {key}")`.
+`CommandCapture` substitutes `{name}` and `{path}`. The actuator substitutes `{key}`, `{ms}` and `{seconds}`. For a hold, use a separate template, for example `CommandActuator("xdotool key --delay {ms} {key}", "xdotool keydown {key} && sleep {seconds} && xdotool keyup {key}")`.
 
-The profile route is the same, with data in JSON: `screens` and `highlights`
-(choice questions), `predicates`, `fallbacks`, `safety`, `oracles`, top-level
-`rules.host` / `rules.visitor`, and `roles` (each with an oracle name, the state
-flag it sets, and `guard`/`check` hook names). Then
-`perceive.Perceiver.from_profile(profile, capture, ...)` and
-`drive.Driver(profile["rules"]["host"], ...)`.
+The profile route is the same, with data in JSON. The members are `screens` and `highlights` (choice questions), `predicates`, `fallbacks`, `safety`, `oracles`, top-level `rules.host` and `rules.visitor`, and `roles`. Each role has an oracle name, the state flag that it sets, and `guard` and `check` hook names. Then call `perceive.Perceiver.from_profile(profile, capture, ...)` and `drive.Driver(profile["rules"]["host"], ...)`.
 
 ## Question specs
 
-Pass a mapping of question name to spec:
+Pass a mapping of question name to spec. The example below gives three questions. Each name maps to one question object.
 
 ```json
 {"screen":  {"type": "choice", "instructions": "One sentence.",
@@ -76,45 +64,26 @@ Pass a mapping of question name to spec:
  "pray_prompt": {"type": "predicate", "instructions": "Yes/no question"}}
 ```
 
-`mercury` sends choices as the `criteria` map and predicates as `noul`;
-`luna` sends `choices` and `predicate`. Give either form (or both) and the
-other is derived. Each backend gets one image and the profile prompt;
-`ask_decisions` returns `{"answers", "raw", "screenshot", "latency",
-"backend", "model", "usage"}`. `raw` keeps the API's own answer objects, and
-unknown choices raise rather than being executed.
+`mercury` sends choices as the `criteria` map and predicates as `noul`. `luna` sends `choices` and `predicate`. Give either form or both, and the missing form is derived. Each backend gets one image and the profile prompt. `ask_decisions` returns `{"answers", "raw", "screenshot", "latency", "backend", "model", "usage"}`. `raw` keeps the answer objects of the API. Unknown choices raise an error instead of being executed.
 
 ## Confidence and safety
 
-- A choice below `confidence_min` (0.6) is re-shot once after 1 s. If it is
-  still low, the configured fallback is substituted: `screen -> other` (wait)
-  and `highlight -> uncertain` (no `when` naming a real highlight matches).
-- Rules that send a dangerous key should also require
-  `{"highlight": ["..."], "confidence_min": 0.9}`. `confidence_min` compares
-  the highlight confidence; `{"pray_prompt": {"min": 0.5}}` compares a
-  predicate.
-- `Driver(uncertain_settle=1.5, uncertain_safe_keys=["BackSpace", "Up"])`
-  replaces uncertain key sends with a wait except for the safe navigation
-  keys. Enable it per profile role; the Nioh visitor uses it.
-- `Driver` also enforces the Return debounce (3 unchanged frames), a
-  no-progress cap on sent keys, the step limit, and the wall timeout. Hooks
-  may raise `drive.Stop(reason)` to end cleanly.
+- A choice below `confidence_min` (0.6) is re-shot once after 1 s. If it is still low, the driver substitutes the configured fallback: `screen -> other` (wait) and `highlight -> uncertain`. No `when` that names a real highlight matches then.
+- Rules that send a dangerous key must also require `{"highlight": ["..."], "confidence_min": 0.9}`. `confidence_min` compares the highlight confidence. `{"pray_prompt": {"min": 0.5}}` compares a predicate.
+- `Driver(uncertain_settle=1.5, uncertain_safe_keys=["BackSpace", "Up"])` replaces uncertain key sends with a wait, except for the safe navigation keys. Enable it for each profile role. The Nioh visitor uses it.
+- `Driver` also enforces the Return debounce (3 unchanged frames), a no-progress cap on sent keys, the step limit and the wall timeout. Hooks can raise `drive.Stop(reason)` to end the run cleanly.
 
 ## Trace
 
-One JSON line per step, in `$RIG/shots/coop-<timestamp>.jsonl`. Existing field
-names are unchanged: `step`, `slot`, `screenshot`, `screen`, `highlight`,
-`answers`, `raw`, `screen_confidence`, `highlight_confidence`, `pray_prompt`,
-`coop_partner`, `action`, `latency`, `backend`, `model`, `usage`, `dry_run`,
-`host_offering`, `summon_returns`. Extra fields (`rule`, `counts`, `join_seen`,
-`other_run`) can be ignored by older readers.
+The trace has one JSON line per step, in `$RIG/shots/coop-<timestamp>.jsonl`. Existing field names are unchanged: `step`, `slot`, `screenshot`, `screen`, `highlight`, `answers`, `raw`, `screen_confidence`, `highlight_confidence`, `pray_prompt`, `coop_partner`, `action`, `latency`, `backend`, `model`, `usage`, `dry_run`, `host_offering`, `summon_returns`. Older readers can ignore the extra fields `rule`, `counts`, `join_seen` and `other_run`.
 
 ## Smoke check
+
+Run the two commands below to make sure that a profile is correct before the loop sends keys. Both commands send no keys. The output shows what the model reported and what the driver selected.
 
 ```sh
 python3 tools/rig/coop.py decide a --role visitor   # prints perception + action, sends nothing
 python3 tools/rig/coop.py host b --dry-run          # one full driven step, no keys
 ```
 
-`decide` exits 0 after printing JSON: the model's screen/highlight with
-confidences, predicates, raw answers, and the action the guard/table would
-take. Use it to verify a new profile before letting the loop send keys.
+`decide` exits 0 after it prints JSON: the screen and highlight of the model with confidences, the predicates, the raw answers, and the action that the guard or table selects. Use it to make sure that a new profile is correct before you let the loop send keys.

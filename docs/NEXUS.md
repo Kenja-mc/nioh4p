@@ -1,44 +1,56 @@
-# Nexus Mods upload kit — prepare only, do not publish yet
+# Nexus Mods upload kit: prepare only, do not publish yet
 
-Everything needed to put the player build on `nexusmods.com/nioh`. Fill the
-placeholders `<…>` and publish only when the pre-publish checklist passes.
+This kit holds everything needed to put the player build on `nexusmods.com/nioh`.
+Fill each placeholder `<…>` before you publish.
+Publish only after the pre-publish checklist passes.
 
 ## 0. What is verified today
 
+The table below records the state of each check.
+A "Yes" entry passed on the rig or on a real machine.
+A "No" entry is still open, and an "N/A" entry does not apply while the filters are stock.
+
 | Item | Status |
 |---|---|
-| Three players in one mission in the rig (LAN, three Steam clients) | **Yes** — host + two visitors, both joins through the game's own search, stock lobby filters |
-| Harness (player and research mode, filter drop path, ownership) | **Pass** |
-| Host name gates, unsupported-build switch-off, preflight line | **Pass** |
-| Saves untouched | Yes (checksums before/after identical) |
-| Real Windows | **No** — static checks only (KERNEL32-only imports, PE32+ reloc/NX, no CRT apisets) |
-| Three real Steam accounts over the internet | **No** |
-| Mission completion, deaths/revives, rewards with three players | **No** |
-| Community: strangers joining a published session | N/A while filters are stock |
+| Three players in one mission in the rig (LAN, three Steam clients) | Yes. Host plus two visitors. Both joins went through the game's own search with stock lobby filters. |
+| Harness (player and research mode, filter drop path, ownership) | Pass |
+| Host name gates, unsupported-build switch-off, preflight line | Pass |
+| Saves untouched | Yes. Checksums before and after are identical. |
+| Real Windows | No. Static checks only (KERNEL32-only imports, PE32+ reloc/NX, no CRT apisets). |
+| Three real Steam accounts over the internet | No |
+| Mission completion, deaths and revives, rewards with three players | No |
+| Community: strangers joining a published session | N/A while the filters are stock |
 
-Release candidate: `dinput8.dll` SHA-256
-`1003e4e73688f9e6af1bd95f3fbf71f5aeb3c756574b2ac27ecf1d7734f550cb`
-(of the zip `dist/nioh3p-player.zip`). Freeze this hash for the release;
-rebuilding resets VirusTotal reputation and any vendor allowlist.
+The release candidate is `dinput8.dll` from the zip `dist/nioh3p-player.zip`.
+Its SHA-256 is
+`1003e4e73688f9e6af1bd95f3fbf71f5aeb3c756574b2ac27ecf1d7734f550cb`.
+Freeze this hash for the release.
+A rebuild resets the VirusTotal reputation and any vendor allowlist.
 
 ## 1. Page metadata
 
-- **Game:** Nioh (Complete Edition), Nexus game id `nioh`
-- **Mod name:** `Three-Player Co-op (Summon Visitor x2)`
-- **Version:** `1.0.0`
-- **Category:** Gameplay
-- **Tags:** `Co-op`, `Multiplayer`, `Utility`, `DLL`
-- **Summary (≤ 200 chars):** `Lets a host and two visitors play one Nioh mission together by raising the game's own lobby size from 2 to 3. No game files are modified; two files next to nioh.exe.`
-- **Requirements:** Nioh: Complete Edition (Steam), same game build on all
-  three PCs; Windows 10/11 or Linux/Proton; all three players must install it.
-- **Permissions:**
-  - *Users may:* use it, share the page link.
-  - *Users may not:* re-upload the files elsewhere, monetise, or bundle it into
-    paid mod packs.
-- **Credits:** `<your name>`; built on reverse-engineering notes in the public
-  repository `<repo URL>`.
+Use these values in the Nexus mod page fields.
+
+- Game: Nioh (Complete Edition), Nexus game id `nioh`
+- Mod name: `Three-Player Co-op (Summon Visitor x2)`
+- Version: `1.0.0`
+- Category: Gameplay
+- Tags: `Co-op`, `Multiplayer`, `Utility`, `DLL`
+- Summary (≤ 200 chars): `Lets a host and two visitors play one Nioh mission together by raising the game's own lobby size from 2 to 3. No game files are modified. It adds two files next to nioh.exe.`
+- Requirements: Nioh: Complete Edition (Steam). All three PCs must run the same
+  game build. Windows 10 or 11, or Linux with Proton. All three players must
+  install the mod.
+- Permissions:
+  - Users can use the mod and share the page link.
+  - Users must not re-upload the files elsewhere, monetize the mod, or bundle it
+    into paid mod packs.
+- Credits: `<your name>`. The mod builds on reverse-engineering notes in the
+  public repository `<repo URL>`.
 
 ## 2. Description (paste as BBCode)
+
+Paste the block below into the Nexus description editor.
+The editor accepts BBCode.
 
 ```bbcode
 [size=5]Play Nioh with three people[/size]
@@ -91,7 +103,7 @@ If it says [font=Courier New]exe=unsupported[/font], your game build differs fro
 the mod left the game unmodified — update the game on all three PCs.
 
 [size=4]Antivirus[/size]
-The DLL is unsigned. VirusTotal reports 5 detections out of 71, all generic
+The DLL is unsigned. VirusTotal reports 6 detections out of 71, all generic
 heuristics ("Evo"/"generic trojan") that any unsigned DLL patching game memory
 receives; no sandbox found malicious behaviour. If your antivirus blocks it,
 restore the file and exclude the game folder, or delete
@@ -115,43 +127,48 @@ never touched.
 
 ## 3. Files tab
 
-Single file, no nested archive:
-
-- `nioh3p-player-1.0.0.zip` (3 files: `dinput8.dll`, `nioh3p.ini`,
-  `README.md`) — "Main files", version `1.0.0`, category `Main`.
-- Do not include the source tree, dumps, or test tools in the upload.
-- Optional second file: `nioh3p-1.0.0-source.zip` with `src/`, `build.sh`,
-  `tools/pechecksum.py` (source publication helps vendor reviews and users).
+Upload a single file.
+Do not use a nested archive.
+The main file is `nioh3p-player-1.0.0.zip`, with 3 files: `dinput8.dll`,
+`nioh3p.ini` and `README.md`.
+Set it as "Main files", version `1.0.0`, category `Main`.
+Do not include the source tree, dumps, or test tools in the upload.
+The upload can have a second, optional file: `nioh3p-1.0.0-source.zip` with
+`src/`, `build.sh` and `tools/pechecksum.py`.
+Published source helps vendor reviews and users.
 
 ## 4. Images (capture fresh, do not use rig screenshots)
 
-Rig screenshots show test account names (`Nioh-LAN-A/B`) and should not be
-published. Capture on `<your account>` with two friends or a second PC:
+Rig screenshots show test account names (`Nioh-LAN-A/B`), so do not publish them.
+Capture on `<your account>` with two friends or a second PC.
 
 1. Host at the shrine with the offering active, one visitor visible.
-2. Three characters together in a mission (the money shot).
+2. Three characters together in a mission (the main image).
 3. The visitor search list showing the host session.
-4. `nioh3p.log` first lines with the `preflight:` line (blur nothing — it
-   contains only paths).
+4. First lines of `nioh3p.log` with the `preflight:` line. Do not blur anything.
+   The line contains only paths.
 
 ## 5. Pre-publish checklist
 
-- [ ] Release hash frozen: `1003e4e7…0cb` (or the hash of the final build).
-- [ ] False-positive reports filed with Avast/AVG, Avira, WithSecure, Cynet
-      (`docs/FP_REPORTS.md`); keep the ticket numbers for the page reply.
-- [ ] Re-scan the final DLL on VirusTotal and put the fresh link in the
-      description.
-- [ ] One friend on Windows installs it and sends their `preflight:` line.
-- [ ] Mod page permissions and credits set; description proofread.
-- [ ] Note in the page: "not affiliated with Koei Tecmo or Team Ninja".
-- [ ] Nexus may quarantine the first upload (red cross) because of the 5 scan
-      hits: email `support@nexusmods.com` with the mod page link, the
-      VirusTotal link and the source repository; do not delete the file.
+Run every item below before you publish.
+
+- [ ] Freeze the release hash: `1003e4e7…0cb`, or the hash of the final build.
+- [ ] File the false-positive reports with Avast/AVG, Avira, WithSecure and Cynet
+      (`docs/FP_REPORTS.md`). Keep the ticket numbers for the page reply.
+- [ ] Scan the final DLL again on VirusTotal. Put the new link in the description.
+- [ ] Ask one friend on Windows to install the mod. That friend sends their
+      `preflight:` line.
+- [ ] Set the page permissions and credits. Proofread the description.
+- [ ] Add a note to the page: "not affiliated with Koei Tecmo or Team Ninja".
+- [ ] Nexus can quarantine the first upload (red cross) because of the 5 scan
+      hits. Email `support@nexusmods.com` with the mod page link, the
+      VirusTotal link and the source repository. Do not delete the file.
 
 ## 6. Versioning
 
-- `1.0.0` — the build verified above.
-- Bump to `1.0.x` only for fixes that change the DLL; a rebuild means a new
-  hash and a new Nexus file entry, and the old file stays for users who have it.
-- Keep `dinput8.dll`'s embedded `VERSIONINFO` in step with the page version
-  (`src/proxy/nioh3p.rc`).
+`1.0.0` is the build verified above.
+Bump to `1.0.x` only for fixes that change the DLL.
+A rebuild makes a new hash and a new Nexus file entry.
+The old file stays for the users who have it.
+Keep the `VERSIONINFO` inside `dinput8.dll` at the page version.
+The file is `src/proxy/nioh3p.rc`.

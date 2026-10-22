@@ -1,42 +1,52 @@
 # Next
 
-State file for resuming work. Evidence lives in `docs/FINDINGS.md` and
-`docs/RIG.md`. `build/`, `dist/` and `.local/` are not tracked by git.
+State file for resuming work.
+The evidence lives in `docs/FINDINGS.md` and `docs/RIG.md`.
+Git does not track `build/`, `dist/` or `.local/`.
 
 ## Current build
 
-- `dist/nioh3p-player.zip`: `dinput8.dll` + `nioh3p.ini` + player `README.md`.
-  DLL SHA-256 `f239e4c1c8c227190ff2ef1978002c4e4571ab826f83164a57f7c40a1b053cd2`.
-  Rebuild with `tools/package.sh`; the zip hash changes with every build.
-- The same DLL and the player ini are installed in the real Steam folder
-  (`~/.local/share/Steam/steamapps/common/Nioh`). A save backup taken before
-  that install: `~/Backups/nioh-savedata-20261021-174429.tar.gz`.
+- `dist/nioh3p-player.zip` holds `dinput8.dll`, `nioh3p.ini` and the player
+  `README.md`. The DLL SHA-256 is
+  `1003e4e73688f9e6af1bd95f3fbf71f5aeb3c756574b2ac27ecf1d7734f550cb`.
+  Rebuild the zip with `tools/package.sh`. The zip hash changes with every build.
+- The real Steam folder
+  (`~/.local/share/Steam/steamapps/common/Nioh`) has the same DLL and the player
+  ini installed. A save backup from before that install is at
+  `~/Backups/nioh-savedata-20261021-174429.tar.gz`.
 - Rig slots `lan-{a,b,c}` run the same build. The rig is shut down.
 
 ## Next actions
 
-1. Send the zip to the two Windows friends (tell them to look for `preflight: exe=ok`). Send the DLL SHA-256 above in the
-   same message; the README tells them to compare it with `certutil`.
-2. First real session, three Steam accounts online: collect `nioh3p.log` from
-   all three (and `nioh3p.prev.log` if the problem was in an earlier launch).
-   Check for `unsupported nioh.exe build` (version mismatch) and for the
-   capacity/allowance lines.
-3. Still untested with three players: finishing a mission, deaths/revives,
-   rewards, re-offering after a visitor leaves. The party HUD shows one name.
-4. VirusTotal rescan of the resource build: blocked by captcha; upload from a browser or with an API key.
-5. Nexus upload kit ready in `docs/NEXUS.md` (prepare-only): publish after the pre-publish checklist, including the FP reports.
-6. Not testable here: Windows Defender / Smart App Control on the unsigned DLL.
-   If a friend's game stops starting, the fix is deleting `dinput8.dll`.
-5. Rig navigation: `tools/rig/coop.py run --host b --visitors a c` drives a
-   co-op join end to end (set `OPENROUTER_ENV_FILE` or `OPENROUTER_API_KEY`).
-   Next speedups from `docs/NAV_OPTIONS.md`, in order: per-role save templates
-   so CONTINUE lands at the shrine / Starting Point; a read-only memory state
-   oracle (loader phase, session root) to replace fixed waits.
+1. Send the zip to the two Windows friends. Tell them to look for
+   `preflight: exe=ok`. Send the DLL SHA-256 above in the same message. The
+   README tells them to compare the hash with `certutil`.
+2. Run the first real session with three Steam accounts online. Collect
+   `nioh3p.log` from all three. Also collect `nioh3p.prev.log` if the problem
+   was in an earlier launch. Make sure that the log has no
+   `unsupported nioh.exe build` line (version mismatch) and that the capacity
+   and allowance lines are present.
+3. These items are still untested with three players: finishing a mission,
+   deaths and revives, rewards, and a new offering after a visitor leaves. The
+   party HUD shows one name.
+4. The VirusTotal rescan of the resource build is blocked by a captcha. Upload
+   the file from a browser or with an API key.
+5. The Nexus upload kit in `docs/NEXUS.md` is ready and is prepare-only. Publish
+   the mod after the pre-publish checklist passes, including the FP reports.
+6. Windows Defender and Smart App Control on the unsigned DLL are not testable
+   here. If a friend's game stops starting, delete `dinput8.dll` to correct it.
+7. For rig navigation, `tools/rig/coop.py run --host b --visitors a c` drives a
+   co-op join end to end. Set `OPENROUTER_ENV_FILE` or `OPENROUTER_API_KEY`
+   first. `docs/NAV_OPTIONS.md` lists the next speedups in order. The first is
+   per-role save templates, so CONTINUE lands at the shrine or Starting Point.
+   The second is a read-only memory state oracle (loader phase, session root) to
+   replace fixed waits.
 
 ## Open decisions
 
-- Research data kept: `~/.cache/nioh3p/out/text.dis` (270 MB disassembly),
-  `~/.cache/nioh3p/dumps/`.
-- The rig's first C launch of 2026-10-21 18:49 crashed in the intro movie
-  (null COM pointer in `nioh.exe+0x52f321`, DirectShow); a relaunch was fine.
-  Wine log kept at `$RIG/logs-c/steam-485510.crash-movie-20261021.log`.
+- Research data is kept at `~/.cache/nioh3p/out/text.dis` (270 MB disassembly)
+  and `~/.cache/nioh3p/dumps/`.
+- The first C launch on the rig (2026-10-21 18:49) crashed in the intro movie.
+  The cause was a null COM pointer in `nioh.exe+0x52f321` (DirectShow). A
+  relaunch was fine. The Wine log is at
+  `$RIG/logs-c/steam-485510.crash-movie-20261021.log`.
