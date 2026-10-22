@@ -359,7 +359,7 @@ stayed in co-op. Evidence and remaining gaps are in `FINDINGS.md`
   reference sources.
 - Shutdown this session: all three games quit through their native dialog
   (exit 0). Steam was visually verified **Invisible**
-  (`shots/steam-b-invisible-stop4.png`) and shut down normally. Xvfb `:10` was
+  (`shots/steam-b-invisible-stop5.png`) and shut down normally. Xvfb `:10` was
   stopped, and a final scan found no live process with a rig HOME. The 4.7 GB
   research-era `logs-*/nioh3p.log` files were trashed.
 
