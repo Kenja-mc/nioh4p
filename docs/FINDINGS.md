@@ -1228,7 +1228,7 @@ the mod's own log.
 Stock filters are sufficient. This result is from 2026-10-21, build
 `1003e4e7…`. With `drop_lock_filter=0 drop_slots_filter=0`, the shipped
 defaults from this build, host B raised the lobby to 3. Both visitors found and
-joined it (JoinLobby 22:44 and 22:47, `giochi` partner HUD,
+joined it (JoinLobby 22:44 and 22:47, both visitors visible on the host,
 `shots/stock-3p.png`). The visitor logs contain zero `DROPPED` lines, and the
 host installed the metadata guard at the second join. The earlier filter drops
 were therefore a workaround from before the create-request clamp, not a

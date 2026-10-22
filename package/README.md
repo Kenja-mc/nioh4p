@@ -36,11 +36,12 @@ unmodified.
 
 ## Why the mod is safe
 
-The mod passes every DirectInput call to the real Windows file. It changes
-three things inside the game process: the lobby member limit, the host visitor
-allowance, and a text log. It has no network code. It never opens the save
-folder. It writes only `nioh3p.log` and `nioh3p.prev.log`. It does nothing in
-any program except `nioh.exe`.
+The mod passes every DirectInput call to the real Windows file. Inside the game
+process, it changes the lobby member limit, the host visitor allowance and one
+game function that copies lobby settings. It also writes a text log. It opens
+no network connection of its own. It never opens the save folder. It writes
+only `nioh3p.log` and `nioh3p.prev.log`. In any program except `nioh.exe`, it
+only passes DirectInput calls through.
 
 The full explanation, with the checks you can repeat yourself, is in
 `docs/SAFETY.md` in the source repository.
@@ -50,9 +51,10 @@ The full explanation, with the checks you can repeat yourself, is in
 If the game does not start, delete `dinput8.dll`. The game starts normally
 again.
 
-Avast, AVG and WithSecure can flag the file as a generic trojan. That warning
-is a heuristic on any unsigned DLL that changes game memory. Restore the file
-and exclude the game folder, or delete the file.
+Microsoft Defender, Avast, AVG, Avira and WithSecure can flag the file as a
+generic trojan. That warning is a heuristic on an unsigned DLL that changes game
+memory. Compare the SHA-256 with the value that you got with the download.
+Then restore the file and exclude the game folder, or delete the file.
 
 To send a log, close the game and send `nioh3p.log` from the game folder. Send
 `nioh3p.prev.log` too if the problem happened in the earlier launch. The log

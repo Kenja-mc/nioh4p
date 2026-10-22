@@ -15,14 +15,16 @@ count and the log options.
 
 ## What the mod changes
 
-The mod changes three things inside the game process. It changes nothing else.
+The mod changes four things inside the game process. It changes nothing else.
 
-1. It raises the lobby member limit from 2 to 3. It does this at the two
-   points where the game sets the limit, and only after it checks the exact
-   game build.
+1. It raises the lobby member limit from 2 to 3. It does this in the requests
+   that create the lobby, and only after it checks the exact game build.
 2. It raises the host's visitor allowance from one to two. The game accepts
    the second visitor instead of rejecting the request.
-3. It writes a text log. The log records which hooks the mod installed and
+3. It fixes one game function that copies lobby settings. When that function
+   copies a value onto itself, the stock code replaces the value with empty
+   memory. The fix keeps the value, so the next visitor can find the lobby.
+4. It writes a text log. The log records which hooks the mod installed and
    what the game asked for.
 
 ## What the mod never does
@@ -30,21 +32,26 @@ The mod changes three things inside the game process. It changes nothing else.
 The list below comes from the import table and from the source code. Each item
 is easy to recheck with the tools named at the end of this page.
 
-The mod has no network code. It cannot send or receive data. The file imports
-27 functions and all of them come from `KERNEL32.dll`. No socket, HTTP or
+The mod opens no network connection of its own. It changes values in lobby
+requests that the game already sends to Steam and EOS. The file imports 27
+functions, and all of them come from `KERNEL32.dll`. No socket, HTTP or
 download function is on that list.
 
 The mod does not touch your saves. The game stores saves in
-`Documents\KoeiTecmo\NIOH\Savedata`. The mod never opens that folder. The only
-files it writes are `nioh3p.log` and `nioh3p.prev.log`, in the game folder. If
-the game folder is not writable, it writes the log to `%TEMP%` instead.
+`Documents\KoeiTecmo\NIOH\Savedata`. The mod never opens that folder. In the
+shipped configuration, the only files it writes are `nioh3p.log` and
+`nioh3p.prev.log`, in the game folder. If the game folder is not writable, it
+writes the log to `%TEMP%` instead. A research setting, `dump_image=1`, also
+writes copies of the game memory to the game folder. The shipped
+configuration sets it to 0.
 
 The mod does not use the registry, services, drivers or scheduled tasks. It
 does not start other programs. It does not inject code into other processes.
-It refuses to act in any program except `nioh.exe`.
+It acts only in `nioh.exe` and in the project test program `testgame.exe`. In
+any other program that loads it, such as `nioh_launcher.exe`, it only passes
+DirectInput calls to the real Windows file.
 
-The mod does not read your passwords or your Steam session. It asks Steam for
-lobby calls that the game already makes.
+The mod does not read your passwords, your Steam login or your personal files.
 
 ## How the mod fails safely
 
@@ -59,8 +66,8 @@ the bytes differ, it skips that change and logs the reason.
 The mod gates each lobby call on its `ApiVersion` value. If the game or the
 EOS SDK sends a different value, the mod forwards the call unchanged.
 
-The mod writes code pages with write permission and then sets them to
-execute-only. No page stays writable and executable.
+The mod makes a code location writable for the change, and then sets it back
+to read and execute. No location stays writable and executable.
 
 To remove the mod, delete `dinput8.dll` and `nioh3p.ini`. The game is stock
 again.
@@ -76,9 +83,10 @@ again.
    reports malicious activity.
 4. Read the import table with any PE viewer. All imports come from
    `KERNEL32.dll`.
-5. Read the source. `src/proxy/nioh3p_proxy.c` is one C file. The functions
-   that change the game are `game_create_param_set` and
-   `install_game_visitor_allowance`. The host gate is in `DllMain`.
+5. Read the source, if you have the source package. `src/proxy/nioh3p_proxy.c`
+   is one C file. The functions that change the game are
+   `game_create_param_set`, `install_game_metadata_guard` and
+   `install_game_visitor_allowance`. The program check is in `DllMain`.
 
 ## About the antivirus warning
 
