@@ -1263,3 +1263,23 @@ or command-line fragments that can match the cleanup shell.
 
 Boot traces alone do not establish multiplayer; the two-player gameplay
 evidence above is a separate check.
+
+#### VirusTotal (player build `f239e4c1…`, 2026-10-21)
+
+Submitted through the VirusTotal web UI (anonymous): 5 of 71 engines flagged
+the DLL, all with generic heuristics — Avast and AVG `Win64:Evo-gen [Trj]`,
+Avira `TR/W64.Evo`, WithSecure `Trojan.TR/W64.Evo`, Cynet `Malicious (score
+100)`. Popular threat label "trojan". The other 66 engines, including
+Bitdefender, ESET, Kaspersky, Google, Fortinet, CrowdStrike and SentinelOne's
+siblings, reported clean. CAPA and the CAPE sandbox reported 0 malicious
+behaviour (one sandbox was still queued), so no dynamic evidence exists; the
+flags are the usual family for an unsigned DLL that patches another process's
+code. Permanent report:
+`https://www.virustotal.com/gui/file/f239e4c1c8c227190ff2ef1978002c4e4571ab826f83164a57f7c40a1b053cd2`
+
+Consequence for players: Avast, AVG and WithSecure are common on consumer PCs;
+a friend using one may see an alert and Defender-class quarantine would stop
+`nioh.exe` from starting (it imports `dinput8.dll`). Mitigations are the README
+steps (restore the file, add a folder exclusion, compare the SHA-256), or a
+vendor false-positive report. Only a code-signing certificate would remove the
+heuristic entirely.
