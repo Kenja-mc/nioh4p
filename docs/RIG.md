@@ -173,6 +173,18 @@ Use `proton run` for the actual game. An intermediate `runinprefix` attempt used
 
 If the title animates but ignores XTest input, inspect the compositor output. One stale slot-b session logged `Unhandled event EI_EVENT_SYNC (91)` and `Unhandled libei event!`. A fresh compositor with the native client on Xvfb accepted input. SIGTERM left some old compositors alive on this machine. Make sure that a compositor ended before you launch another one. Also make sure that the Xwayland display and the `gamescope-N` socket are the expected ones, instead of assuming their numbers.
 
+## Windows 11 VM (Defender test)
+
+A Windows 11 Pro VM runs in Docker with `dockurr/windows`. Its disk, OEM script and SSH key live in `~/nioh3p-test/winvm`. No sudo and no Steam account are needed. The OEM script enables OpenSSH, so you can run commands with the key in that folder.
+
+```bash
+docker start nioh3p-winvm                       # boot the VM; the screen is at http://127.0.0.1:8006/
+ssh -i ~/nioh3p-test/winvm/key -p 2222 Docker@127.0.0.1 'Get-MpComputerStatus'   # PowerShell in the VM
+docker stop -t 120 nioh3p-winvm                 # shut it down cleanly
+```
+
+`~/nioh3p-test/winvm/shared` is `\\host.lan\Data` in the VM. The rig copy `lan-a` is mounted read-only under it as `nioh-lan-a`. Programs that need the desktop (for example `nioh.exe`) run through the scheduled task `nioh3p-run`, which starts `C:\Games\run-nioh.bat` in the signed-in session. The VM already has the Visual C++ runtime and the DirectX June 2010 runtime. The game itself stops with code 53 in the VM because no Steam client runs there. Results are in `FINDINGS.md`, "Windows 11 VM test".
+
 ## Operational boundaries
 
 - Never use a broad `pgrep -f … | kill` or `pkill -f …` compound command for cleanup. Its pattern can match the command line of the issuing shell, and it then kills that shell before later copying, logging or launch commands run. Make sure that you own each PID by its rig HOME or prefix, then target those PIDs only.

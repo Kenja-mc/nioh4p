@@ -19,7 +19,7 @@ A "No" entry is still open, and an "N/A" entry does not apply while the filters 
 | Harness (player and research mode, filter drop path, ownership) | Pass |
 | Host name gates, unsupported-build switch-off, preflight line | Pass |
 | Saves untouched | Yes. Checksums before and after are identical. |
-| Real Windows | No. Static checks only (KERNEL32-only imports, PE32+ reloc/NX, no CRT apisets). |
+| Real Windows | Partly. Windows 11 VM: the zip, the harness and `nioh.exe` loaded the mod with Defender at defaults and Smart App Control on, and there were 0 detections. No gameplay in the VM. |
 | Three real Steam accounts over the internet | No |
 | Mission completion, deaths and revives, rewards with three players | No |
 | Community: strangers joining a published session | N/A while the filters are stock |

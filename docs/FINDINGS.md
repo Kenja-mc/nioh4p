@@ -1373,3 +1373,35 @@ earlier heuristic hits remain and Microsoft Defender added
 `Trojan:Win32/Wacatac.C!ml`, its machine-learning generic. The detection list
 changes on small binary changes, so treat the count as a moving number and the
 vendor reports as the fix. Report: https://www.virustotal.com/gui/file/1003e4e73688f9e6af1bd95f3fbf71f5aeb3c756574b2ac27ecf1d7734f550cb
+
+#### Windows 11 VM test of the player build `48415ff0…` (2026-10-21)
+
+The VM is `dockurr/windows` (Windows 11 Pro 10.0.26200, KVM, NAT) with its
+files in `~/nioh3p-test/winvm`. Defender ran at its defaults: real-time,
+behavior and IOAV protection on, cloud reporting on, tamper protection on, and
+no exclusions. The definitions were updated before the test to 1.461.144.0,
+engine 1.1.26090.9. No Steam account was used.
+
+| Step | Result |
+|---|---|
+| Copy and unzip `nioh3p-player.zip` | `dinput8.dll` kept, hash `48415FF0…`, 0 detections |
+| Explorer-style unzip of a zip tagged with Mark of the Web (ZoneId 3) | Tag carried to all three files, 0 detections |
+| Explicit Defender custom scan of the folder | 0 detections |
+| Proxy harness `testgame.exe` with fake Steam and the real EOS SDK | All 6 PASS, `MaxLobbyMembers` clamped to 3, 0 detections |
+| Real `nioh.exe` from the rig LAN copy (Steam and EOS emulators), run from a read-only share | Mod loaded: `preflight: exe=ok eos=3/3 steam=8 game_patch=ok`. Log fell back to `%TEMP%` as designed. 0 detections |
+| Smart App Control set to On (registry, then reboot; `SmartAppControlState=On`) | The tagged `dinput8.dll` loaded in the harness (6 PASS) and in `nioh.exe`. Code Integrity logged no block event |
+
+The game exits with code 53 in this VM after the mod loads. It exits with the
+same code when `dinput8.dll` is absent, so the mod does not cause it. Code 53
+is the game asking a running Steam client to start it (`steam://run/485510//`),
+as on a cold direct launch in the rig (`RIG.md`, "Direct LAN launch status").
+No Steam client runs in the VM, so gameplay there needs a Steam client. A
+fresh Windows also lacks the Visual C++ runtime
+and the DirectX June 2010 runtime (`XINPUT1_3.dll`, `D3DCOMPILER_43.dll`).
+Steam installs both with Nioh. They were installed from Microsoft before the
+game test.
+
+Limits: one machine and one point in time. Defender's cloud verdict can change,
+and the VirusTotal `Wacatac.C!ml` hit on the previous build shows that it does.
+Smart App Control was switched on through the registry, not through the
+Windows Security UI. The mission and multiplayer path did not run in the VM.
