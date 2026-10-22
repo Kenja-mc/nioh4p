@@ -1,20 +1,22 @@
 # False-positive reports for `dinput8.dll` (submitted 2026-10-21)
 
 Six vendors flag the player build.
-All five flags are generic heuristics.
-No sandbox found malicious behavior.
+All six flags are generic heuristics.
+The CAPA and CAPE sandboxes found no malicious behavior.
 Submit the text below to each vendor form with the file, or with its SHA-256 and
 the VirusTotal link.
 Only the vendor can whitelist a hash.
-If the code is signed, this type of detection does not occur.
+A code signature can help a vendor identify the publisher. No vendor source
+says that a signature removes this type of detection.
 
 Shared facts:
 
-- File: `dinput8.dll`, 73,216 bytes, PE32+ x64 DLL.
-- SHA-256: `1003e4e73688f9e6af1bd95f3fbf71f5aeb3c756574b2ac27ecf1d7734f550cb`
-- VirusTotal: https://www.virustotal.com/gui/file/1003e4e73688f9e6af1bd95f3fbf71f5aeb3c756574b2ac27ecf1d7734f550cb
+- File: `dinput8.dll`, 38,400 bytes, PE32+ x64 DLL.
+- SHA-256: `48415ff045d11e34cb8e76ca9fc17afa2c8965b3d4f1c447ad96e01c646223a7`
+- VirusTotal: https://www.virustotal.com/gui/file/48415ff045d11e34cb8e76ca9fc17afa2c8965b3d4f1c447ad96e01c646223a7
+  (upload the file first if this link shows no report).
 - Source: https://github.com/ (project `nioh3p`). The source file is
-  `src/proxy/nioh3p_proxy.c`, 2,900 lines of C. The code uses no CRT and imports
+  `src/proxy/nioh3p_proxy.c`, about 3,150 lines of C. The code uses no CRT and imports
   KERNEL32 only.
 - What it is: an open-source DirectInput 8 proxy for *Nioh: Complete Edition*
   (Steam appid 485510). `nioh.exe` statically imports `dinput8.dll`, so the DLL
@@ -32,12 +34,12 @@ Shared facts:
 ## Avast / AVG: `Win64:Evo-gen [Trj]`
 
 > False positive: a generic heuristic on an unsigned open-source game mod.
-> `dinput8.dll` (SHA-256 1003e4e7…50cb) is a DirectInput 8 proxy for Nioh. It
+> `dinput8.dll` (SHA-256 48415ff0…23a7) is a DirectInput 8 proxy for Nioh. It
 > forwards all DirectInput exports to the system DLL. It adjusts the game's own
 > lobby size in the memory of its own process. It has no network, persistence or
 > injection code. It is inert in every process except nioh.exe. The source is
-> public (C, ~2,900 lines). VirusTotal shows 5/71 with the same generic verdicts
-> and no sandbox findings. Please whitelist the hash or refine the heuristic.
+> public (C, about 3,150 lines). VirusTotal shows only generic verdicts and no
+> sandbox findings. Please whitelist the hash or refine the heuristic.
 
 ## Avira: `TR/W64.Evo`
 
@@ -54,7 +56,7 @@ The text is the same, with the Cynet verdict named in place of the Avast verdict
 ## Microsoft Defender: `Trojan:Win32/Wacatac.C!ml`
 
 > This is a false positive from the Defender machine-learning model. The file
-> (SHA-256 1003e4e73688f9e6af1bd95f3fbf71f5aeb3c756574b2ac27ecf1d7734f550cb) is an unsigned open-source DirectInput 8 proxy for Nioh. It has
+> (SHA-256 48415ff045d11e34cb8e76ca9fc17afa2c8965b3d4f1c447ad96e01c646223a7) is an unsigned open-source DirectInput 8 proxy for Nioh. It has
 > no network, persistence or injection code and is inert outside `nioh.exe`.
 > The source is public. Please review the hash.
 

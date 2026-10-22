@@ -66,8 +66,10 @@ the bytes differ, it skips that change and logs the reason.
 The mod gates each lobby call on its `ApiVersion` value. If the game or the
 EOS SDK sends a different value, the mod forwards the call unchanged.
 
-The mod makes a code location writable for the change, and then sets it back
-to read and execute. No location stays writable and executable.
+For each code change, the mod makes the code location writable for a few
+microseconds. The location stays executable during that time, because other
+game threads can run the code next to it. Then the mod sets it back to read and
+execute. No location stays writable after the change.
 
 To remove the mod, delete `dinput8.dll` and `nioh3p.ini`. The game is stock
 again.
@@ -90,12 +92,12 @@ again.
 
 ## About the antivirus warning
 
-Some antivirus engines flag the file as a generic trojan. Six of 71 engines
-did this on VirusTotal. The names are `Win64:Evo-gen`, `TR/W64.Evo`, `Wacatac.C!ml` and one
-plain `Malicious` score. These names describe groups, not a known malware
-family.
-
-The report is at https://www.virustotal.com/gui/file/1003e4e73688f9e6af1bd95f3fbf71f5aeb3c756574b2ac27ecf1d7734f550cb.
+Some antivirus engines flag the file as a generic trojan. On VirusTotal, six of
+71 engines flagged the previous build, `1003e4e7…`. The names were
+`Win64:Evo-gen`, `TR/W64.Evo`, `Wacatac.C!ml` and one plain `Malicious` score.
+These names describe groups, not a known malware family. The current build,
+`48415ff0…`, is half the size because it leaves out the research code. Its scan
+result is on the download page.
 
 The engines react to three things. The file is unsigned. The file changes code
 in memory. The file name is one that malware also uses for DLL hijacking. All

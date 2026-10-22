@@ -123,14 +123,20 @@ same steps.
 
 ### Building from source
 
-`build.sh` builds `build/dinput8.dll`. The `--harness` flag also builds the fake
-EOS and Steam DLLs and the test harness. Run both commands from the repository
-root.
+`build.sh` builds `build/dinput8.dll`, the player build, and
+`build/research/dinput8.dll`, the research build (trace-only instrumentation and
+image dumps). The `--harness` flag also builds the fake EOS and Steam DLLs and
+the test harness. Run both commands from the repository root.
 
 ```sh
-./build.sh              # build/dinput8.dll
+./build.sh              # build/dinput8.dll + build/research/dinput8.dll
 ./build.sh --harness    # plus the fake EOS/Steam DLLs and the test harness
 ```
+
+The player build leaves the research instrumentation out of the binary. If its
+`nioh3p.ini` sets `trace=1` or a dump key, it logs `config: ... needs the
+research build; ignored` and continues in player mode. `tools/smoketest.sh`
+picks the research DLL whenever the run has trace=1 or asks for an image dump.
 
 `build.sh` uses zig cc (or mingw-w64). It needs `llvm-rc` plus `llvm-cvtres`
 from LLVM for the resource section. If either tool is missing, the build stops
@@ -143,12 +149,15 @@ embedded application manifest (`RT_MANIFEST` id 1: `asInvoker`, Windows 10/11
 `supportedOS`, per-monitor DPI). `tools/pechecksum.py` then writes the PE
 optional-header checksum, which the linker leaves at 0.
 
-Code patches use W^X. The patch code makes the pages `PAGE_READWRITE` for the
-store. It flushes them with `FlushInstructionCache` and sets them to
-`PAGE_EXECUTE_READ` afterwards instead of restoring them as RWX. The log opens
-with `FILE_SHARE_READ` only, so another process cannot rewrite it while the game
-runs. These hardening steps work against generic antivirus heuristics. They are
-not a substitute for code signing. `docs/FINDINGS.md` has the VirusTotal context.
+Code patches keep the page executable during the write. The patch code makes
+the page `PAGE_EXECUTE_READWRITE` for the store (other game threads can execute
+anywhere in that 4 KB page, and a non-executable mapping would fault), calls
+`FlushInstructionCache` and then sets it to `PAGE_EXECUTE_READ`. Data-pointer
+patches (IAT and vtable slots) still use a non-executable `PAGE_READWRITE`
+window, and the log opens with `FILE_SHARE_READ` only, so another process
+cannot rewrite it while the game runs. These hardening steps work against
+generic antivirus heuristics. They are not a substitute for code signing.
+`docs/FINDINGS.md` has the VirusTotal context.
 
 ### Playing (player package)
 

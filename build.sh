@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Builds the nioh3p mod (dinput8 proxy) as a freestanding Windows DLL.
 #
-#   ./build.sh            the proxy only -> build/dinput8.dll
+#   ./build.sh            player build -> build/dinput8.dll, plus the research
+#                         build -> build/research/dinput8.dll
 #   ./build.sh --harness  also the smoke-test artifacts -> build/smoke/
 #
 # Needs a cross compiler. Any of these work:
@@ -62,12 +63,22 @@ fi
     -o build/dinput8.dll src/proxy/nioh3p_proxy.c src/proxy/dinput8.def \
     build/nioh3p.rc.obj
 
+# The research build is the same source with the trace-only instrumentation and
+# the image dumper compiled in (trace=1, dump_image=1). build/dinput8.dll - the
+# player build that tools/package.sh and install.sh ship - never contains them.
+mkdir -p build/research
+"${CC[@]}" -shared -O2 -Wall -nostdlib -DNIOH3P_RESEARCH=1 "${SYSINC[@]}" \
+    -Wl,--entry=DllMain -lkernel32 \
+    -o build/research/dinput8.dll src/proxy/nioh3p_proxy.c src/proxy/dinput8.def \
+    build/nioh3p.rc.obj
+
 # A zero optional-header checksum is a common property of hand-built binaries
 # and one more generic-heuristic signal; recompute it after the link.
 python3 tools/pechecksum.py build/dinput8.dll
+python3 tools/pechecksum.py build/research/dinput8.dll
 
-echo "== built build/dinput8.dll =="
-ls -l build/dinput8.dll
+echo "== built build/dinput8.dll (player) and build/research/dinput8.dll (research) =="
+ls -l build/dinput8.dll build/research/dinput8.dll
 
 [ "${1:-}" = "--harness" ] || exit 0
 

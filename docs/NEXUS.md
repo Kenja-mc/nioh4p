@@ -26,7 +26,7 @@ A "No" entry is still open, and an "N/A" entry does not apply while the filters 
 
 The release candidate is `dinput8.dll` from the zip `dist/nioh3p-player.zip`.
 Its SHA-256 is
-`1003e4e73688f9e6af1bd95f3fbf71f5aeb3c756574b2ac27ecf1d7734f550cb`.
+`48415ff045d11e34cb8e76ca9fc17afa2c8965b3d4f1c447ad96e01c646223a7`.
 Freeze this hash for the release.
 A rebuild resets the VirusTotal reputation and any vendor allowlist.
 
@@ -106,12 +106,12 @@ If it says [font=Courier New]exe=unsupported[/font], your game build differs fro
 the mod left the game unmodified — update the game on all three PCs.
 
 [size=4]Antivirus[/size]
-The DLL is unsigned. VirusTotal reports 6 detections out of 71, all generic
-heuristics ("Evo"/"generic trojan") that any unsigned DLL patching game memory
-receives; no sandbox found malicious behaviour. If your antivirus blocks it,
+The DLL is unsigned. The previous build had 6 detections out of 71 on
+VirusTotal, all generic heuristics ("Evo"/"generic trojan") that an unsigned
+DLL patching game memory receives. No sandbox found malicious behaviour. If your antivirus blocks it,
 restore the file and exclude the game folder, or delete
 [font=Courier New]dinput8.dll[/font] and the game is stock again.
-Report: https://www.virustotal.com/gui/file/1003e4e73688f9e6af1bd95f3fbf71f5aeb3c756574b2ac27ecf1d7734f550cb
+Report: https://www.virustotal.com/gui/file/48415ff045d11e34cb8e76ca9fc17afa2c8965b3d4f1c447ad96e01c646223a7
 
 [size=4]Known limits[/size]
 [list]
@@ -155,7 +155,7 @@ Capture on `<your account>` with two friends or a second PC.
 
 Run every item below before you publish.
 
-- [ ] Freeze the release hash: `1003e4e7…0cb`, or the hash of the final build.
+- [ ] Freeze the release hash: `48415ff0…23a7`, or the hash of the final build.
 - [ ] File the false-positive reports with Avast/AVG, Avira, WithSecure and Cynet
       (`docs/FP_REPORTS.md`). Keep the ticket numbers for the page reply.
 - [ ] Scan the final DLL again on VirusTotal. Put the new link in the description.

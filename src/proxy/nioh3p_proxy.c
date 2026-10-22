@@ -7,10 +7,11 @@
  *
  * What it does (nothing is faked):
  *   1. Forwards every real dinput8 export to the system dinput8.
- *   2. With dump_image=1: waits for VMProtect to decrypt .text, then dumps the
- *      *runtime* module image. nioh.exe ships with an encrypted .text
- *      (entropy 8.0), so the game's code can neither be analysed nor patched
- *      statically - this dump is the prerequisite for any code-level mod.
+ *   2. Research build only, with dump_image=1: waits for VMProtect to decrypt
+ *      .text, then dumps the *runtime* module image. nioh.exe ships with an
+ *      encrypted .text (entropy 8.0), so the game's code can neither be
+ *      analysed nor patched statically - this dump is the prerequisite for any
+ *      code-level mod.
  *   3. Hooks the EOS lobby API and raises MaxLobbyMembers / MaxMembers to the
  *      configured player count. EOSSDK-Win64-Shipping.dll and the game's import
  *      table are not encrypted, so this works without knowing the netcode.
@@ -28,7 +29,13 @@
  * directory GetTempPathA reports, never the Windows directory), so a read-only
  * install still leaves a log.
  *
- * Two modes, selected by the `trace` key in nioh3p.ini:
+ * Two build variants. The default build is the player build that
+ * tools/package.sh and install.sh ship: the trace-only instrumentation and the
+ * image dumper are compiled out entirely. -DNIOH3P_RESEARCH=1 produces the
+ * research build (build/research/dinput8.dll, built by the same ./build.sh).
+ *
+ * Within the research build, two runtime modes are selected by the `trace`
+ * key in nioh3p.ini:
  *   trace=0 (player mode, the default): only the hooks that change behaviour
  *     (lobby capacity, filter drops, force_unlock, the metadata guard) plus
  *     the rare lobby events (create/join/leave) and the numerical search
@@ -57,6 +64,10 @@
 #ifndef EOS_CALL
 #define EOS_CALL __stdcall
 #endif
+
+/* -DNIOH3P_RESEARCH=1 builds the research instrumentation (trace-only hooks,
+ * backtraces, call-site names, image dumper). The player build leaves all of
+ * it out of the binary; build.sh writes it to build/research/dinput8.dll. */
 
 #define MAX_SLOTS  96
 #define MAX_HOOKS  12
@@ -163,7 +174,8 @@ static int atoi_a(const char *s)
     return neg ? -v : v;
 }
 
-/* log2 without libm (entropy diagnostics only) */
+/* log2 without libm (entropy diagnostics only, research build) */
+#ifdef NIOH3P_RESEARCH
 static double log2a(double x)
 {
     if (x <= 0.0)
@@ -178,6 +190,7 @@ static double log2a(double x)
     }
     return (double)e + 2.0 * s / 0.6931471805599453;
 }
+#endif
 
 /* minimal vsnprintf: %[0][width][.prec][l|ll|z](d|i|u|x|X|s|p|c|%) */
 static int vfmt(char *dst, int cap, const char *f, va_list ap)
@@ -613,6 +626,9 @@ static int exe_supported(void)
         image->OptionalHeader.CheckSum == 0x19c00f0;
 }
 
+#ifdef NIOH3P_RESEARCH
+/* The image dumper is research-only: it reads the 27 MB on-disk exe, checks
+ * its entropy and walks the module image. The player build has no use for it. */
 static IMAGE_SECTION_HEADER *find_section(const char *name)
 {
     IMAGE_NT_HEADERS64 *h = nt();
@@ -758,6 +774,7 @@ static void dump_image(const char *tag)
     write_file(mpath, meta, (size_t)n);
     VirtualFree(buf, 0, MEM_RELEASE);
 }
+#endif
 
 /* ---------------------------------------------------------------- hooking */
 
@@ -981,7 +998,9 @@ static int install_hook(const char *dll_name, const char *name, void *target,
 }
 
 /* --------------------------------------------------------- stack backtrace */
+/* Research build only, like every other trace=1 feature. */
 
+#ifdef NIOH3P_RESEARCH
 /* Resolved lazily from ntdll; KERNEL32 alone is not enough here. */
 typedef USHORT (WINAPI *PFN_CaptureStackBackTrace)(ULONG, ULONG, PVOID *, PULONG);
 static PFN_CaptureStackBackTrace g_capture;
@@ -1019,6 +1038,7 @@ static void log_backtrace(const char *what)
     }
     LOG("%s", buf);
 }
+#endif
 
 /* ------------------------------------------------------------- EOS detours */
 
@@ -1076,8 +1096,10 @@ static void EOS_CALL det_CreateLobby(void *handle, const void *opts, void *clien
     } else {
         LOG("EOS_Lobby_CreateLobby: null options");
     }
+#ifdef NIOH3P_RESEARCH
     if (g_cfg.trace)
         log_backtrace("EOS_Lobby_CreateLobby");
+#endif
     orig_CreateLobby(handle, opts, client_data, completion);
 }
 
@@ -1134,6 +1156,9 @@ static int32_t EOS_CALL det_LobbySearchSetParameter(void *handle, const void *op
     return orig_LobbySearchSetParameter(handle, options);
 }
 
+/* EOS_Lobby_JoinLobbyOptions, GetMemberCountOptions, LobbyDetails_Info and
+ * CopyInfoOptions are only read by the trace-only detours below. */
+#ifdef NIOH3P_RESEARCH
 /* EOS_Lobby_JoinLobbyOptions */
 typedef struct {
     int32_t ApiVersion;
@@ -1165,6 +1190,7 @@ typedef struct {
 typedef struct {
     int32_t ApiVersion;
 } CopyInfoOptions;
+#endif
 
 /* EOS_LobbyModification_AddAttributeOptions */
 typedef struct {
@@ -1173,9 +1199,11 @@ typedef struct {
     int32_t  Visibility;
 } AddAttributeOptions;
 
+static int32_t (EOS_CALL *orig_AddAttribute)(void *, const void *);
+
+#ifdef NIOH3P_RESEARCH
 static void (EOS_CALL *orig_JoinLobby)(void *, const void *, void *, const void *);
 static uint32_t (EOS_CALL *orig_GetMemberCount)(void *, const void *);
-static int32_t (EOS_CALL *orig_AddAttribute)(void *, const void *);
 static int32_t (EOS_CALL *orig_CopyInfo)(void *, const void *, void **);
 
 static void EOS_CALL det_JoinLobby(void *handle, const void *opts, void *client_data, const void *completion)
@@ -1216,6 +1244,7 @@ static int32_t EOS_CALL det_CopyInfo(void *handle, const void *opts, void **out_
     }
     return r;
 }
+#endif
 
 /* EOS_EAttributeType */
 #define EOS_AT_BOOLEAN 0
@@ -1280,10 +1309,12 @@ static int32_t EOS_CALL det_AddAttribute(void *handle, const void *opts)
 
 
 /* ---- call-site symbols ---------------------------------------------------
- * The RTTI class map (analysis/classmap.txt) gives every virtual method's
- * address, so a sidecar table lets each hook say *which* game function called
- * it. Loaded lazily from <dll dir>\nioh3p.sites.txt, one "0xRVA name" per line
- * (tools/sites.py writes it). Nothing here is required for the mod to work. */
+ * Research build only. The RTTI class map (analysis/classmap.txt) gives every
+ * virtual method's address, so a sidecar table lets each hook say *which* game
+ * function called it. Loaded lazily from <dll dir>\nioh3p.sites.txt, one
+ * "0xRVA name" per line (tools/sites.py writes it). Nothing here is required
+ * for the mod to work. */
+#ifdef NIOH3P_RESEARCH
 #define MAX_SITES  32768
 #define SITE_NAMES (2u << 20)
 static struct { unsigned rva; unsigned off; } g_sites[MAX_SITES];
@@ -1406,14 +1437,20 @@ static const char *site_exact(void *addr, char *buf, int cap)
     fmt(buf, cap, "exe+0x%x", rva);
     return buf;
 }
+#endif
 
-/* Player mode does not resolve call sites at all: no sites_load(), no line. */
+/* Player mode does not resolve call sites at all: no sites_load(), no line.
+ * The player build does not even carry the tables. */
+#ifdef NIOH3P_RESEARCH
 #define SITE_NOTE(label) do { \
     if (g_cfg.trace) { \
         char sb_[240]; \
         LOG("site: %s from %s", (label), site_at(__builtin_return_address(0), sb_, sizeof sb_)); \
     } \
 } while (0)
+#else
+#define SITE_NOTE(label) ((void)0)
+#endif
 
 /* The matchmaking interface is selected by exact version string and its
  * SteamMatchMaking009 slots are bound explicitly below. */
@@ -1421,15 +1458,21 @@ typedef uint64_t (EOS_CALL *PFN_SteamCreateLobby)(void *, int, int);
 typedef uint8_t  (EOS_CALL *PFN_SteamSetLobbyMemberLimit)(void *, uint64_t, int);
 typedef void *   (EOS_CALL *PFN_FindOrCreate)(void *, const char *);
 typedef int         (EOS_CALL *PFN_SteamSetLobbyData)(void *, uint64_t, const char *, const char *);
+typedef uint64_t    (EOS_CALL *PFN_SteamJoinLobby)(void *, uint64_t);
+typedef void        (EOS_CALL *PFN_SteamLeaveLobby)(void *, uint64_t);
+static void *EOS_CALL det_FindOrCreateInterface(void *, const char *);
+
+static PFN_FindOrCreate orig_FindOrCreate;
+
+/* Trace-only hook signatures and their originals: research build only. */
+#ifdef NIOH3P_RESEARCH
 typedef const char *(EOS_CALL *PFN_SteamGetLobbyData)(void *, uint64_t, const char *);
 typedef int         (EOS_CALL *PFN_SteamGetNumLobbyMembers)(void *, uint64_t);
 typedef int         (EOS_CALL *PFN_SteamGetLobbyMemberLimit)(void *, uint64_t);
 typedef int         (EOS_CALL *PFN_SteamSendLobbyChatMsg)(void *, uint64_t, const void *, int);
-typedef uint64_t    (EOS_CALL *PFN_SteamJoinLobby)(void *, uint64_t);
 typedef int         (EOS_CALL *PFN_SteamRequestLobbyData)(void *, uint64_t);
 typedef int         (EOS_CALL *PFN_SteamGetLobbyDataCount)(void *, uint64_t);
 typedef int         (EOS_CALL *PFN_SteamGetLobbyDataByIndex)(void *, uint64_t, int, char *, int, char *, int);
-typedef void        (EOS_CALL *PFN_SteamLeaveLobby)(void *, uint64_t);
 /* MSVC returns CSteamID through a caller-owned buffer after `this`, unlike
  * the flat exports that unwrap that buffer into a uint64_t return value. */
 typedef uint64_t *  (EOS_CALL *PFN_SteamGetLobbyOwner)(void *, uint64_t *, uint64_t);
@@ -1438,7 +1481,6 @@ typedef void        (EOS_CALL *PFN_SteamRegisterCallback)(void *, int);
 typedef void        (EOS_CALL *PFN_SteamRegisterCallResult)(void *, uint64_t);
 typedef void        (EOS_CALL *PFN_CallbackRun)(void *, void *, uint8_t, uint64_t);
 
-static PFN_FindOrCreate orig_FindOrCreate;
 static void *orig_RegisterCallback;
 static void *orig_RegisterCallResult;
 static void *orig_ExitProcess;
@@ -1460,29 +1502,32 @@ static int __stdcall det_TerminateProcess(void *h, unsigned int code)
     LOG("EXIT: TerminateProcess(handle=%p, %u) from %p", h, code, ret);
     return ((int (__stdcall *)(void *, unsigned int))orig_TerminateProcess)(h, code);
 }
+#endif
 
 static uint64_t EOS_CALL det_SteamCreateLobby(void *, int, int);
 static uint8_t EOS_CALL det_SteamSetLobbyMemberLimit(void *, uint64_t, int);
 static int EOS_CALL det_SteamSetLobbyData(void *, uint64_t, const char *, const char *);
+static uint64_t EOS_CALL det_SteamJoinLobby(void *, uint64_t);
+static void EOS_CALL det_SteamLeaveLobby(void *, uint64_t);
+static void EOS_CALL det_SteamAddStringFilter(void *, const char *, const char *, int);
+static void EOS_CALL det_SteamAddNumericalFilter(void *, const char *, int, int);
+static void EOS_CALL det_SteamAddSlotsFilter(void *, int);
+
+#ifdef NIOH3P_RESEARCH
 static const char *EOS_CALL det_SteamGetLobbyData(void *, uint64_t, const char *);
 static int EOS_CALL det_SteamGetNumLobbyMembers(void *, uint64_t);
 static int EOS_CALL det_SteamGetLobbyMemberLimit(void *, uint64_t);
 static int EOS_CALL det_SteamSendLobbyChatMsg(void *, uint64_t, const void *, int);
-static uint64_t EOS_CALL det_SteamJoinLobby(void *, uint64_t);
 static int EOS_CALL det_SteamRequestLobbyData(void *, uint64_t);
 static int EOS_CALL det_SteamGetLobbyDataCount(void *, uint64_t);
 static int EOS_CALL det_SteamGetLobbyDataByIndex(void *, uint64_t, int, char *, int, char *, int);
-static void EOS_CALL det_SteamLeaveLobby(void *, uint64_t);
 static uint64_t *EOS_CALL det_SteamGetLobbyOwner(void *, uint64_t *, uint64_t);
 static uint64_t *EOS_CALL det_SteamGetLobbyMemberByIndex(void *, uint64_t *, uint64_t, int);
 static int EOS_CALL det_SteamInviteUserToLobby(void *, uint64_t, uint64_t);
 static const char *EOS_CALL det_SteamGetLobbyMemberData(void *, uint64_t, uint64_t, const char *);
 static int EOS_CALL det_SteamSetLobbyMemberData(void *, uint64_t, const char *, const char *);
 static uint64_t EOS_CALL det_SteamRequestLobbyList(void *);
-static void EOS_CALL det_SteamAddStringFilter(void *, const char *, const char *, int);
-static void EOS_CALL det_SteamAddNumericalFilter(void *, const char *, int, int);
 static void EOS_CALL det_SteamAddNearValueFilter(void *, const char *, int);
-static void EOS_CALL det_SteamAddSlotsFilter(void *, int);
 static void EOS_CALL det_SteamAddDistanceFilter(void *, int);
 static void EOS_CALL det_SteamAddResultCountFilter(void *, int);
 static void EOS_CALL det_SteamAddCompatibleFilter(void *, uint64_t);
@@ -1508,7 +1553,7 @@ static int EOS_CALL det_SockClose(void *, int, int, const char *, int);
 static void EOS_CALL det_RegisterCallback(void *, int);
 static void EOS_CALL det_RegisterCallResult(void *, uint64_t);
 static void EOS_CALL det_CallbackRun(void *, void *, uint8_t, uint64_t);
-static void *EOS_CALL det_FindOrCreateInterface(void *, const char *);
+#endif
 
 /* Slots below use zero-based vtable indices from the versioned Steam headers
  * and the game-image call-site map. SteamHook stores them one-based so zero
@@ -1527,9 +1572,17 @@ typedef struct {
 #define STEAM_HOOK(name, target, index) \
     { name, (void *)(uintptr_t)target, (index) + 1, 0, 0, 0 }
 /* Observational hooks: not installed at all in player mode, so the game's
- * network path never enters the proxy. */
+ * network path never enters the proxy. The player build keeps the array entry
+ * (the behaviour hooks after it are addressed by position) but with neither a
+ * detour nor a vtable slot, so the entry is inert and its detour is not
+ * compiled in. */
+#ifdef NIOH3P_RESEARCH
 #define STEAM_TRACE_HOOK(name, target, index) \
     { name, (void *)(uintptr_t)target, (index) + 1, 1, 0, 0 }
+#else
+#define STEAM_TRACE_HOOK(name, target, index) \
+    { name, 0, 0, 1, 0, 0 }
+#endif
 
 /* SteamMatchMaking009 */
 static SteamHook g_steam[] = {
@@ -1562,6 +1615,9 @@ static SteamHook g_steam[] = {
 };
 #define NSTEAM (int)(sizeof g_steam / sizeof g_steam[0])
 
+/* SteamFriends017, SteamNetworking006 and SteamNetworkingSockets009 are
+ * observation only: trace=1 in the research build, absent in the player build. */
+#ifdef NIOH3P_RESEARCH
 /* SteamFriends017 */
 enum { FR_COUNT, FR_BYINDEX, FR_GAMEPLAYED, FR_STATE, FR_RICHP, FR_RPCOUNT, FR_RPKEY, FR_NAME, NFRIENDS };
 static SteamHook g_friends[] = {
@@ -1594,10 +1650,12 @@ static SteamHook g_sockets[] = {
     STEAM_TRACE_HOOK("SendMessageToConnection", det_SockSend, 11),
     STEAM_TRACE_HOOK("CloseConnection", det_SockClose, 5),
 };
+#endif
 
 /* How many vtable methods this mode configures, for the startup mode line. */
 static int steam_method_count(void)
 {
+#ifdef NIOH3P_RESEARCH
     SteamHook *tbls[] = { g_steam, g_friends, g_networking, g_sockets };
     const int sizes[] = { NSTEAM, NFRIENDS, NNET, NSOCK };
     int n = 0;
@@ -1606,6 +1664,13 @@ static int steam_method_count(void)
             if (tbls[t][i].slot_index && (g_cfg.trace || !tbls[t][i].trace_only))
                 n++;
     return n;
+#else
+    int n = 0;
+    for (int i = 0; i < NSTEAM; i++)
+        if (g_steam[i].slot_index && !g_steam[i].trace_only)
+            n++;
+    return n;               /* identical to the research build at trace=0 */
+#endif
 }
 
 static void steam_apply_table(void *iface, SteamHook *tbl, int n);
@@ -1681,8 +1746,10 @@ static uint64_t EOS_CALL det_SteamCreateLobby(void *self, int lobby_type, int ma
         LOG("Steam CreateLobby: raising cMaxMembers %d -> %u", max_members, g_cfg.max_players);
         max_members = (int)g_cfg.max_players;
     }
+#ifdef NIOH3P_RESEARCH
     if (g_cfg.trace)
         log_backtrace("Steam_ISteamMatchmaking::CreateLobby");
+#endif
     PFN_SteamCreateLobby o = (PFN_SteamCreateLobby)g_steam[0].orig;
     return o ? o(self, lobby_type, max_members) : 0;
 }
@@ -1696,8 +1763,10 @@ static uint8_t EOS_CALL det_SteamSetLobbyMemberLimit(void *self, uint64_t lobby,
         LOG("Steam SetLobbyMemberLimit: raising %d -> %u", max_members, g_cfg.max_players);
         max_members = (int)g_cfg.max_players;
     }
+#ifdef NIOH3P_RESEARCH
     if (g_cfg.trace)
         log_backtrace("Steam_ISteamMatchmaking::SetLobbyMemberLimit");
+#endif
     PFN_SteamSetLobbyMemberLimit o = (PFN_SteamSetLobbyMemberLimit)g_steam[1].orig;
     return o ? o(self, lobby, max_members) : 0;
 }
@@ -1725,6 +1794,7 @@ static int EOS_CALL det_SteamSetLobbyData(void *self, uint64_t lobby, const char
     return o ? o(self, lobby, key, use) : 0;
 }
 
+#ifdef NIOH3P_RESEARCH
 static const char *EOS_CALL det_SteamGetLobbyData(void *self, uint64_t lobby, const char *key)
 {
     SITE_NOTE("SteamGetLobbyData");
@@ -1751,6 +1821,7 @@ static int EOS_CALL det_SteamGetLobbyMemberLimit(void *self, uint64_t lobby)
     LOG("Steam GetLobbyMemberLimit -> %d", n);
     return n;
 }
+#endif
 
 static uint64_t EOS_CALL det_SteamJoinLobby(void *self, uint64_t lobby)
 {
@@ -1759,11 +1830,14 @@ static uint64_t EOS_CALL det_SteamJoinLobby(void *self, uint64_t lobby)
     PFN_SteamJoinLobby o = (PFN_SteamJoinLobby)g_steam[7].orig;
     uint64_t call = o ? o(self, lobby) : 0;
     LOG("Steam JoinLobby -> call %llu", (unsigned long long)call);
+#ifdef NIOH3P_RESEARCH
     if (g_cfg.trace)
         log_backtrace("Steam JoinLobby");
+#endif
     return call;
 }
 
+#ifdef NIOH3P_RESEARCH
 static int EOS_CALL det_SteamRequestLobbyData(void *self, uint64_t lobby)
 {
     SITE_NOTE("SteamRequestLobbyData");
@@ -1810,6 +1884,7 @@ static uint64_t *EOS_CALL det_SteamGetLobbyMemberByIndex(void *self, uint64_t *o
     LOG("Steam GetLobbyMemberByIndex[%d] -> %llu", index, (unsigned long long)*result);
     return result;
 }
+#endif
 
 static void EOS_CALL det_SteamLeaveLobby(void *self, uint64_t lobby)
 {
@@ -1820,6 +1895,7 @@ static void EOS_CALL det_SteamLeaveLobby(void *self, uint64_t lobby)
         o(self, lobby);
 }
 
+#ifdef NIOH3P_RESEARCH
 static int EOS_CALL det_SteamSendLobbyChatMsg(void *self, uint64_t lobby, const void *data, int len)
 {
     SITE_NOTE("SteamSendLobbyChatMsg");
@@ -1832,7 +1908,9 @@ static int EOS_CALL det_SteamSendLobbyChatMsg(void *self, uint64_t lobby, const 
     PFN_SteamSendLobbyChatMsg o = (PFN_SteamSendLobbyChatMsg)g_steam[6].orig;
     return o ? o(self, lobby, data, len) : 0;
 }
+#endif
 
+#ifdef NIOH3P_RESEARCH
 /* ------------------------------------------------- Steam callback plumbing ---
  * SteamAPI_RegisterCallback hands us the game's CCallback<Class, Payload> object;
  * slot 0 is Run(void *pvParam, bool ioFailure, SteamAPICall_t call). It must
@@ -1960,6 +2038,7 @@ static int EOS_CALL det_SteamSetLobbyMemberData(void *self, uint64_t lobby, cons
         (unsigned long long)lobby, key ? key : "", value ? value : "", r);
     return r;
 }
+#endif
 
 /* ---- ISteamMatchmaking: the lobby-list search behind "search for a friend" ---- */
 static const char *lobby_cmp_name(int c)
@@ -1975,6 +2054,7 @@ static const char *lobby_cmp_name(int c)
     }
 }
 
+#ifdef NIOH3P_RESEARCH
 static uint64_t EOS_CALL det_SteamRequestLobbyList(void *self)
 {
     uint64_t r = g_steam[17].orig ? ((uint64_t EOS_CALL (*)(void *))g_steam[17].orig)(self) : 0;
@@ -1983,6 +2063,7 @@ static uint64_t EOS_CALL det_SteamRequestLobbyList(void *self)
         (unsigned long long)r);
     return r;
 }
+#endif
 
 /* Player-mode filter visibility. The search filters are the only place a
  * Secret Word can hide, and a player cannot run trace=1: the first eight
@@ -2032,6 +2113,7 @@ static void EOS_CALL det_SteamAddNumericalFilter(void *self, const char *key, in
         ((void EOS_CALL (*)(void *, const char *, int, int))g_steam[19].orig)(self, key, value, cmp);
 }
 
+#ifdef NIOH3P_RESEARCH
 static void EOS_CALL det_SteamAddNearValueFilter(void *self, const char *key, int value)
 {
     SITE_NOTE("AddRequestLobbyListNearValueFilter");
@@ -2039,6 +2121,7 @@ static void EOS_CALL det_SteamAddNearValueFilter(void *self, const char *key, in
     if (g_steam[20].orig)
         ((void EOS_CALL (*)(void *, const char *, int))g_steam[20].orig)(self, key, value);
 }
+#endif
 
 static void EOS_CALL det_SteamAddSlotsFilter(void *self, int slots)
 {
@@ -2058,6 +2141,7 @@ static void EOS_CALL det_SteamAddSlotsFilter(void *self, int slots)
         ((void EOS_CALL (*)(void *, int))g_steam[21].orig)(self, slots);
 }
 
+#ifdef NIOH3P_RESEARCH
 static void EOS_CALL det_SteamAddDistanceFilter(void *self, int distance)
 {
     SITE_NOTE("AddRequestLobbyListDistanceFilter");
@@ -2277,15 +2361,19 @@ static int EOS_CALL det_SockClose(void *self, int conn, int reason, const char *
     LOG("Steam sockets: CloseConnection(conn=%d reason=%d) -> %d", conn, reason, r);
     return r;
 }
+#endif
 
 static void *EOS_CALL det_FindOrCreateInterface(void *user, const char *version)
 {
     void *iface = orig_FindOrCreate ? orig_FindOrCreate(user, version) : 0;
+#ifdef NIOH3P_RESEARCH
     if (g_cfg.trace)
         LOG("Steam FindOrCreateUserInterface(\"%s\") -> %p", version ? version : "(null)", iface);
+#endif
     if (iface && version) {
         if (!strcmp(version, "SteamMatchMaking009")) {
             steam_apply_table(iface, g_steam, NSTEAM);
+#ifdef NIOH3P_RESEARCH
             if (g_cfg.trace)
                 log_backtrace("Steam matchmaking interface");
         } else if (g_cfg.trace && !strcmp(version, "SteamFriends017")) {
@@ -2295,6 +2383,7 @@ static void *EOS_CALL det_FindOrCreateInterface(void *user, const char *version)
             steam_apply_table(iface, g_sockets, NSOCK);
         } else if (g_cfg.trace && !strcmp(version, "SteamNetworking006")) {
             steam_apply_table(iface, g_networking, NNET);
+#endif
         }
     }
     return iface;
@@ -2312,6 +2401,7 @@ static void install_steam_hooks(void)
     /* Version strings and vtable slots are bound explicitly in the interface
      * dispatch above; unsupported Steam interfaces pass through untouched. */
     FARPROC f;
+#ifdef NIOH3P_RESEARCH
     if (g_cfg.trace) {
         /* Callback watching and exit tracing are instrumentation only. */
         f = GetProcAddress(st, "SteamAPI_RegisterCallback");
@@ -2331,6 +2421,7 @@ static void install_steam_hooks(void)
             install_hook("kernel32.dll", "TerminateProcess", (void *)f,
                          (void *)(uintptr_t)det_TerminateProcess, (void **)&orig_TerminateProcess);
     }
+#endif
 
     /* The proxy is mapped before the game's entry point, so the interface lookup
      * that hands the game its matchmaking object always passes through here. */
@@ -2357,12 +2448,14 @@ typedef struct {
 static EosHook g_eos_tbl[] = {
     { "EOS_Lobby_CreateLobby",               (void *)(uintptr_t)det_CreateLobby,    (void **)&orig_CreateLobby,    0 },
     { "EOS_LobbyModification_SetMaxMembers", (void *)(uintptr_t)det_SetMaxMembers,  (void **)&orig_SetMaxMembers,  0 },
-    { "EOS_Lobby_JoinLobby",                 (void *)(uintptr_t)det_JoinLobby,      (void **)&orig_JoinLobby,      1 },
-    { "EOS_LobbyDetails_GetMemberCount",     (void *)(uintptr_t)det_GetMemberCount, (void **)&orig_GetMemberCount, 1 },
     { "EOS_LobbySearch_SetParameter",        (void *)(uintptr_t)det_LobbySearchSetParameter,
                                                                                       (void **)&orig_LobbySearchSetParameter, 0 },
     { "EOS_LobbyModification_AddAttribute",  (void *)(uintptr_t)det_AddAttribute,   (void **)&orig_AddAttribute,   0 },
+#ifdef NIOH3P_RESEARCH
+    { "EOS_Lobby_JoinLobby",                 (void *)(uintptr_t)det_JoinLobby,      (void **)&orig_JoinLobby,      1 },
+    { "EOS_LobbyDetails_GetMemberCount",     (void *)(uintptr_t)det_GetMemberCount, (void **)&orig_GetMemberCount, 1 },
     { "EOS_LobbyDetails_CopyInfo",           (void *)(uintptr_t)det_CopyInfo,       (void **)&orig_CopyInfo,       1 },
+#endif
 };
 #define NEOS (int)(sizeof g_eos_tbl / sizeof g_eos_tbl[0])
 
@@ -2441,8 +2534,10 @@ static void install_eos_hooks(void)
         return;                 /* not mapped yet: no entry to retry */
     if (!g_eos_polls++) {
         LOG("eos: EOSSDK module at %p", (void *)eos);
+#ifdef NIOH3P_RESEARCH
         if (g_cfg.trace)
             bt_resolve();
+#endif
     }
     for (int i = 0; i < NEOS; i++) {
         EosHook *h = &g_eos_tbl[i];
@@ -2588,9 +2683,11 @@ static void install_game_metadata_guard(void)
     memcpy(&have.lo, patch, 8);
     memcpy(&have.hi, patch + 8, 8);
     DWORD old;
-    /* W^X and AV heuristics: write code through a non-executable RW mapping,
-     * flush, then leave the page explicitly RX instead of restoring RWX. */
-    if (!VirtualProtect(site, sizeof patch, PAGE_READWRITE, &old)) {
+    /* Keep the page executable for the whole write window: other game threads
+     * may be running code anywhere in this 4 KB page, and a non-executable
+     * page faults (DEP) there. The page is RWX only for the cmpxchg16b and the
+     * flush, then explicitly RX again. */
+    if (!VirtualProtect(site, sizeof patch, PAGE_EXECUTE_READWRITE, &old)) {
         LOG("game metadata guard: cannot make publisher writable (err %lu)", GetLastError());
         return;
     }
@@ -2675,8 +2772,11 @@ static void install_game_visitor_allowance(void)
         const AllowanceSite *s = &g_allowance_sites[i];
         uint8_t *imm = g_base + s->rva + s->imm;
         DWORD old;
-        /* W^X and AV heuristics: RW for the write, then RX again - never RWX. */
-        if (!VirtualProtect(imm, 1, PAGE_READWRITE, &old)) {
+        /* The page must stay executable while the immediate is stored: another
+         * game thread can execute anywhere in this 4 KB page, and a
+         * non-executable mapping would fault (DEP). RWX only for the store and
+         * the flush, then RX again. */
+        if (!VirtualProtect(imm, 1, PAGE_EXECUTE_READWRITE, &old)) {
             LOG("game visitor allowance: cannot write %#x (err %lu)", s->rva, GetLastError());
             continue;
         }
@@ -2745,6 +2845,29 @@ static DWORD WINAPI worker(LPVOID unused)
     }
     LOG(manifest_resource_present(self) ? "build: resource manifest present"
                                         : "build: no manifest resource");
+#ifndef NIOH3P_RESEARCH
+    /* Player build: the trace-only instrumentation and the dumper are not in
+     * this binary. Report an ini that asks for them and continue in player
+     * mode with all instrumented settings off. */
+    if (g_cfg.trace) {
+        LOG("config: trace=%d needs the research build; ignored", g_cfg.trace);
+        g_cfg.trace = 0;
+    }
+    if (g_cfg.dump_image) {
+        LOG("config: dump_image=%d needs the research build; ignored", g_cfg.dump_image);
+        g_cfg.dump_image = 0;
+    }
+    if (g_cfg.redump_after_s) {
+        LOG("config: redump_after_s=%d needs the research build; ignored",
+            g_cfg.redump_after_s);
+        g_cfg.redump_after_s = 0;
+    }
+    if (g_cfg.dump_every_s) {
+        LOG("config: dump_every_s=%d needs the research build; ignored",
+            g_cfg.dump_every_s);
+        g_cfg.dump_every_s = 0;
+    }
+#endif
     cfg_report();
 
     g_base = (uint8_t *)GetModuleHandleA(NULL);
@@ -2768,6 +2891,7 @@ static DWORD WINAPI worker(LPVOID unused)
         mod_active = 0;
     }
 
+#ifdef NIOH3P_RESEARCH
     /* The on-disk copy exists only for the dump trigger: player mode never
      * reads the 27 MB nioh.exe. */
     char exe[MAX_PATH];
@@ -2785,6 +2909,7 @@ static DWORD WINAPI worker(LPVOID unused)
                     entropy(disk + s->PointerToRawData, 0x10000));
         }
     }
+#endif
 
     /* hooks first: they are cheap and must be in place before the game opens
      * its first lobby, while the image dump can take a moment */
@@ -2861,6 +2986,7 @@ static DWORD WINAPI worker(LPVOID unused)
             LOG("preflight: INCOMPLETE %s", why);
     }
 
+#ifdef NIOH3P_RESEARCH
     if (g_cfg.dump_image) {
         int waited = 0;
         while (disk && waited < 60000) {
@@ -2889,11 +3015,14 @@ static DWORD WINAPI worker(LPVOID unused)
             }
         }
     }
-    /* the allowance poll can wait up to 10 minutes; keep it from delaying dumps */
+#endif
+    /* the allowance poll can wait up to 10 minutes; run it after the dumps */
     if (g_cfg.hook_eos && mod_active)
         install_game_visitor_allowance();
+#ifdef NIOH3P_RESEARCH
     if (disk)
         VirtualFree(disk, 0, MEM_RELEASE);
+#endif
 
     if (g_cfg.hook_eos && mod_active) {
         for (int i = 0; i < 24; i++) {          /* 2 minutes of restoration watch */

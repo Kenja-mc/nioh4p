@@ -8,7 +8,8 @@ Git does not track `build/`, `dist/` or `.local/`.
 
 - `dist/nioh3p-player.zip` holds `dinput8.dll`, `nioh3p.ini` and the player
   `README.md`. The DLL SHA-256 is
-  `1003e4e73688f9e6af1bd95f3fbf71f5aeb3c756574b2ac27ecf1d7734f550cb`.
+  `48415ff045d11e34cb8e76ca9fc17afa2c8965b3d4f1c447ad96e01c646223a7` (player
+  build, 38,400 bytes). The research build is `build/research/dinput8.dll`.
   Rebuild the zip with `tools/package.sh`. The zip hash changes with every build.
 - The real Steam folder
   (`~/.local/share/Steam/steamapps/common/Nioh`) has the same DLL and the player

@@ -9,6 +9,9 @@
 # Env: NIOH3P_TRACE (default 1 for proxy/ownership, 0 for game),
 #      NIOH3P_DUMP (dump_image, default 1, game only),
 #      NIOH3P_DUMP_EVERY (dump_every_s, default 8, game only).
+# The run uses build/research/dinput8.dll when the effective trace is 1 or a
+# dump is requested, and the player build build/dinput8.dll otherwise. It
+# prints which one it copied.
 # The harness's "filter pass-through" PASS lines exist in player mode only:
 #   NIOH3P_TRACE=0 tools/smoketest.sh proxy
 # (trace=1 logs every filter call in full instead and makes the harness print
@@ -23,7 +26,28 @@ MODE="${1:-proxy}"
 SMOKE="${SMOKE_DIR:-$HOME/.cache/nioh3p/smoke}"
 
 mkdir -p "$SMOKE/game" "$SMOKE/pfx"
-cp -f "$ROOT/build/dinput8.dll" "$SMOKE/game/"
+case "$MODE" in
+  proxy|ownership)
+    EFFECTIVE_TRACE="${NIOH3P_TRACE:-1}"
+    EFFECTIVE_DUMP=0
+    ;;
+  game)
+    EFFECTIVE_TRACE="${NIOH3P_TRACE:-0}"
+    EFFECTIVE_DUMP="${NIOH3P_DUMP:-1}"
+    ;;
+  *) echo "usage: $0 proxy|game|ownership" >&2; exit 2 ;;
+esac
+if [ "$EFFECTIVE_TRACE" = "1" ] ||
+   { [ "$MODE" = "game" ] && [ "$EFFECTIVE_DUMP" != "0" ]; }; then
+    DLL="$ROOT/build/research/dinput8.dll"
+    DLL_KIND=research
+else
+    DLL="$ROOT/build/dinput8.dll"
+    DLL_KIND=player
+fi
+[ -f "$DLL" ] || { echo "$DLL missing; run ./build.sh first" >&2; exit 1; }
+echo "--- using $DLL ($DLL_KIND build) ---"
+cp -f "$DLL" "$SMOKE/game/"
 cp -f "$ROOT/nioh3p.ini" "$SMOKE/game/"
 # The harness modes exercise the full research instrumentation by default; the
 # game run defaults to player mode with image dumps, as tools/quiet.sh game does.
