@@ -82,6 +82,110 @@ Stored authentication may or may not survive cloning/restarting. Both accounts
 required QR authentication in the first run. A QR authorizes the account selected
 in the mobile app; a pre-filled desktop username does not bind the QR to it.
 
+## Decision-model driver
+
+`tools/rig/coop.py` replaces OCR menu matching with a screenshot → decision
+model → deterministic key table loop. The model only reports what it sees
+(`screen`, `highlight`, and the predicates `pray_prompt` and `coop_partner`); a
+per-state table sends keys only from the verified recipes, so an unclear frame
+cannot turn into an improvised keypress.
+
+Two backends, chosen with `--backend {mercury,luna}` or `COOP_BACKEND`
+(default `mercury`):
+
+- `mercury` — OpenRouter Mercury Decide (`inception/mercury-decide:free`, free
+  tier, rate limited) at `https://openrouter.ai/api/alpha/decisions`. Choices
+  are sent as `criteria` maps, predicates as `noul` questions.
+- `luna` — Experiential Labs Decisions (`gpt-6-luna-decisions`) with named
+  questions/choices and `probability` answers.
+
+`--model` overrides the backend's model id. Both responses are normalized to
+the same decision dict; the JSONL trace records `backend`, `model` and the
+per-request `usage` (`input_tokens`, `output_tokens`, `cost`).
+
+Environment variables:
+
+- `OPENROUTER_API_KEY`, or `OPENROUTER_ENV_FILE` naming a file that holds an
+  `OPENROUTER_API_KEY=` line (backend `mercury`).
+- `EXPLABS_API_KEY`, or `EXPLABS_KEY_FILE` naming a file that holds it
+  (backend `luna`).
+
+Keys are never logged or printed. One request per step, re-shot once if a
+choice falls below 0.6 confidence; if it is still below 0.6, `screen` degrades
+to `other` (wait) and `highlight` to `uncertain` (no Return rule matches, so
+only safe moves and waits fire), with the raw choice and confidence kept in the
+trace. Every step appends one JSON line to
+`$RIG/shots/coop-<timestamp>.jsonl` (screenshot, answers, action, latency) and
+prints a one-line summary.
+
+Accuracy on rig screenshots: Mercury Decide classified 7/7 screens and 6/6
+highlighted items, and rejected 3/3 mission-node negatives (a mission node was
+never mistaken for STARTING POINT), at roughly 1.2 s per request on the free
+tier.
+
+```sh
+python3 tools/rig/coop.py host b
+python3 tools/rig/coop.py visit a
+python3 tools/rig/coop.py visit c --relieve a
+python3 tools/rig/coop.py run --host b --visitors a c   # offer, A, then C (A paused)
+python3 tools/rig/coop.py host b --dry-run              # perceive + print action only
+python3 tools/rig/coop.py visit a --backend luna        # use Experiential Labs
+```
+
+Safety rules:
+
+- On the title menu, `Return` is sent only when `highlight` is `continue` with
+  confidence ≥ 0.9; `new_game` gets `Down`, `load_or_system` gets `Up`, and
+  anything else (including `uncertain`) waits 1.5 s. This keeps a run from
+  starting a new game.
+- On `world_map`, `Return` is sent only when `highlight` is
+  `starting_point_node` with confidence ≥ 0.9. Every other world-map frame gets
+  `BackSpace`: the footer's `B: STARTING POINT` binding jumps the cursor onto
+  the starting point instead of cycling node by node. This prevents a visitor
+  from starting a solo mission.
+- A visitor confirms a `dialog` only when `highlight` is `confirm_button`
+  (the boot autosave notice); every other dialog frame is cancelled with
+  `BackSpace`, because the recipe never needs YES and a stray one could start a
+  solo mission. The host keeps confirming dialogs with `Return`.
+- The host taps `w` at most once per run (300 ms) when `in_mission` shows no
+  PRAY prompt, then waits 1 s and re-perceives; after 4 such perceptions it
+  taps `w` for 150 ms once more, then fails with a clear message rather than
+  walking away from the shrine.
+- A visitor that shows `in_mission` without a new `Steam JoinLobby:` log line is
+  reported and the run stops; there is no automatic recovery from a solo
+  mission.
+- Once a visitor's `Steam JoinLobby:` line exists, the driver sends no keys at
+  all: every screen waits 3 s until success or timeout. The world map can
+  reappear during the join load, where `Return` would be unsafe.
+- After any `Return`, an unchanged `(screen, highlight)` gets a 1.5 s wait
+  instead of another `Return`; the key is resent only after 3 unchanged
+  perceptions (the game may have dropped it). This applies to both tables.
+- The host offering is confirmed by a new
+  `Steam_ISteamMatchmaking::CreateLobby` line in `$RIG/lan-b/nioh3p.log` **and**
+  a later `in_mission` frame, not by the menu closing. Once that line exists
+  the host never sends `Return` again: every non-gameplay frame gets
+  `BackSpace` until the mission is visible.
+- On the Summon Visitor plaque the host sends `Return` at most twice per run
+  (offer + confirm); after that the state gets `BackSpace` or a wait. The
+  `summon_status` panel (`Invoke Visitor … A: STOP OFFERING, B: BACK`) is
+  always exited with `BackSpace`, never `Return`, so the offer is not stopped.
+- `--relieve` pauses the *other* visitor's `nioh.exe` (matched by rig HOME) with
+  `SIGSTOP` for 5 s, then sends `SIGCONT` and waits 2 s **after every step of
+  the visitor run**, starting with the first; `SIGCONT` runs from a `finally`
+  block. This starves the iGPU less, so the visitor's game stops dropping keys.
+  The host is never paused.
+- The no-progress guard counts only steps that actually sent a key (debounce
+  waits and other waits do not count): six keys with the same
+  `(screen, highlight)` end the run, as do 60 steps or the 600 s wall clock
+  (`--timeout`), instead of guessing more keys.
+
+Cost and latency: Mercury Decide (free) bills nothing and the free tier is rate
+limited; the Luna Decisions API is input-only at $0.10 per 1M input tokens
+(OpenAI pricing). Each step sends one 1280×720 PNG plus a short prompt and four
+questions: about 1.2 s per request on Mercury, 1–3 s on Luna. A three-client run
+is on the order of 40–60 requests, dominated by game loading rather than API
+time.
+
 ## Verified on this machine
 
 | what | evidence |
@@ -222,8 +326,8 @@ stayed in co-op. Evidence and remaining gaps are in `FINDINGS.md`
   cut a join to 33 s.
 - Slots `lan-a`, `lan-b` and `lan-c` now run the contents of
   `dist/nioh3p-player.zip` unchanged: `dinput8.dll` (SHA-256
-  `fd4a58249fdadb208e1f10124cb786f8108f207876d278089e3f9b5dffe2df1c`, the
-  Windows-safety build; the earlier `b66d2958…` build passed the same run) and the
+  `502c55081dc0336fd292486f990d6b6b1f0098a078dbbb752cde6190fa08cb9a`, the lean
+  build; the earlier `b66d2958…` and `fd4a5824…` builds passed the same run) and the
   player `nioh3p.ini` (CRLF, `trace=0`, empty `out_dir`), so each slot's log is
   `lan-*/nioh3p.log` with the previous launch in `nioh3p.prev.log`. The
   research configs were kept as `lan-*/nioh3p.ini.rig-research`. With this build
@@ -236,9 +340,13 @@ stayed in co-op. Evidence and remaining gaps are in `FINDINGS.md`
   The research build grew ~120 KB/s on the host. Safety-build evidence:
   `shots/safe-b-3p.png` (host sees both visitors), `shots/safe-c-after.png`
   (C in co-op after moving and attacking).
+- `tools/rig/coop.py run --host b --visitors a c` took all three cold-booted
+  slots into one mission with no manual input: 6 min 17 s, 72 Mercury Decide
+  decisions (B 25, A 26, C 21 with A relieved), trace
+  `shots/coop-20261021-194424.jsonl`, host view `shots/drv-final-b-3p.png`.
 - If a visitor accidentally starts a solo mission from the map, leave it with
   Items → **Himorogi Fragment** → Use. That forfeits Amrita gained in the
-  mission. Then press Right on the map until **Starting Point** is selected.
+  mission. On the world map, `BackSpace` jumps the cursor to **Starting Point**.
 - Read-only rig probes in `$RIG/tools-tmp` (freestanding Win64; run each with
   `proton runinprefix` from the target slot's HOME/prefix environment):
   `admission-poll3.exe` (10 ms poller for session root, slots, allowance and

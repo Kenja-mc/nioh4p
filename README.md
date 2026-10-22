@@ -29,6 +29,10 @@ have not been tested.
 | `tools/smoketest.sh` | runs the harness or a copy of `nioh.exe` under Proton in a throwaway prefix |
 | `tools/quiet.sh` | runs the smoke tests *without disturbing the desktop* (idle gate, offscreen display, capped cgroup) |
 | `tools/quiet-launch.sh` | Steam launch-option wrapper: normal play as before, headless gamescope when a flag file is armed |
+| `tools/package.sh` | builds `dist/nioh3p-player.zip` (DLL, player ini, player README) |
+| `tools/rig/coop.py` | headless 3-instance rig driver: screenshot → decision model (Mercury Decide / GPT-6 Luna Decisions) → verified key recipes; see `docs/RIG.md` |
+| `docs/RIG.md` | the headless three-instance test rig |
+| `docs/NAV_OPTIONS.md` | ranked options for faster rig navigation (memory oracle, save templates, vision) |
 | `docs/FINDINGS.md` | evidence, co-op limits, what a real 3-player mod needs |
 
 ## What the mod does
