@@ -10,8 +10,9 @@ the profile; a hook may raise ``drive.Stop(reason)``.
 
 usage:
   coop.py host b                       host offers co-op at the starting shrine
-  coop.py visit a [--relieve c]        visitor joins through Torii Gate
+  coop.py visit a [--relieve b c]      visitor joins through Torii Gate
   coop.py run --host b --visitors a c  host offer, then A, then C (A paused)
+  coop.py run --host b --visitors a c d   also D (A and C paused)
   coop.py decide a [--role visitor]    one frame: print perception + action
   --dry-run                            perceive once and print the action only
   --timeout SECONDS                    wall clock limit (default 600)
@@ -121,17 +122,22 @@ GUARDS = {"host_guard": host_guard, "visitor_guard": visitor_guard}
 CHECKS = {"host_check": host_check, "visitor_check": visitor_check}
 
 
-# ---- relief: pause the other visitor between steps ----
-def pause_cycle(slot, seconds=5.0, pause=2.0):
-    marker = f"HOME={os.path.join(RIG, f'home-{slot}')}"
-    return drive.pause_process("nioh.exe", marker.encode(), seconds, pause,
-                               lambda why: print(f"coop: relief: {why}"))
+# ---- relief: pause the other visitor(s) between steps ----
+def pause_cycle(slots, seconds=5.0, pause=2.0):
+    paused = []
+    for slot in slots:
+        marker = f"HOME={os.path.join(RIG, f'home-{slot}')}"
+        drive.pause_process("nioh.exe", marker.encode(), seconds, pause,
+                            lambda why: print(f"coop: relief: {why}"))
+        paused.append(slot)
+    return paused
 
 
 # ---- roles ----
 def run_role(slot, role_name, profile, trace, *, dry_run=False, timeout=None,
              backend=perceive.DEFAULT_BACKEND, model=None, relieve=None):
-    if relieve == slot:
+    relieve = list(relieve or [])
+    if slot in relieve:
         return False, f"refusing to pause slot {slot}, the newcomer itself"
     if not resolve_slot(slot):
         return False, f"no live game for slot {slot}"
@@ -172,7 +178,7 @@ def run_role(slot, role_name, profile, trace, *, dry_run=False, timeout=None,
             relief = profile["relief"]
             actuator = drive.ReliefActuator(
                 actuator, lambda: pause_cycle(relieve, relief["seconds"], relief["pause"]))
-            print(f"coop: relief: pausing slot {relieve} for "
+            print(f"coop: relief: pausing slot(s) {', '.join(relieve)} for "
                   f"{relief['seconds']:.0f} s after every step")
     driver = drive.Driver(
         table, perceive_step, actuator=actuator,
@@ -224,11 +230,11 @@ def main():
     host.add_argument("slot")
     visitor = commands.add_parser("visit", help="join a host through Torii Gate")
     visitor.add_argument("slot")
-    visitor.add_argument("--relieve", metavar="SLOT",
-                         help="pause this other visitor after every step")
-    whole = commands.add_parser("run", help="host offer, then two visitors")
+    visitor.add_argument("--relieve", metavar="SLOT", nargs="+",
+                         help="pause these other visitors after every step")
+    whole = commands.add_parser("run", help="host offer, then two or three visitors")
     whole.add_argument("--host", required=True)
-    whole.add_argument("--visitors", nargs=2, required=True, metavar=("A", "B"))
+    whole.add_argument("--visitors", nargs="+", required=True, metavar=("A", "B"))
     one = commands.add_parser("decide", help="perceive one frame and print the action")
     one.add_argument("slot")
     one.add_argument("--role", choices=("host", "visitor"), default="host")
@@ -252,10 +258,14 @@ def main():
         return decide(args.slot, args.role, profile, backend=args.backend,
                       model=args.model)
     if args.command == "run":
-        if len({args.host, *args.visitors}) != 3:
-            parser.error("host and the two visitors must be distinct slots")
+        if len(args.visitors) not in (2, 3):
+            parser.error("run needs exactly two or three visitors")
+        if len({args.host, *args.visitors}) != len(args.visitors) + 1:
+            parser.error("the host and the visitors must be distinct slots")
         steps = [(args.host, "host", None), (args.visitors[0], "visitor", None),
-                 (args.visitors[1], "visitor", args.visitors[0])]
+                 (args.visitors[1], "visitor", [args.visitors[0]])]
+        if len(args.visitors) == 3:
+            steps.append((args.visitors[2], "visitor", args.visitors[:2]))
     elif args.command == "host":
         steps = [(args.slot, "host", None)]
     else:

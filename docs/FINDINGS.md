@@ -1414,3 +1414,156 @@ clean, so the `Wacatac.C!ml` verdict on `1003e4e7…` did not carry over. The CA
 sandbox reported 0 malicious behavior. Zenbox and CAPE were still running at the
 time of writing. Report:
 https://www.virustotal.com/gui/file/48415ff045d11e34cb8e76ca9fc17afa2c8965b3d4f1c447ad96e01c646223a7
+
+## 15. Four-player static research (2026-10-23)
+
+The branch `four-player` asked whether the game code carries another limit
+for a third visitor besides the allowance value. All addresses below were read in
+`~/.cache/nioh3p/out/text.dis`. No client was run for this section.
+
+### The shrine setter cap is one immediate byte
+
+`0x140D5FB30` refuses its argument with `cmp $0x3,%ebx; jge` at `0x140D5FB4A`.
+The immediate `0x03` sits at RVA `0xD5FB4C` inside the three bytes
+`83 fb 03`. The compare immediate bounds the accepted range, so changing it
+to `0x04` makes the setter accept 0 to 3. The store at
+`0x140D5FB54` then writes the value to `root+0x39c` and the tail call at
+`0x140D5FB67` runs the same propagation `0x140D7C950` that the direct stores
+use. The setter has exactly two callers. The online shrine offering passes the
+constant 1 at `0x140CF9F36`, which the proxy already rewrites. An item path
+(`0x140CFA480`, item `0x74CC`) passes the constant 2 at `0x140CFA515`, and the
+proxy leaves it alone. Raising the compare immediate does not touch either
+caller.
+
+### Consumption, admission and departure hold no second cap
+
+The admission handler keeps its old shape at any allowance. It loads
+`root+0x39c`, subtracts the admitted count from `0x140D79E50` and rejects with
+reason 2 only when the signed delta is zero or less (`0x140D6B490`,
+`0x140D6B4EA`). The accept path clears `root+0x39c` only when the delta was
+exactly 1 (`0x140D6B51E`, `0x140D6B539`), so allowance 3 clears on the third
+visitor the way allowance 2 cleared on the second. The departure path
+decrements the allowance with a floor of zero (`0x140D7B222` to `0x140D7B234`)
+and the close paths compare the allowance against a live count, never against
+a constant (`0x140D7BCD2`, `0x140D7E2BA`).
+
+### The slot table is four entries
+
+Every slot loop in the session code runs while the index is below 4. The
+admission counters scan non-host slots 1 to 3 (`0x140D79E97`, `0x140D7A227`),
+the departure cleanup walks slots 0 to 3 (`0x140D7B186`), the admission tail
+walks a four-entry bitmask (`0x140D6B60F`) and the recruitment-full scan walks
+slots below 4 (`0x140D7BCCD`). The slots sit inline in the session root at
+`0x141790A70` with stride `0xA8`, so slots 0 to 3 fill the first `0x2A0` bytes.
+The table natively holds a host plus three visitors.
+
+### The second member array is sized and read by the same limit
+
+The create worker allocates the first member array with `limit` entries and a
+second array with `limit - 2` entries only when `limit > 2`
+(`0x1406049F0` to `0x140604A06`). The join preparation does the same from
+`GetLobbyMemberLimit` (`0x140603D0B` to `0x140603D1F`). The second array at
+`CSessionP2pSteam+0x1A8` is touched by four functions: two of them allocate
+it, and `0x1405F7239` nulls it on teardown. Three of the four also read it:
+`0x1405EF250`, `0x1405F2A3F` and `0x14060D62F`. All three readers compute
+their loop bound as member count minus two and also guard each index against
+the live member count at `+0x198`. None of them assumes a single entry, so a
+limit of 4 with count 4 walks two entries of a two-entry array. Readers of the
+first array at `+0x1A0` bound every index against the live count at `+0x198`
+as well. No member array index is compared against a constant 2 or 3.
+
+### What remains open
+
+The mission layer and the packet layer are still untested beyond three
+members. The
+co-op partner calls are singular (`Online::GetCoopPartnerPlayerPosition`) and
+the party HUD shows one name with three players. Only a live four-client run
+can settle those paths.
+
+## 16. Four players in one mission (2026-10-23)
+
+Section 15 left the four-client question to a live run. This section
+records that run. It took place on 2026-10-23 on branch `four-player`.
+The player build from this branch has SHA-256 prefix `6db5351d` and is
+38,400 bytes. `./build.sh` produced it.
+
+### The code change and the smoke status
+
+The proxy now also raises the shrine setter cap. It patches the byte at
+RVA `0xd5fb4c`, the immediate of the cmp at `0xd5fb4a` (`cmp $0x3,%ebx`,
+bytes `83 fb 03`), to 4 when the allowance is 3. The online shrine site can
+then pass the value 3 past the setter's cap check. With allowance 2 the game
+bytes stay stock.
+
+The smoke harness passed with `max_players` 3 and 4, in player and
+research mode, plus the ownership harness at both counts. The harness now
+reads `max_players` from `nioh3p.ini` to build its expectation.
+`NIOH3P_MAX_PLAYERS` appends an overriding `max_players` key in
+`tools/smoketest.sh`.
+
+### The three-player regression
+
+Before the four-client run, the branch build passed a three-player
+regression. Host b took visitors a and c, driven by
+`coop.py run --host b --visitors a c`. All three roles passed. The host
+logged `game create request: raising max members 2 -> 3 before
+allocation`. Every client logged `game visitor allowance: recruitment
+opens 2 visitor slot(s) (shrine setter 2)`. The host shot
+`shots/4p-reg-3p-b.png` shows three player characters.
+
+### The four-player run
+
+All four lan slots then ran `max_players=4`. The three-player ini is
+kept as `lan-*/nioh3p.ini.3p` in each slot. Every client logged `game
+visitor allowance: recruitment opens 3 visitor slot(s) (shrine setter
+3)`, so the setter cap raise installed on all four. Host b logged
+`game create request: raising max members 2 -> 4 before allocation` at
+13:44:01.
+
+Visitors joined in order a, c and d, driven by
+`coop.py run --host b --visitors a c d`. The driver relief (SIGSTOP pauses of
+the waiting visitors) paused a and c while d loaded. a and c passed the
+driver checks. d searched, found the lobby and sent JoinLobby at 13:56:28.
+Three JoinLobby lines appear in its log. The driver then hit its default
+600 s wall timeout while d was still loading. d finished loading on its own
+and entered the host mission right after the driver timed out.
+
+The evidence shots show four players in one mission. `shots/4p-mission-b.png`
+and `shots/4p-move3-b.png` show the host view with the host and two visible
+visitors; the third visitor is off camera (the driver trace records all
+four). Visitor a's view with the host and the two other visitors is
+`shots/4p-hostmove-a.png`. Movement was shown both ways. After a, c and
+d each walked, `4p-move3-b.png` is the before frame and `4p-move-b.png` the
+after frame; the visitor positions differ between them. After the host
+walked, the visitor shots `4p-hostmove-a.png`, `4p-hostmove-c.png` and
+`4p-hostmove-d.png` were taken. The driver trace is
+`shots/coop-20261023-134257.jsonl` with 104 steps.
+
+### Slot d identity and its save conversion
+
+Slot d runs as SteamID `76561198023713188`, name `Nioh-LAN-D`, with an
+Epic emulator id ending in 04 (epicid
+`00000000000000000000000000000004`, productuserid
+`79165699f5c687119e1e19e0e2fc59b9`) and save account `63447460`. The Nioh
+Savedata Decryption Tool v1.3 converted slot c's `63447459` saves for
+slot d. Run it as `-i <c file> -sid 63447460 -o SAVEDATA.BIN`. Use the
+destination save folder as the working directory. The tool writes the output
+and then waits on stdin. Give it Enter or stop it once the file exists.
+While the tool runs, Proton also starts its Xalia helper process next to
+the game.
+
+### Rig script changes
+
+`tools/rig/run.sh` accepts slot d for lan with the `compat-d` prefix
+and slot b client files. `tools/rig/nioh_nav.py` lists a, b, c and d.
+`tools/rig/coop.py` accepts two or three visitors, and `--relieve` now
+takes several slots. `tools/rig/setup.sh` writes `max_players=4` into
+slot a's ini on this branch.
+
+### What remains open at four
+
+The party HUD still names only one partner. The coop driver default
+timeout of 600 s is too short for a fourth client's load. Pass
+`--timeout 900` for four-player runs. Mission finish, deaths, revives,
+rewards and a new offering after a visitor leaves are untested at
+four. d's join needed the relief pauses on a and c.

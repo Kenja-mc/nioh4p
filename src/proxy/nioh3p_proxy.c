@@ -557,8 +557,10 @@ static void cfg_load(const char *dir)
             line++;
     }
     VirtualFree(buf, 0, MEM_RELEASE);
-    /* 0 turns the clamps off; 2..4 are the only member counts the patches and
-     * the game's arrays support. Anything else falls back to 3. */
+    /* 0 turns the clamps off; 2..4 are the only member counts the patches
+     * address. Four slot entries and limit-sized member arrays are confirmed
+     * by a live four-client mission (docs/FINDINGS.md section 15). Anything
+     * else falls back to 3. */
     if (g_cfg.max_players != 0 && (g_cfg.max_players < 2 || g_cfg.max_players > 4)) {
         g_cfg_max_players_raw = (int)g_cfg.max_players;
         g_cfg_max_players_bad = 1;
@@ -2718,8 +2720,10 @@ static void install_game_metadata_guard(void)
  * second visitor even with three native member slots. Every store that opens
  * recruitment with that single-visitor constant gets max_players - 1 instead;
  * consumption, departure and close paths are unchanged. The shrine setter
- * 0x140d5fb30 itself only accepts values below 3. Code is plaintext only after
- * the stub has decrypted .text, so wait for the exact original bytes. */
+ * 0x140d5fb30 refuses values >= 3, so a third visitor slot also raises its
+ * compare immediate from 3 to 4 (g_setter_cap_bytes below). Code is plaintext
+ * only after the stub has decrypted .text, so wait for the exact original
+ * bytes. */
 typedef struct {
     uint32_t rva;           /* first byte of the instruction */
     uint8_t len;
@@ -2741,12 +2745,20 @@ static const AllowanceSite g_allowance_sites[] = {
     {0xcf9f36, 10, 1, 1, {0xb9, 0x01, 0, 0, 0, 0xe8, 0xf0, 0x5b, 0x06, 0x00}},
 };
 
+/* The shrine setter's own gate: "cmp $0x3,%ebx; jge skip" at 0xd5fb4a keeps
+ * the setter argument below 3. The immediate's low byte sits at +2. Raising it
+ * to 4 lets the setter carry a third visitor slot. */
+#define SETTER_CAP_RVA 0xd5fb4a
+#define SETTER_CAP_IMM 2
+static const uint8_t g_setter_cap_bytes[5] = {0x83, 0xfb, 0x03, 0x7d, 0x1d};
+
 static void install_game_visitor_allowance(void)
 {
     if (g_cfg.max_players < 3 || !g_game_create_param_hook.nslots)
         return;
     uint8_t allowance = (uint8_t)(g_cfg.max_players > 4 ? 3 : g_cfg.max_players - 1);
     uint8_t setter_allowance = allowance > 2 ? 2 : allowance;
+    const int raise_setter_cap = allowance > 2;
     const unsigned n = sizeof g_allowance_sites / sizeof g_allowance_sites[0];
     int ready = 0;
     /* VMProtect decrypts .text lazily: poll tightly for the first minute (the
@@ -2758,6 +2770,10 @@ static void install_game_visitor_allowance(void)
             ready = readable(g_base + s->rva, s->len) &&
                     !memcmp(g_base + s->rva, s->bytes, s->len);
         }
+        if (ready && raise_setter_cap)
+            ready = readable(g_base + SETTER_CAP_RVA, sizeof g_setter_cap_bytes) &&
+                    !memcmp(g_base + SETTER_CAP_RVA, g_setter_cap_bytes,
+                            sizeof g_setter_cap_bytes);
         if (!ready) {
             int step = waited < 60000 ? 10 : 250;
             Sleep((DWORD)step);
@@ -2767,6 +2783,25 @@ static void install_game_visitor_allowance(void)
     if (!ready) {
         LOG("game visitor allowance: recruitment instructions mismatch; not installed");
         return;
+    }
+    if (raise_setter_cap) {
+        uint8_t *imm = g_base + SETTER_CAP_RVA + SETTER_CAP_IMM;
+        DWORD old;
+        /* Same RWX window as the sites below: the page stays executable for
+         * the store and the flush, then returns to RX. */
+        if (VirtualProtect(imm, 1, PAGE_EXECUTE_READWRITE, &old)) {
+            *imm = 0x04;
+            FlushInstructionCache(GetCurrentProcess(), imm, 1);
+            if (!VirtualProtect(imm, 1, PAGE_EXECUTE_READ, &old))
+                LOG("game visitor allowance: cannot restore execute protection at %#x (err %lu)",
+                    SETTER_CAP_RVA, GetLastError());
+            setter_allowance = allowance;
+        }
+        else {
+            LOG("game visitor allowance: setter cap %#x not writable (err %lu); "
+                "shrine setter argument stays at %u",
+                SETTER_CAP_RVA, GetLastError(), setter_allowance);
+        }
     }
     for (unsigned i = 0; i < n; i++) {
         const AllowanceSite *s = &g_allowance_sites[i];

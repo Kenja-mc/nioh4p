@@ -66,6 +66,8 @@ case "$MODE" in
     echo "dump_every_s=${NIOH3P_DUMP_EVERY:-8}" >> "$SMOKE/game/nioh3p.ini"
     ;;
 esac
+# Optional per-run member count (the ini's last key wins in the proxy parser).
+[ -n "$NIOH3P_MAX_PLAYERS" ] && echo "max_players=$NIOH3P_MAX_PLAYERS" >> "$SMOKE/game/nioh3p.ini"
 rm -f "$SMOKE/game/nioh3p.log"
 
 export STEAM_COMPAT_DATA_PATH="$SMOKE/pfx"
