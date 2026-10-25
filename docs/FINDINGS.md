@@ -1283,6 +1283,48 @@ Other observations:
   times this session (once with the previously failing 61,952-byte build, twice
   with allowance builds).
 
+### Torii Gate companion hosting (2026-10-25)
+
+This run tested the Torii Gate path that does not use an Ochoko Cup:
+Yokai Realm with a Companion, Without Conditions, Search. The research build
+of the `friend-invite` branch ran on B (`max_players=4`) and A, and the player
+build ran on C. The Luna decision model drove every menu
+(`tools/rig/coop.py`, traces `shots/coop-20261025-*.jsonl`).
+
+The host side works. At boot B logged all seven allowance sites, including
+`start recruiting (alt)` and `torii offering setter`, with 3 visitor slots and
+the setter cap raised to 4. When B searched and found no lobby, the create
+request was raised from 2 to 4 members before allocation. Steam then created
+a lobby with `maxMembers=4`. The Ochoko counter stayed at `6/3/14`.
+
+Two players work. A searched and joined the lobby of B. Both games showed the
+preparation menu, chose a mission, counted down and loaded it, and each showed
+the other player (`shots/torii-2p-b.png`, `shots/torii-2p-a.png`).
+
+A third player does not get into the mission. The companion mode pairs the
+host with one companion:
+
+- C joined the same Steam lobby (`Steam JoinLobby` with stock filters, no
+  dropped filter). C then showed `Waiting for mission to be chosen` with
+  `Companion: Nioh-LAN-B`. The host menu shows one `Companion` field only.
+- When A and C searched at the same time, both joined during the preparation
+  countdown. The host chose the mission with A only. A loaded into the
+  mission, and C stayed on `Waiting for mission to be chosen` until the run
+  stopped.
+- A client that joins after the mission starts gets the same waiting screen.
+  The lobby stays listed while the mission runs.
+
+The lobby and allowance patches are therefore not enough for this mode. The
+next research target is the companion session state: where the host stores its
+single companion, and which code sends the mission choice and the start signal
+to that companion. The shrine Summon Visitor path, which uses an Ochoko Cup
+during a mission, already took two visitors (see "Three players in one
+mission").
+
+`CreateLobby` returns a Steam API call handle, not a lobby id. The proxy now
+logs `Steam CreateLobby -> call N`. It logs the real id once per lobby, as
+`Steam host lobby id=N`, when the host first publishes lobby data.
+
 ### Launch-command and filesystem limits
 
 Several archived compound commands used `pgrep -f 'lan-b'` or

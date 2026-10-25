@@ -1751,9 +1751,9 @@ static uint64_t EOS_CALL det_SteamCreateLobby(void *self, int lobby_type, int ma
         log_backtrace("Steam_ISteamMatchmaking::CreateLobby");
 #endif
     PFN_SteamCreateLobby o = (PFN_SteamCreateLobby)g_steam[0].orig;
-    uint64_t lobby = o ? o(self, lobby_type, max_members) : 0;
-    LOG("Steam CreateLobby -> lobby=%llu", (unsigned long long)lobby);
-    return lobby;
+    uint64_t call = o ? o(self, lobby_type, max_members) : 0;
+    LOG("Steam CreateLobby -> call %llu", (unsigned long long)call);
+    return call;
 }
 
 static uint8_t EOS_CALL det_SteamSetLobbyMemberLimit(void *self, uint64_t lobby, int max_members)
@@ -1780,6 +1780,13 @@ static void install_game_metadata_guard(void);
 static int EOS_CALL det_SteamSetLobbyData(void *self, uint64_t lobby, const char *key, const char *value)
 {
     SITE_NOTE("SteamSetLobbyData");
+    /* CreateLobby only returns an API call handle; the lobby id first shows up
+     * here, when the host publishes its data. One line per lobby. */
+    static volatile uint64_t s_logged_lobby;
+    if (lobby && lobby != s_logged_lobby) {
+        s_logged_lobby = lobby;
+        LOG("Steam host lobby id=%llu", (unsigned long long)lobby);
+    }
     if (__builtin_return_address(0) == g_base + 0x5ffe52)
         install_game_metadata_guard();
     const char *use = value;

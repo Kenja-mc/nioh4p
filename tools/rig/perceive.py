@@ -27,6 +27,7 @@ the original driver). ``TailOracle`` watches a log file for new bytes only.
 import base64
 import json
 import os
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -367,13 +368,15 @@ class Trace:
             suffix += 1
         self.path = path
         self.n = 0
+        self._lock = threading.Lock()   # concurrent visitor drivers share one trace
         self._file = open(path, "w", encoding="utf-8")
 
     def write(self, **record):
-        self.n += 1
-        record["step"] = self.n
-        self._file.write(json.dumps(record, sort_keys=True) + "\n")
-        self._file.flush()
+        with self._lock:
+            self.n += 1
+            record["step"] = self.n
+            self._file.write(json.dumps(record, sort_keys=True) + "\n")
+            self._file.flush()
 
     def close(self):
         self._file.close()
