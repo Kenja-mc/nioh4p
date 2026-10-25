@@ -268,6 +268,10 @@ void mainCRTStartup(void)
     EOS_LobbyModification_SetMaxMembers(0, &m);
     out((int)m.MaxMembers == want ? "TEST: SetMaxMembers clamped OK\r\n"
                                   : "TEST: SetMaxMembers NOT the expected clamp\r\n");
+    if ((int)o.MaxLobbyMembers != want || (int)m.MaxMembers != want) {
+        out("FAIL: EOS lobby capacity did not match the configured player count\n");
+        ExitProcess(5);
+    }
 
     {
         struct { int32_t ApiVersion; void *details; void *user; int32_t presence; } j;
@@ -369,7 +373,8 @@ void mainCRTStartup(void)
             uint64_t (*cf)(void *, int, int) = (uint64_t (*)(void *, int, int))vt[13];
             uint8_t (*sf)(void *, uint64_t, int) = (uint8_t (*)(void *, uint64_t, int))vt[31];
             cf(iface, 2, 2);
-            if (!sf(iface, 0x0180000103C821A2ull, 2) || nioh3p_test_setmax() != 3) {
+            if (nioh3p_test_create_max() != want ||
+                !sf(iface, 0x0180000103C821A2ull, 2) || nioh3p_test_setmax() != want) {
                 out("FAIL: lobby member limit did not update the requested lobby\n");
                 ExitProcess(5);
             }

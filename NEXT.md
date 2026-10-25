@@ -9,18 +9,30 @@ Git does not track `build/`, `dist/` or `.local/`.
 - `dist/nioh3p-player.zip` holds `dinput8.dll`, `nioh3p.ini` and the player
   `README.md`. The DLL SHA-256 is
   `48415ff045d11e34cb8e76ca9fc17afa2c8965b3d4f1c447ad96e01c646223a7` (player
-  build, 38,400 bytes). The research build is `build/research/dinput8.dll`.
-  Rebuild the zip with `tools/package.sh`. The zip hash changes with every build.
+  build, 38,400 bytes). This frozen release predates Torii Gate support.
+  Do not replace it with `tools/package.sh` without approval.
 - The real Steam folder
   (`~/.local/share/Steam/steamapps/common/Nioh`) has the same DLL and the player
   ini installed. A save backup from before that install is at
   `~/Backups/nioh-savedata-20261021-174429.tar.gz`.
-- Rig slots `lan-{a,b,c,d}` hold the `friend-invite` player build `1750668e`
-  (`max_players=4`, `trace=0`). The release copies are saved as
-  `lan-{a,b,c,d}/dinput8.dll.saved` (SHA-256 starts `6db5351d`) and
-  `lan-{a,b}/nioh3p.ini.saved`. Restore them before any release testing.
-- VirusTotal: 5/71 generic heuristics (Avast, AVG, Avira, WithSecure, Cynet);
-  Microsoft reports it clean. Report link is in `docs/FP_REPORTS.md`.
+- The separate live-test candidate is `build/live-test/nioh3p-live-test.zip`.
+  It contains the player DLL, the default three-player ini and test instructions.
+  The DLL SHA-256 is
+  `632684d0a17e457abfdad2c18cf827e312f511ed74a0a08ee3a9a7238c188a81`.
+  `build/live-test/SHA256SUMS` includes both the zip and DLL hashes.
+  No upload, installation or release replacement is authorized.
+- Rig slots `lan-{a,b,c,d}` hold this integrated player build with
+  `max_players=4`, `trace=0` and stock search filters. The rig is stopped.
+  The older DLL copies remain at `lan-{a,b,c,d}/dinput8.dll.saved`
+  (SHA-256 starts `6db5351d`) and `lan-{a,b}/nioh3p.ini.saved`.
+- The integrated candidate passed three-player, four-player and repeat
+  four-player Torii Gate entry on the LAN rig. The repeat run used the same
+  processes after a Himorogi exit. No mission was completed.
+  Details and evidence paths are in `docs/FINDINGS.md`.
+- The candidate passed the Windows harness and a local Defender scan with no
+  detections at definitions `1.461.144.0`. No public scan was made.
+- The frozen release's VirusTotal result was 5/71 generic heuristics.
+  That result does not apply to this candidate. See `docs/FP_REPORTS.md`.
 - A Windows 11 VM for Defender tests is stopped and kept in
   `~/nioh3p-test/winvm` (13 GB). Usage is in `docs/RIG.md`.
 
@@ -56,37 +68,26 @@ The branch names remain for reference. Nothing is pushed or published.
 
 ## Next actions
 
-1. Play the Torii Gate with three players in a real session: finish a
-   mission, die and revive with the assist gauge, check the rewards. The
-   party HUD and the result screen name one companion. Then decide whether the
-   player package gets the Torii Gate support (new DLL hash, new VirusTotal
-   scan, `tools/package.sh` only with approval).
-2. Rig test the friend invite: take the id from `Steam host lobby id=`, put it
-   in `nioh3p.invite.txt` in the visitor game dir, and expect `open task object
-   created`, then `JoinLobby` and host admission.
-3. Send the zip to the two Windows friends. Tell them to look for
-   `preflight: exe=ok`. Send the DLL SHA-256 above in the same message. The
-   README tells them to compare the hash with `certutil`.
-4. Run the first real session with three Steam accounts online. Collect
-   `nioh3p.log` from all three. Also collect `nioh3p.prev.log` if the problem
-   was in an earlier launch. Make sure that the log has no
-   `unsupported nioh.exe build` line (version mismatch) and that the capacity
-   and allowance lines are present.
-5. These items are still untested with three players: finishing a mission,
-   deaths and revives, rewards, and a new offering after a visitor leaves.
-6. Send the false-positive reports to Avast/AVG, Avira, WithSecure and Cynet
-   with the texts in `docs/FP_REPORTS.md`. Each vendor has its own web form.
-   Keep the Defender draft unless Defender flags this build later.
-7. The Nexus upload kit in `docs/NEXUS.md` is ready and is prepare-only. Publish
-   the mod after the pre-publish checklist passes, including the FP reports.
-8. Signing: no free option fits today (`docs/SIGNING.md`). Before a Nexus
-   release, decide on a license and a public repository; both are needed for
-   SignPath Foundation. The paid fallback is Certum open source (€49, real name
-   on the certificate).
-9. If a friend's game stops starting, delete `dinput8.dll` to correct it.
-10. For rig navigation: `tools/rig/rig.py up b a c`, then
-    `EXPLABS_KEY_FILE=~/.omp/agent/provider-keys/experiential-labs python3
-    tools/rig/coop.py run --host b --visitors a c`. Add `d` for four players.
+1. Use the separate candidate for the first live Steam test with three players.
+   Follow `package/README.md`. Everyone must use the same DLL and game build.
+   Use the Torii Gate search flow, not invites. Join before the countdown ends.
+2. Finish a mission, exercise death and revival with the assist gauge, compare
+   rewards, then form a second group. Repeat with four players only after
+   the three-player test passes. The HUD still names one companion.
+3. Collect `nioh3p.log` from every client and `nioh3p.prev.log` for earlier
+   failures. Make sure that each log shows `preflight: exe=ok` and both companion
+   hooks installed. Record the mission, player count and observed failure.
+4. Investigate direct invites separately. The LAN research trigger takes the id
+   from `Steam host lobby id=` in `nioh3p.invite.txt`. It does not prove that a
+   real Steam invitation works. Direct invites are not required for this test.
+5. Decide whether to replace the frozen release only after the live tests.
+   A public release, upload, fresh VirusTotal submission or push needs approval.
+6. Keep the existing vendor false-positive drafts in `docs/FP_REPORTS.md`.
+   Results for the frozen DLL do not establish results for this candidate.
+7. If the game fails to start, remove the candidate's `dinput8.dll`.
+8. For the local rig, run `tools/rig/rig.py up b a c`, then
+   `EXPLABS_KEY_FILE=~/.omp/agent/provider-keys/experiential-labs python3
+   tools/rig/coop.py run --host b --visitors a c`. Add `d` for four players.
 
 ## Open decisions
 

@@ -181,3 +181,4 @@ else
 fi
 say "run finished (rc=$RC); artifacts under $SMOKE_DIR"
 [ -s "$STATE/run.out" ] && tail -6 "$STATE/run.out" | sed 's/^/   /' | tee -a "$LOGF"
+exit "$RC"

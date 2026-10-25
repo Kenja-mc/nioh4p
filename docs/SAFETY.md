@@ -18,10 +18,10 @@ count and the log options.
 The mod changes the things below inside the game process. It changes nothing
 else.
 
-1. It raises the lobby member limit from 2 to 3. It does this in the requests
-   that create the lobby, and only after it checks the exact game build.
-2. It raises the host's visitor allowance from one to two. The game accepts
-   the second visitor instead of rejecting the request.
+1. It raises the lobby member limit from 2 to the configured count, 3 by
+   default or 4 when selected. It first checks the exact game build.
+2. It raises the host's visitor allowance to the configured count minus one.
+   The game accepts the extra visitors instead of rejecting their requests.
 3. It fixes one game function that copies lobby settings. When that function
    copies a value onto itself, the stock code replaces the value with empty
    memory. The fix keeps the value, so the next visitor can find the lobby.

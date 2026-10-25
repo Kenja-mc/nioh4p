@@ -1,8 +1,9 @@
-# Nioh three-player co-op
+# Nioh co-op live-test candidate
 
-This mod lets one host and two visitors play one Nioh mission together.
-All three players must install it. All three must use the same Steam build of
-the game.
+This candidate lets three or four players enter one mission through the Torii
+Gate. The local rig reached a mission with both player counts. Mission
+completion, deaths, revives and rewards still need a live Steam test.
+Every player must install the same candidate and use the same Steam game build.
 
 ## Install
 
@@ -17,31 +18,68 @@ the game.
 On Linux and Steam Deck, use the same steps. If no log appears, add this
 launch option in Steam: `WINEDLLOVERRIDES="dinput8=n,b" %command%`.
 
-## Play
+## Play through the Torii Gate
 
-1. The host starts a mission, prays at the starting shrine, chooses Summon
-   Visitor and makes the offering.
-2. Each visitor goes to the Torii Gate, then Random Encounters, then Search.
-3. The second visitor starts searching only after the first visitor has
-   loaded in.
-4. Leave the visitors' Secret Word Off. The Summon Visitor screen has no word
-   field, so a word cannot match.
+The default is three players, including the host. For four players, set
+`max_players=4` in every player's `nioh3p.ini` before starting Nioh.
+Keep the search filters at their shipped values.
+
+1. Choose a mission that every player can access.
+2. Open the Torii Gate from the world map on every client.
+3. Choose Yokai Realm with a Companion on every client.
+4. Set every client to Without Conditions.
+5. Keep Secret Word Off on every client.
+6. Set each visitor's story-progress limit at or above the host's progress.
+7. Let the host choose Search first.
+8. Start every visitor's search together, while the host is still recruiting.
+9. Make sure that every player reaches the same mission and sees the others.
+
+No Ochoko Cup is used. Join before the preparation countdown ends. Joining
+after mission start is not supported by this test procedure. The HUD names
+only one companion, even when more players are present. Make sure that the
+companion name belongs to your group. Without Conditions is not a private lobby.
+
+Do not use Steam invites for the first test. The direct-invite path is
+experimental. If a player remains at "Waiting for mission to be chosen",
+cancel that search and form the group again. A Himorogi Fragment ends the
+mission for everyone and loses the user's Amrita.
+
+## Live-test sequence
+
+Back up each player's saves before the test. Start with three players.
+Record the mission name, player count and any failure with these steps:
+
+1. Move on each client and make sure that the other clients show that movement.
+2. Defeat an enemy and make sure that all clients agree on its death.
+3. Let one companion fall and revive that companion with the assist gauge.
+4. Finish the mission and compare each player's rewards and return screen.
+5. Form another group from the Torii Gate and enter another mission.
+6. Repeat with four players only after the three-player test passes.
+
+The shrine path remains available. The host starts a mission and offers an
+Ochoko Cup at a shrine. Visitors use Torii Gate, Random Encounters, Search.
+Let each visitor finish loading before the next visitor searches.
 
 ## Make sure that the mod loaded
 
-Open `nioh3p.log` in the game folder. The line `preflight: exe=ok eos=3/3 …`
-means that the mod loaded. The line `preflight: exe=unsupported` means that
-your game build differs from the tested build. The mod then leaves the game
-unmodified.
+Open `nioh3p.log` in the game folder. Make sure that it contains
+`preflight: exe=ok` and `game tokoyo: 2/2 companion hook(s) installed`.
+On the host, after recruitment starts, look for `game create request: raising
+max members 2 -> 3` (or `4`) and the visitor allowance lines.
+The preflight line alone does not prove that the companion hooks installed.
+
+If the log contains `preflight: exe=unsupported` or an incomplete companion
+hook count, stop the test and collect the log. Do not mix game or mod builds.
 
 ## Why the mod is safe
 
-The mod passes every DirectInput call to the real Windows file. Inside the game
-process, it changes the lobby member limit, the host visitor allowance and one
-game function that copies lobby settings. It also writes a text log. It opens
-no network connection of its own. It never opens the save folder. It writes
-only `nioh3p.log` and `nioh3p.prev.log`. In any program except `nioh.exe`, it
-only passes DirectInput calls through.
+The mod passes DirectInput calls to the real Windows file. Inside the game,
+it raises lobby capacity and visitor allowance and preserves copied lobby
+settings. Two hooks send the host's mission choice to every companion and
+keep the mission-start counter in step. It opens no network connection of
+its own and never opens the save folder. The game still writes saves normally.
+With the shipped configuration, the mod writes `nioh3p.log` and
+`nioh3p.prev.log`. Research builds can also write memory dumps.
 
 The full explanation, with the checks you can repeat yourself, is in
 `docs/SAFETY.md` in the source repository.
@@ -51,11 +89,16 @@ The full explanation, with the checks you can repeat yourself, is in
 If the game does not start, delete `dinput8.dll`. The game starts normally
 again.
 
-Avast, AVG, Avira and WithSecure can flag the file as a generic trojan.
-Microsoft Defender can too, although it reports this build as clean. That
-warning is a heuristic on an unsigned DLL that changes game memory.
-Compare the SHA-256 with the value that you got with the download.
-Then restore the file and exclude the game folder, or delete the file.
+This candidate is unsigned. Antivirus tools can flag DLLs that change game
+memory. Results for older releases do not establish that this candidate is safe.
+Compare its SHA-256 with the value supplied by the sender:
+
+```bat
+certutil -hashfile dinput8.dll SHA256
+```
+
+If antivirus blocks the candidate, stop and report the engine and detection
+name. Do not disable protection or exclude the game folder for this test.
 
 To send a log, close the game and send `nioh3p.log` from the game folder. Send
 `nioh3p.prev.log` too if the problem happened in the earlier launch. The log

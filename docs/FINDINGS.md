@@ -1371,6 +1371,64 @@ detections, and the real `nioh.exe` loaded it (`preflight: exe=ok`) before
 exiting with code 53 for lack of Steam. The companion hooks install only
 after `.text` is decrypted, so they did not run in the VM.
 
+### Integrated live-test candidate (2026-10-25)
+
+Both development branches are merged into `master`. The separate candidate
+is `build/live-test/nioh3p-live-test.zip`. The player DLL is 44,544 bytes with
+SHA-256 `632684d0a17e457abfdad2c18cf827e312f511ed74a0a08ee3a9a7238c188a81`.
+The frozen release zip and the user's Steam installation are unchanged.
+
+The merged four-player harness still expected a Steam member limit of three.
+It failed with exit 5 while the proxy correctly sent four. The expectation
+now follows the configured count for both EOS and Steam capacity calls.
+`tools/quiet.sh` also hid that failure behind its final output command.
+It now returns the underlying exit code. An invalid smoke mode returned 2
+through the wrapper.
+
+The integrated smoke matrix passed at both `max_players=3` and `4`:
+
+| Mode | Result per player count |
+| --- | --- |
+| Player proxy | exit 0, 6 PASS, no FAIL |
+| Research proxy | exit 0, 4 PASS, two player-only log checks skipped |
+| Player ownership | exit 0, 1 PASS, no FAIL |
+
+Artifacts are under `~/.cache/nioh3p/integrated-{3,4}p-t{0,1}-{proxy,ownership}`.
+Only the combinations in the table were run.
+
+Luna drove a fresh three-player Torii Gate run with the integrated player DLL,
+`max_players=3`, and stock search filters on every client. Both visitors reached
+the mission in 242 seconds. Read-only probes showed loader 12, state 14,
+slots 0 to 2 and counters 2/2 on every client. The screenshots show three
+characters in the same cave. Evidence: `shots/integrated-torii-3p.png`,
+`shots/coop-20261025-151440.jsonl` and `runs/integrated-torii-3p`.
+
+The four-player run also passed with `max_players=4` and stock filters.
+Every client reached loader 12 and state 14 with counters 3/3.
+The member slots were B=0, D=1, A=2 and C=3. The first companion was D,
+so this run also exercised the wait-counter fix with a different first joiner.
+Every client logged both companion hooks and all seven allowance sites.
+The host mirrored packet 17 to slots 2 and 3. Evidence:
+`shots/integrated-torii-4p.png`, `shots/coop-20261025-152049.jsonl`
+and `runs/integrated-torii-4p`.
+
+The same four processes then left through the host's Himorogi Fragment and
+formed another group without restarting. All four reached the next mission
+with loader 12, state 14 and counters 3/3. The new slot order was
+B=0, A=1, D=2 and C=3. Evidence: `shots/integrated-torii-reform.png`,
+`shots/coop-20261025-152641.jsonl` and `runs/integrated-torii-reform`.
+This proves repeat group formation after an aborted mission, not completion
+or reward handling. The rig then shut down with no rig processes remaining.
+
+In the Windows VM, this exact DLL passed the rebuilt harness with exit 0
+and 6 PASS. Defender real-time and behavior protection were enabled.
+A custom scan found no new detection. The threat count stayed at zero.
+Definitions were `1.461.144.0`, not updated for this run. This was a harness
+test, not Windows multiplayer gameplay. No public scan or upload was made.
+The Windows console output is saved privately at
+`~/nioh3p-test/runs/integrated-windows-smoke.out`.
+The test directory was removed from the guest, and the VM shut down cleanly.
+
 ### Launch-command and filesystem limits
 
 Several archived compound commands used `pgrep -f 'lan-b'` or
