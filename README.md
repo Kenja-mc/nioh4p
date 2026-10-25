@@ -310,21 +310,24 @@ window on the desktop and nothing written in your own Steam root. See
 `docs/RIG.md` for the launch options and observed failures.
 `DXVK_WSI_DRIVER=xcb` was an invalid workaround and is no longer set.
 
-## The experiment that answers the open question
+## Co-op modes and what is verified
 
-The open question needs a test on the host machine only. Install the mod on the
-host machine alone. Do not install it on the other clients. Then do these steps:
+The LAN rig verified two ways to bring more than two players into one mission:
 
-1. Start the game, go to the Torii Gates, and choose *Yokai Realm with a
-   Companion*.
-2. Ask two other players with stock clients to try to join.
-3. Send `nioh3p.log` back.
+* The shrine offering. The host offers an Ochoko Cup at a shrine, and the
+  visitors search with *Random Encounters*.
+* The Torii Gate, without an Ochoko Cup. Everyone picks *Yokai Realm with a
+  Companion*, *Without Conditions*, *Search*. The first player to search
+  becomes the host. The others must search during the host's preparation
+  countdown. Three and four players reached the mission on 2026-10-25
+  (`docs/RE_TOKOYO_COOP.md`, `docs/FINDINGS.md`).
 
-These steps answer three things at once. They show which mode-specific call site
-creates the lobby. They also show what the game thinks the member count is, and
-whether a stock client refuses a three-member lobby. The LAN rig verified the
-shrine-offering path (Ochoko Cup, then *Random Encounters* searches). Other co-op
-modes are untested.
+In the Torii Gate mode every player needs the mod. The host's copy sends the
+mission choice to every companion, and each later companion's copy keeps the
+mission start in step. The released player package (`dist/nioh3p-player.zip`)
+predates the Torii Gate support. The party HUD and the result screen still name
+one companion. A Himorogi Fragment used by any player ends the mission for all
+of them, as it does for two. Other co-op modes are untested.
 
 ## Verified so far
 

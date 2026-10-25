@@ -29,7 +29,7 @@ import time
 RIG = os.path.expanduser("~/nioh3p-test")
 SLOTS = {
     slot: {"display": None, "rundir": f"{RIG}/run-{slot}", "wayland": "gamescope-0"}
-    for slot in ("a", "b", "c")
+    for slot in ("a", "b", "c", "d")
 }
 SHOTS = f"{RIG}/shots"
 

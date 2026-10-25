@@ -37,7 +37,7 @@ rules = [
     drive.Rule("title", drive.tap("Down", settle=0.5)),
     drive.Rule("play", drive.wait(2.0)),
 ]
-perceiver = perceive.Perceiver(capture, ask, "mercury", confidence_min=0.6,
+perceiver = perceive.Perceiver(capture, ask, "luna", confidence_min=0.6,
                                fallbacks={"screen": "other", "highlight": "none"},
                                prefix="game", label="game window")
 check = lambda state: (("success", "in game") if state["screen"] == "play"
@@ -64,11 +64,11 @@ Pass a mapping of question name to spec. The example below gives three questions
  "without_conditions": {"type": "predicate", "instructions": "Yes/no question"}}
 ```
 
-`mercury` sends choices as the `criteria` map and predicates as `noul`. `luna` sends `choices` and `predicate`. Give either form or both, and the missing form is derived. Each backend gets one image and the profile prompt. `ask_decisions` returns `{"answers", "raw", "screenshot", "latency", "backend", "model", "usage"}`. `raw` keeps the answer objects of the API. Unknown choices raise an error instead of being executed.
+`mercury` sends choices as the `criteria` map and predicates as `noul`. `luna` sends `choices` and `predicate`. Give either form or both, and the missing form is derived. Each backend gets one image and the profile prompt. A `.jpg` path is sent as `image/jpeg` and anything else as `image/png`. `GamescopeCapture` converts each frame to a quality-85 JPEG, which halves the latency at the same answers. `ask_decisions` returns `{"answers", "raw", "screenshot", "latency", "backend", "model", "usage"}`. `raw` keeps the answer objects of the API. Unknown choices raise an error instead of being executed.
 
 ## Confidence and safety
 
-- A choice below `confidence_min` (0.6) is re-shot once after 1 s. If it is still low, the driver substitutes the configured fallback: `screen -> other` (wait) and `highlight -> uncertain`. No `when` that names a real highlight matches then.
+- A choice below `confidence_min` (0.6) is re-shot once after 1 s when `Perceiver(retry_if=...)` says a second frame can change the action. The default retries any low choice. `coop.py` retries a low `screen`, and a low `highlight` only on screens whose rules test the highlight. If the answer is still low, the driver substitutes the configured fallback: `screen -> other` (wait) and `highlight -> uncertain`. No `when` that names a real highlight matches then.
 - Rules that send a dangerous key must also require `{"highlight": ["..."], "confidence_min": 0.9}`. `confidence_min` compares the highlight confidence. `{"without_conditions": {"max": 0.5}}` compares a predicate.
 - `Driver(uncertain_settle=1.5, uncertain_safe_keys=["BackSpace", "Up"])` replaces uncertain key sends with a wait, except for the safe navigation keys. Enable it for each profile role. The Nioh visitor uses it.
 - `Driver` also enforces the Return debounce (3 unchanged frames), a no-progress cap on sent keys, the step limit and the wall timeout. Hooks can raise `drive.Stop(reason)` to end the run cleanly.

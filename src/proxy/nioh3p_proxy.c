@@ -18,6 +18,11 @@
  *      Two mechanisms: the documented IAT slot, plus a fallback that scans the
  *      main module for stored copies of the EOS entry point (a rebuilt or
  *      protected import table would defeat the first one).
+ *   4. Patches the game's own two-player assumptions once .text is plaintext:
+ *      the visitor allowance (shrine and Torii Gate recruitment) and, for the
+ *      Torii Gate companion mode, two inline hooks (the host mirrors the
+ *      preparation packets to every companion; later companions leave the
+ *      shared mission-start counter to slot 1). See docs/RE_TOKOYO_COOP.md.
  *
  * Built freestanding: no CRT and no api-ms-win-crt-* imports, because Proton's
  * Wine (like plain Wine) does not ship those apisets - a CRT-linked DLL would
@@ -37,10 +42,10 @@
  * Within the research build, two runtime modes are selected by the `trace`
  * key in nioh3p.ini:
  *   trace=0 (player mode, the default): only the hooks that change behaviour
- *     (lobby capacity, filter drops, force_unlock, the metadata guard) plus
- *     the rare lobby events (create/join/leave) and the numerical search
- *     filter (forwarded unchanged, but its key names go to the log) are
- *     installed. The
+ *     (lobby capacity, filter drops, force_unlock, the metadata guard, the
+ *     companion hooks) plus the rare lobby events (create/join/leave) and the
+ *     numerical search filter (forwarded unchanged, but its key names go to
+ *     the log) are installed. The
  *     per-P2P-packet, friends, socket and callback instrumentation is not
  *     installed at all - no hook, no log line - so the network path is
  *     untouched and a multi-hour session writes a small log.
@@ -2883,39 +2888,42 @@ static void install_game_visitor_allowance(void)
         allowance, done, n, cap_done ? "; setter cap raised" : "");
 }
 
-#ifdef NIOH3P_RESEARCH
-/* ------------------------------------------- game protocol trace (research) */
+/* --------------------------------- Torii Gate companion (Tokoyo Coop) for 3-4 */
 
-/* The Steam P2P payloads are encrypted (CPacketReliable), so the wire log
- * cannot name a game packet. Two entry points carry them in the clear:
+/* Yokai Realm with a Companion is written for two players. Two places keep a
+ * second companion (member slot 2 or 3) out of the mission:
+ *
+ * 1. Preparation. The host sends the mission preview (packet 76), its ready
+ *    flag (74), the start flag (75) and the chosen mission (17) to slot 1
+ *    only, so a later companion waits on "Waiting for mission to be chosen".
+ *    The send hook mirrors these four packets to slots 2 and 3. Packet 17
+ *    carries the receiver's own slot at payload byte 6 (the visitor's handler
+ *    adopts it), so each copy gets its own slot. The send byte-swaps its
+ *    buffer in place, so the copies come from a snapshot taken before.
+ * 2. Mission start. Online::AddFlagWaitCoopPlayer (0x1408af1b0) is the
+ *    mission script's sync point: the host bumps mission flag 0x46, a visitor
+ *    bumps 0x47, and Online::IsWaitCoopPlayer holds each side until the other
+ *    catches up. 0x47 is one shared counter, so with two companions it runs
+ *    ahead of the host (host 1, visitors 3) and every client waits forever on
+ *    the loading screen. Only the slot-1 companion advances it; later
+ *    companions follow the host and slot 1.
+ *
+ * Game protocol entry points (docs/RE_TOKOYO_COOP.md):
  *   0x140d6a560 send(id, data, len <= 0x100, target): target 0-3 is one
  *               member slot, 4 or more is every connected slot but our own.
- *   0x140d6acc0 dispatch(record, sender): record+0x10 is the u16 raw id and
- *               record+0x18 the payload, still in network byte order.
- * Both prologues are position independent, so a trampoline can run them
- * elsewhere. The 14-byte entry patch is not atomic; research builds only. */
-typedef uint8_t (*PFN_GameSend)(unsigned, const uint8_t *, unsigned, int);
-typedef uintptr_t (*PFN_GameDispatch)(uint8_t *, int);
-static PFN_GameSend g_game_send;
-static PFN_GameDispatch g_game_dispatch;
-static volatile LONG g_pkt_count[2][128];
-
-static int pkt_should_log(int dir, unsigned id)
-{
-    LONG n = InterlockedIncrement(&g_pkt_count[dir][id & 127]);
-    return n <= 40 || n % 500 == 0;
-}
-
-/* Tokoyo Coop preparation is written for two players: the host sends the
- * mission preview (76), its ready flag (74), the start flag (75) and the
- * chosen mission (17) to slot 1 only, so a second companion in slot 2 waits
- * on "Waiting for mission to be chosen" forever. Experiment: mirror those
- * four packets to every other member slot. Packet 17 carries the receiver's
- * own slot at payload byte 6 (the visitor's handler adopts it), so each copy
- * gets its own slot. The send byte-swaps its buffer in place, so the copies
- * come from a snapshot taken before the original call. */
+ *   0x140d6acc0 dispatch(record, sender), research trace only: record+0x10
+ *               is the u16 raw id, record+0x18 the network-order payload.
+ * The hooks replace whole prologue instructions with a 14-byte absolute jump.
+ * They install at boot, before any session exists, so no game thread runs
+ * these functions while the bytes change. */
 #define GAME_ROOT_RVA      0x1790a70u  /* session root; +0x3c8 = own slot index */
 #define GAME_COOP_MODE_RVA 0x191de34u  /* 1 while a Tokoyo companion session prepares */
+#define GAME_MANAGER_RVA   0x18715e0u  /* online manager; +0x5b0 role, +0x660 Tokoyo */
+
+typedef uint8_t (*PFN_GameSend)(unsigned, const uint8_t *, unsigned, int);
+typedef void (*PFN_WaitFlag)(void);
+static PFN_GameSend g_game_send;
+static PFN_WaitFlag g_wait_flag;
 
 static int tokoyo_fanout_wanted(unsigned id, int target)
 {
@@ -2928,6 +2936,29 @@ static int tokoyo_fanout_wanted(unsigned id, int target)
     return readable(own, 1) && readable(mode, 4) && *own == 0 && *mode == 1;
 }
 
+#ifdef NIOH3P_RESEARCH
+typedef uintptr_t (*PFN_GameDispatch)(uint8_t *, int);
+static PFN_GameDispatch g_game_dispatch;
+static volatile LONG g_pkt_count[2][128];
+
+static int pkt_should_log(int dir, unsigned id)
+{
+    LONG n = InterlockedIncrement(&g_pkt_count[dir][id & 127]);
+    return n <= 40 || n % 500 == 0;
+}
+
+static uintptr_t det_GameDispatch(uint8_t *record, int sender)
+{
+    unsigned id = readable(record, 0x28) ? *(uint16_t *)(record + 0x10) : 0xffff;
+    if (g_cfg.trace && pkt_should_log(1, id)) {
+        char head[52];
+        p2p_head(head, sizeof head, record ? record + 0x18 : 0, id != 0xffff ? 16 : 0);
+        LOG("game pkt recv: id=%u from=%d #%ld [%s]", id, sender, g_pkt_count[1][id & 127], head);
+    }
+    return g_game_dispatch(record, sender);
+}
+#endif
+
 static uint8_t det_GameSend(unsigned id, const uint8_t *data, unsigned len, int target)
 {
     id &= 0xffff;
@@ -2936,53 +2967,33 @@ static uint8_t det_GameSend(unsigned id, const uint8_t *data, unsigned len, int 
     if (fan)
         memcpy(pristine, data, len);
     uint8_t r = g_game_send(id, data, len, target);
-    if (pkt_should_log(0, id)) {
+#ifdef NIOH3P_RESEARCH
+    if (g_cfg.trace && pkt_should_log(0, id)) {
         char head[52];
         p2p_head(head, sizeof head, data, readable(data, len < 16 ? len : 16) ? len : 0);
         LOG("game pkt send: id=%u len=%u target=%d -> %u #%ld [%s]", id, len, target, r,
             g_pkt_count[0][id & 127], head);
     }
+#endif
     for (int slot = 2; fan && slot < 4; slot++) {
         uint8_t copy[0x100];
         memcpy(copy, pristine, len);
         if (id == 17 && len > 6)
             copy[6] = (uint8_t)slot;
         if (g_game_send(id, copy, len, slot))
-            LOG("game tokoyo fanout: id=%u also sent to slot %d", id, slot);
+            LOG("game tokoyo: packet %u also sent to companion slot %d", id, slot);
     }
     return r;
 }
 
-static uintptr_t det_GameDispatch(uint8_t *record, int sender)
-{
-    unsigned id = readable(record, 0x28) ? *(uint16_t *)(record + 0x10) : 0xffff;
-    if (pkt_should_log(1, id)) {
-        char head[52];
-        p2p_head(head, sizeof head, record ? record + 0x18 : 0, id != 0xffff ? 16 : 0);
-        LOG("game pkt recv: id=%u from=%d #%ld [%s]", id, sender, g_pkt_count[1][id & 127], head);
-    }
-    return g_game_dispatch(record, sender);
-}
-
-/* Online::AddFlagWaitCoopPlayer (0x1408af1b0) is the mission script's sync
- * point. The host bumps mission flag 0x46, a visitor bumps flag 0x47, and
- * Online::IsWaitCoopPlayer holds each side until the other side's counter
- * catches up. Flag 0x47 is one shared counter, so a second companion bumps
- * it as well: the counters read host 1 / visitors 3, every client waits for
- * every other, and the mission never fades in (rig run 2026-10-25 13:51).
- * Experiment: in Tokoyo Coop only the slot-1 companion advances flag 0x47;
- * later companions follow the host and slot 1. */
-typedef void (*PFN_WaitFlag)(void);
-static PFN_WaitFlag g_wait_flag;
-
 static void det_WaitFlag(void)
 {
-    uint8_t *const *manager = (uint8_t *const *)(g_base + 0x18715e0);
+    uint8_t *const *manager = (uint8_t *const *)(g_base + GAME_MANAGER_RVA);
     const uint8_t *own = g_base + GAME_ROOT_RVA + 0x3c8;
-    if (readable(manager, 8) && *manager && readable(*manager + 0x5b0, 0xb4) &&
-        readable(own, 1) && *(*manager + 0x660) && *(const int32_t *)(*manager + 0x5b0) == 1 &&
-        *own >= 2) {
-        LOG("game tokoyo wait: companion slot %u leaves the shared visitor counter alone", *own);
+    if (g_cfg.max_players >= 3 && readable(manager, 8) && *manager &&
+        readable(*manager + 0x5b0, 0xb4) && readable(own, 1) &&
+        *(*manager + 0x660) && *(const int32_t *)(*manager + 0x5b0) == 1 && *own >= 2) {
+        LOG("game tokoyo: companion slot %u leaves the shared wait counter to slot 1", *own);
         return;
     }
     g_wait_flag();
@@ -2997,32 +3008,34 @@ typedef struct {
     uint8_t bytes[24];
     /* NULL: the n site bytes are position independent and run as copied.
      * Otherwise this writes an equivalent of them and returns its length. */
-    unsigned (*relocate)(uint8_t *out, const uint8_t *site);
+    unsigned (*relocate)(uint8_t *out);
 } InlineHook;
 
 /* sub $0x28,%rsp; mov 0x18715e0(%rip),%rax; mov 0x5b0(%rax),%ecx, with the
  * RIP-relative load turned into movabs from the absolute address. */
-static unsigned relocate_wait_flag(uint8_t *out, const uint8_t *site)
+static unsigned relocate_wait_flag(uint8_t *out)
 {
-    uintptr_t manager = (uintptr_t)(g_base + 0x18715e0);
-    (void)site;
-    out[0] = 0x48; out[1] = 0x83; out[2] = 0xec; out[3] = 0x28;
-    out[4] = 0x48; out[5] = 0xa1;
-    memcpy(out + 6, &manager, 8);
-    out[14] = 0x8b; out[15] = 0x88; out[16] = 0xb0; out[17] = 0x05; out[18] = 0; out[19] = 0;
-    return 20;
+    uintptr_t manager = (uintptr_t)(g_base + GAME_MANAGER_RVA);
+    static const uint8_t head[] = {0x48, 0x83, 0xec, 0x28, 0x48, 0xa1};
+    static const uint8_t tail[] = {0x8b, 0x88, 0xb0, 0x05, 0x00, 0x00};
+    memcpy(out, head, sizeof head);
+    memcpy(out + sizeof head, &manager, 8);
+    memcpy(out + sizeof head + 8, tail, sizeof tail);
+    return sizeof head + 8 + sizeof tail;
 }
 
 static InlineHook g_inline_hooks[] = {
     {0xd6a560, 21, "game send", (void *)det_GameSend, (void **)&g_game_send,
      {0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
       0x48, 0x8d, 0xac, 0x24, 0x58, 0xfe, 0xff, 0xff}, NULL},
+    {0x8af1b0, 17, "coop wait flag", (void *)det_WaitFlag, (void **)&g_wait_flag,
+     {0x48, 0x83, 0xec, 0x28, 0x48, 0x8b, 0x05, 0x25, 0x24, 0xfc, 0x00,
+      0x8b, 0x88, 0xb0, 0x05, 0x00, 0x00}, relocate_wait_flag},
+#ifdef NIOH3P_RESEARCH
     {0xd6acc0, 19, "game dispatch", (void *)det_GameDispatch, (void **)&g_game_dispatch,
      {0x48, 0x8b, 0xc4, 0x55, 0x53, 0x57, 0x41, 0x57, 0x48, 0x8d, 0x68, 0xa1,
       0x48, 0x81, 0xec, 0xc8, 0x00, 0x00, 0x00}, NULL},
-    {0x8af1b0, 17, "wait flag", (void *)det_WaitFlag, (void **)&g_wait_flag,
-     {0x48, 0x83, 0xec, 0x28, 0x48, 0x8b, 0x05, 0x25, 0x24, 0xfc, 0x00,
-      0x8b, 0x88, 0xb0, 0x05, 0x00, 0x00}, relocate_wait_flag},
+#endif
 };
 
 static void abs_jmp(uint8_t *at, const void *to)
@@ -3032,44 +3045,49 @@ static void abs_jmp(uint8_t *at, const void *to)
     memcpy(at + 6, &target, 8);
 }
 
+/* 1 installed, 0 bytes not (yet) the expected plaintext, -1 failed. */
 static int inline_install(InlineHook *h)
 {
     uint8_t *site = g_base + h->rva;
     if (!readable(site, h->n) || memcmp(site, h->bytes, h->n))
         return 0;
-    uint8_t *tramp = VirtualAlloc(NULL, 64, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    uint8_t *tramp = VirtualAlloc(NULL, 64, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    DWORD old;
     if (!tramp) {
-        LOG("game pkt trace: no trampoline for %s (err %lu)", h->name, GetLastError());
+        LOG("game tokoyo: no trampoline for %s (err %lu)", h->name, GetLastError());
         return -1;
     }
-    unsigned body = h->n;
-    if (h->relocate)
-        body = h->relocate(tramp, site);
-    else
+    unsigned body = h->relocate ? h->relocate(tramp) : h->n;
+    if (!h->relocate)
         memcpy(tramp, site, h->n);
     abs_jmp(tramp + body, site + h->n);
+    if (!VirtualProtect(tramp, 64, PAGE_EXECUTE_READ, &old)) {
+        LOG("game tokoyo: cannot seal the %s trampoline (err %lu)", h->name, GetLastError());
+        VirtualFree(tramp, 0, MEM_RELEASE);
+        return -1;
+    }
     FlushInstructionCache(GetCurrentProcess(), tramp, 64);
     *h->orig = tramp;
     uint8_t patch[24];
     memset(patch, 0x90, h->n);
     abs_jmp(patch, h->detour);
-    DWORD old;
     if (!VirtualProtect(site, h->n, PAGE_EXECUTE_READWRITE, &old)) {
-        LOG("game pkt trace: cannot write %s (err %lu)", h->name, GetLastError());
+        LOG("game tokoyo: cannot write %s (err %lu)", h->name, GetLastError());
         return -1;
     }
     memcpy(site, patch, h->n);
     FlushInstructionCache(GetCurrentProcess(), site, h->n);
-    VirtualProtect(site, h->n, PAGE_EXECUTE_READ, &old);
-    LOG("game pkt trace: %s hooked at %p (trampoline %p)", h->name, site, tramp);
+    if (!VirtualProtect(site, h->n, PAGE_EXECUTE_READ, &old))
+        LOG("game tokoyo: cannot restore execute protection at %#x (err %lu)",
+            h->rva, GetLastError());
     return 1;
 }
 
-static DWORD WINAPI game_pkt_trace_worker(LPVOID unused)
+static DWORD WINAPI tokoyo_hooks_worker(LPVOID unused)
 {
     (void)unused;
     const unsigned n = sizeof g_inline_hooks / sizeof g_inline_hooks[0];
-    unsigned done = 0;
+    unsigned done = 0, ok = 0;
     int state[4] = {0};
     for (int waited = 0; waited < 600000 && done < n; waited += 50) {
         for (unsigned i = 0; i < n; i++) {
@@ -3078,14 +3096,15 @@ static DWORD WINAPI game_pkt_trace_worker(LPVOID unused)
             state[i] = inline_install(&g_inline_hooks[i]);
             if (state[i])
                 done++;
+            if (state[i] > 0)
+                ok++;
         }
         if (done < n)
             Sleep(50);
     }
-    LOG("game pkt trace: %u/%u entry point(s) handled", done, n);
+    LOG("game tokoyo: %u/%u companion hook(s) installed", ok, n);
     return 0;
 }
-#endif
 
 /* -------------------------------------------------- game-side friend invite */
 
@@ -3522,16 +3541,22 @@ static DWORD WINAPI worker(LPVOID unused)
         else
             LOG("worker: cannot start the dump thread (err %lu)", GetLastError());
     }
-    if (g_cfg.trace && g_cfg.hook_eos && mod_active && g_game_create_param_hook.nslots) {
-        HANDLE t = CreateThread(NULL, 0, game_pkt_trace_worker, NULL, 0, NULL);
-        if (t)
-            CloseHandle(t);
-        else
-            LOG("game pkt trace: cannot start its thread (err %lu)", GetLastError());
-    }
     if (disk)
         VirtualFree(disk, 0, MEM_RELEASE);
 #endif
+    /* Companion hooks: the 3-4 player fixes, and in research builds with
+     * trace=1 the game packet trace that rides on the same entry points. */
+    int want_tokoyo = g_cfg.max_players >= 3;
+#ifdef NIOH3P_RESEARCH
+    want_tokoyo = want_tokoyo || g_cfg.trace;
+#endif
+    if (want_tokoyo && g_cfg.hook_eos && mod_active && g_game_create_param_hook.nslots) {
+        HANDLE t = CreateThread(NULL, 0, tokoyo_hooks_worker, NULL, 0, NULL);
+        if (t)
+            CloseHandle(t);
+        else
+            LOG("game tokoyo: cannot start the hook thread (err %lu)", GetLastError());
+    }
     if (g_cfg.hook_eos && mod_active) {
         install_game_visitor_allowance();
         install_game_invite_hooks();

@@ -15,9 +15,10 @@ Git does not track `build/`, `dist/` or `.local/`.
   (`~/.local/share/Steam/steamapps/common/Nioh`) has the same DLL and the player
   ini installed. A save backup from before that install is at
   `~/Backups/nioh-savedata-20261021-174429.tar.gz`.
-- Rig slots `lan-{a,b,c}` hold the release build in principle. Now `lan-a` and
-  `lan-b` hold the `friend-invite` research build and `lan-c` the
-  `friend-invite` player build (see below). The rig is shut down.
+- Rig slots `lan-{a,b,c,d}` hold the `friend-invite` player build `1750668e`
+  (`max_players=4`, `trace=0`). The release copies are saved as
+  `lan-{a,b,c,d}/dinput8.dll.saved` (SHA-256 starts `6db5351d`) and
+  `lan-{a,b}/nioh3p.ini.saved`. Restore them before any release testing.
 - VirusTotal: 5/71 generic heuristics (Avast, AVG, Avira, WithSecure, Cynet);
   Microsoft reports it clean. Report link is in `docs/FP_REPORTS.md`.
 - A Windows 11 VM for Defender tests is stopped and kept in
@@ -25,8 +26,8 @@ Git does not track `build/`, `dist/` or `.local/`.
 
 ## Branch `friend-invite` (not in master)
 
-This branch holds the current work. The older `four-player` branch (`030d265`,
-slot d and the first four-client mission) is not merged into it.
+This branch holds the current work. The older `four-player` branch (`030d265`)
+is not merged. Its rig slot d is ported here (`run.sh`, `nioh_nav.py`).
 
 - Friend invite (direct join): pump byte patch, CCallback vtable hook, join task
   0x140d73380. The open-task singleton at [manager+0xa8] is now created through
@@ -36,18 +37,15 @@ slot d and the first four-client mission) is not merged into it.
 - The host logs `Steam host lobby id=N` once per lobby. Use that id for
   `nioh3p.invite.txt`. The `Steam CreateLobby -> call N` value is an API call
   handle, not a lobby id.
-- Torii companion hosting (rig, 2026-10-25): all seven allowance sites install,
-  the lobby is created with 4 members, and two players load a mission with no
-  Ochoko Cup. A third client joins the Steam lobby but stays on `Waiting for
-  mission to be chosen`, because the companion mode pairs the host with one
-  companion. Details: `docs/FINDINGS.md`, "Torii Gate companion hosting".
-- The decision-model driver now follows the Torii flow, drives all visitors at
-  the same time, and can leave a mission (`docs/RIG.md`, "Decision-model
-  driver"). Use `--backend luna`.
-- lan-a/lan-b hold the research build; lan-c holds the player build. The
-  release copies are saved as `lan-{a,b,c}/dinput8.dll.saved` and
-  `lan-{a,b}/nioh3p.ini.saved` (DLL SHA-256 starts `6db5351d`). Restore them
-  before any release testing.
+- Torii Gate with three and four players works on the rig with the player
+  build: all players reach the mission, no Ochoko Cup. Two companion hooks do
+  it: the host mirrors the preparation packets 76, 74, 75 and 17 to companion
+  slots 2 and 3, and later companions leave the shared mission-start counter
+  to slot 1. Every player needs the mod. Details: `docs/RE_TOKOYO_COOP.md` and
+  `docs/FINDINGS.md`, "Torii Gate with three and four players".
+- The rig is driven by `tools/rig/rig.py` (up, down, status, state, deploy,
+  ini, collect) and `tools/rig/coop.py` (Luna is the default backend). No Steam
+  client is needed for the LAN slots. See `docs/RIG.md`.
 - Playtest 2026-10-23, three real Steam accounts: the mod worked. The host
   raised 2 -> 3 members, friend A (story filter <= 5) found and joined the
   lobby and stayed 8 minutes. Friend B never saw the host because Nioh's
@@ -58,10 +56,11 @@ slot d and the first four-client mission) is not merged into it.
 
 ## Next actions
 
-1. Follow `docs/TORII_PLAN.md` (Torii Gate with three and four players). Start
-   with Phase 1: record what the host sends to its one companion, and find why
-   a third client never gets the mission choice and the start signal. Use the
-   saved disassembly and research-build traces, not a debugger.
+1. Play the Torii Gate with three players in a real session: finish a
+   mission, die and revive with the assist gauge, check the rewards. The
+   party HUD and the result screen name one companion. Then decide whether the
+   player package gets the Torii Gate support (new DLL hash, new VirusTotal
+   scan, `tools/package.sh` only with approval).
 2. Rig test the friend invite: take the id from `Steam host lobby id=`, put it
    in `nioh3p.invite.txt` in the visitor game dir, and expect `open task object
    created`, then `JoinLobby` and host admission.
@@ -74,8 +73,7 @@ slot d and the first four-client mission) is not merged into it.
    `unsupported nioh.exe build` line (version mismatch) and that the capacity
    and allowance lines are present.
 5. These items are still untested with three players: finishing a mission,
-   deaths and revives, rewards, and a new offering after a visitor leaves. The
-   party HUD shows one name.
+   deaths and revives, rewards, and a new offering after a visitor leaves.
 6. Send the false-positive reports to Avast/AVG, Avira, WithSecure and Cynet
    with the texts in `docs/FP_REPORTS.md`. Each vendor has its own web form.
    Keep the Defender draft unless Defender flags this build later.
@@ -86,11 +84,9 @@ slot d and the first four-client mission) is not merged into it.
    SignPath Foundation. The paid fallback is Certum open source (€49, real name
    on the certificate).
 9. If a friend's game stops starting, delete `dinput8.dll` to correct it.
-10. For rig navigation, use the Luna backend:
+10. For rig navigation: `tools/rig/rig.py up b a c`, then
     `EXPLABS_KEY_FILE=~/.omp/agent/provider-keys/experiential-labs python3
-    tools/rig/coop.py run --host b --visitors a c --backend luna`. The
-    OpenRouter key for `mercury` is revoked. `docs/NAV_OPTIONS.md` lists the
-    next speedups in order.
+    tools/rig/coop.py run --host b --visitors a c`. Add `d` for four players.
 
 ## Open decisions
 

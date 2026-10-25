@@ -1315,15 +1315,61 @@ host with one companion:
   The lobby stays listed while the mission runs.
 
 The lobby and allowance patches are therefore not enough for this mode. The
-next research target is the companion session state: where the host stores its
-single companion, and which code sends the mission choice and the start signal
-to that companion. The shrine Summon Visitor path, which uses an Ochoko Cup
-during a mission, already took two visitors (see "Three players in one
-mission").
+next section finds the single-companion code and fixes it.
 
 `CreateLobby` returns a Steam API call handle, not a lobby id. The proxy now
 logs `Steam CreateLobby -> call N`. It logs the real id once per lobby, as
 `Steam host lobby id=N`, when the host first publishes lobby data.
+
+### Torii Gate with three and four players (2026-10-25)
+
+A research-build packet trace (`game pkt send`/`recv` at the game's own send
+and dispatch functions, below the encrypted Steam P2P layer) showed the cause.
+The full packet map is in `docs/RE_TOKOYO_COOP.md`.
+
+- Both later searchers were admitted (packet 73). The host then sent the
+  mission preview (76), its ready flag (74), the chosen mission (17) and the
+  start flag (75) to member slot 1 only. Each sender hard-codes "the other
+  player" as slot 1. The companion in slot 2 never left "Waiting for mission
+  to be chosen".
+- With those four packets mirrored to slot 2 (a research hook), both
+  companions received the mission, loaded it, and ran the load handshake with
+  each other (18 to 21 already loop over all slots). All three clients then
+  stayed on the loading screen with an idle iGPU. Read-only probes showed
+  loader phase 1 on one companion, and a thread sample showed the mission
+  script polling `Online::IsWaitCoopPlayer`. The sync counters read host 1,
+  visitors 3: every companion increments the one shared visitor counter
+  (mission flag `0x47`), so it runs ahead of the host.
+- With the second fix (only the slot-1 companion advances flag `0x47`), the
+  counters stayed equal (3/3) and all clients reached the mission.
+
+Results on the rig, all menus driven by Luna:
+
+| Run | Build | Result |
+| --- | --- | --- |
+| B host, A and C search together | research | all three in the mission (loader 12, state 14, counters 3/3), each client shows the other two (`shots/torii-3p-{b,a,c}.png`). A moved and B rendered the move. |
+| the same | player `1750668e` | all three in the mission, 267 s from the coop start |
+| B host, A, C and D search together | player `1750668e` | all four in the mission (`shots/torii-4p-{b,a,c,d}.png`), slots 0 to 3, counters 2/2 |
+| C uses a Himorogi Fragment in the four-player mission | player | all four get "Yokai Realm with a Companion: Failed" and return to the Torii Gate. This is the stock rule for two players as well. |
+
+The player build installs both hooks at boot (`game tokoyo: 2/2 companion
+hook(s) installed`). On the host it logs `game tokoyo: packet N also sent to
+companion slot S`. On a later companion it logs `companion slot S leaves the
+shared wait counter to slot 1`. The party HUD and the result screen still name
+one companion. Mission completion, death and revival with the assist gauge,
+and rewards were not played through. They need a real session.
+
+One rig artifact was found on the way. In research builds, `dump_every_s`
+used to run on the worker thread before the allowance installer. A host with
+`dump_every_s=180` patched no allowance site for 36 minutes, and the third
+client left the Steam lobby 0.6 s after joining it. The dumps now run on their
+own thread.
+
+Windows 11 VM, Defender at its defaults (definitions 1.461.144.0, not updated
+for this run): the player build `1750668e` passed the harness (6 PASS) with 0
+detections, and the real `nioh.exe` loaded it (`preflight: exe=ok`) before
+exiting with code 53 for lack of Steam. The companion hooks install only
+after `.text` is decrypted, so they did not run in the VM.
 
 ### Launch-command and filesystem limits
 
