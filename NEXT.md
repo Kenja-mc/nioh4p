@@ -92,6 +92,15 @@ The branch names remain for reference. Nothing is pushed or published.
    `~/Projects/ai-stack/docs/records/harvest/summary.md`.
    That file also contains unrelated uncommitted Cataclysm-BN work.
    Preserve it and the unrelated reference-document changes in that repository.
+10. Publish only through a scrubbed mirror clone, never from this repository.
+    This repository has no remote on purpose: the tracked files carry the real
+    home path, the rig account names and ids, and the LAN SteamIDs. The public
+    tree replaces `/home/<user>`, `<account-name-private-1>`, `<account-name-private-2>`, `<account-name-private-3>`, the four
+    SteamID64 values and the save account ids `<accountid-private-1>`, `<accountid-private-2>`,
+    `63447459`, `63447460` with `<you>`, `player-one`, `player-two`,
+    `PlayerTwo`, `<steamid-lan-a>` to `<steamid-lan-d>` and
+    `<accountid-a>` to `<accountid-d>`. Copy the tree, apply that map, run the
+    grep gate, then commit on top of the public `master` and tag there.
 
 ## Open decisions
 

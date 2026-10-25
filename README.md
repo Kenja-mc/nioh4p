@@ -11,6 +11,9 @@ Mission completion, deaths, revives and rewards still need a live Steam test.
 Use `package/README.md` for the candidate's installation and test sequence.
 The frozen zip in `dist/` does not include this support.
 
+The candidate is published as a pre-release, with its hashes and limits:
+<https://github.com/Kenja-mc/nioh3p/releases/tag/v1.1.0-rc1>.
+
 ## What is here
 
 The repository holds the proxy source, the build and install scripts, the
