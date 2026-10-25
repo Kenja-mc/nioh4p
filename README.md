@@ -28,6 +28,7 @@ evidence for each claim is in `docs/FINDINGS.md`.
 | `build.sh` | builds `build/dinput8.dll` (zig or mingw-w64, plus `llvm-rc`/`llvm-cvtres`) |
 | `tools/pechecksum.py` | recomputes the PE optional-header checksum after the link |
 | `install.sh` / `install.sh uninstall` | puts two files in the game directory, or removes them |
+| `play.sh` | starts Nioh through Steam; `stock` removes the mod and its leftovers, `mod` reinstalls it, `status` shows the game folder and the launch options |
 | `nioh3p.ini` | configuration: `max_players`, dump, hooks |
 | `tools/pe.py`, `tools/analyze.py` | PE reader + `.pdata`-driven disassembly used for the analysis |
 | `tools/rtti.py` | RTTI -> vtables -> methods (needs a runtime image dump) |
