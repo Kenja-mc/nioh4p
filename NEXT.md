@@ -88,6 +88,10 @@ The branch names remain for reference. Nothing is pushed or published.
 8. For the local rig, run `tools/rig/rig.py up b a c`, then
    `EXPLABS_KEY_FILE=~/.omp/agent/provider-keys/experiential-labs python3
    tools/rig/coop.py run --host b --visitors a c`. Add `d` for four players.
+9. Review and commit only the Nioh harvest section in
+   `~/Projects/ai-stack/docs/records/harvest/summary.md`.
+   That file also contains unrelated uncommitted Cataclysm-BN work.
+   Preserve it and the unrelated reference-document changes in that repository.
 
 ## Open decisions
 
