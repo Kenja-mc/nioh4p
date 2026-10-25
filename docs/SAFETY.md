@@ -15,16 +15,24 @@ count and the log options.
 
 ## What the mod changes
 
-The mod changes four things inside the game process. It changes nothing else.
+The mod changes the things below inside the game process. It changes nothing
+else.
 
-1. It raises the lobby member limit from 2 to 3. It does this in the requests
-   that create the lobby, and only after it checks the exact game build.
-2. It raises the host's visitor allowance from one to two. The game accepts
-   the second visitor instead of rejecting the request.
+1. It raises the lobby member limit from 2 to the configured count, 3 by
+   default or 4 when selected. It first checks the exact game build.
+2. It raises the host's visitor allowance to the configured count minus one.
+   The game accepts the extra visitors instead of rejecting their requests.
 3. It fixes one game function that copies lobby settings. When that function
    copies a value onto itself, the stock code replaces the value with empty
    memory. The fix keeps the value, so the next visitor can find the lobby.
-4. It writes a text log. The log records which hooks the mod installed and
+4. Builds after the 2026-10-21 release only: it lets more than one companion
+   join "Yokai Realm with a Companion" at the Torii Gate. Two game functions
+   get a jump to the mod at their start. The host's copy sends the mission
+   choice to every companion, not only the first one. A later companion's
+   copy skips one mission-start counter that the first companion already
+   keeps. The jumps go to two small blocks of code that the mod allocates as
+   read and execute only.
+5. It writes a text log. The log records which hooks the mod installed and
    what the game asked for.
 
 ## What the mod never does

@@ -27,6 +27,7 @@ the original driver). ``TailOracle`` watches a log file for new bytes only.
 import base64
 import json
 import os
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -36,7 +37,7 @@ LUNA_URL = "https://api.experientiallabs.ai/v1/decisions"
 MERCURY_MODEL = "inception/mercury-decide:free"
 LUNA_MODEL = "gpt-6-luna-decisions"
 BACKENDS = ("mercury", "luna")
-DEFAULT_BACKEND = "mercury"
+DEFAULT_BACKEND = "luna"
 DEFAULT_PROMPT = "Screenshot from a test rig. Answer every question about this frame only."
 
 
@@ -165,15 +166,16 @@ def ask_decisions(image_path, ask, backend=DEFAULT_BACKEND, model=None, *,
     key = key or api_key(backend)
     prompt = prompt or DEFAULT_PROMPT
     questions = _normalize(ask)
+    mime = "image/jpeg" if image_path.lower().endswith((".jpg", ".jpeg")) else "image/png"
     with open(image_path, "rb") as image:
-        encoded = base64.b64encode(image.read()).decode()
+        data_url = f"data:{mime};base64," + base64.b64encode(image.read()).decode()
 
     started = time.monotonic()
     if backend == "mercury":
         body = {
             "model": model,
             "state": [prompt, {"type": "image_url",
-                               "image_url": {"url": "data:image/png;base64," + encoded}}],
+                               "image_url": {"url": data_url}}],
             "questions": {
                 name: ({"type": "choice", "instructions": spec["instructions"],
                         "criteria": spec["criteria"]}
@@ -208,8 +210,7 @@ def ask_decisions(image_path, ask, backend=DEFAULT_BACKEND, model=None, *,
             "model": model,
             "input": [{"role": "user", "content": [
                 {"type": "input_text", "text": prompt},
-                {"type": "input_image",
-                 "image_url": "data:image/png;base64," + encoded},
+                {"type": "input_image", "image_url": data_url},
             ]}],
             "questions": [
                 ({"type": "choice", "name": name, "instructions": spec["instructions"],
@@ -272,7 +273,8 @@ class Perceiver:
 
     def __init__(self, capture, ask, backend=DEFAULT_BACKEND, model=None, *,
                  prompt=None, confidence_min=0.6, fallbacks=None,
-                 prefix="frame", label=None, retry_tags=(("a", 0.25), ("b", 1.0))):
+                 prefix="frame", label=None, retry_tags=(("a", 0.25), ("b", 1.0)),
+                 retry_if=None):
         self.capture = capture
         self.questions = _normalize(ask)
         self.backend = backend
@@ -283,22 +285,25 @@ class Perceiver:
         self.prefix = prefix
         self.label = label or prefix
         self.retry_tags = retry_tags
+        # retry_if(low_names, answers) -> bool: whether a second frame can
+        # change anything. Default: any low-confidence choice retries.
+        self.retry_if = retry_if or (lambda low, answers: bool(low))
         self.key = api_key(backend)
 
     @classmethod
     def from_profile(cls, profile, capture, backend=DEFAULT_BACKEND, model=None, *,
-                     prefix="frame", label=None):
+                     prefix="frame", label=None, retry_if=None):
         safety = profile["safety"]
         return cls(capture, profile_ask(profile), backend, model,
                    prompt=profile.get("prompt"),
                    confidence_min=safety["confidence_min"],
                    fallbacks=profile.get("fallbacks", {}),
-                   prefix=prefix, label=label)
+                   prefix=prefix, label=label, retry_if=retry_if)
 
     def perceive(self, step=0):
         result = self._ask(step, *self.retry_tags[0])
         low = self._low(result["answers"])
-        if low and len(self.retry_tags) > 1:
+        if low and len(self.retry_tags) > 1 and self.retry_if(low, result["answers"]):
             result = self._ask(step, *self.retry_tags[1])
             low = self._low(result["answers"])
         state = {"screenshot": result["screenshot"], "latency": result["latency"],
@@ -367,13 +372,15 @@ class Trace:
             suffix += 1
         self.path = path
         self.n = 0
+        self._lock = threading.Lock()   # concurrent visitor drivers share one trace
         self._file = open(path, "w", encoding="utf-8")
 
     def write(self, **record):
-        self.n += 1
-        record["step"] = self.n
-        self._file.write(json.dumps(record, sort_keys=True) + "\n")
-        self._file.flush()
+        with self._lock:
+            self.n += 1
+            record["step"] = self.n
+            self._file.write(json.dumps(record, sort_keys=True) + "\n")
+            self._file.flush()
 
     def close(self):
         self._file.close()

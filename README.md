@@ -5,12 +5,11 @@ Edition (Steam appid 485510, under Proton), with instrumentation and working
 notes. It is for modders and reverse engineers who want a working three-player
 co-op session and the data behind it.
 
-Status: three-player co-op works in the isolated LAN rig. A host and two
-visitors, all running this proxy, played one mission together. Each rendered the
-other two, and each moved independently. An attack by one visitor was visible to
-the host (`docs/FINDINGS.md`, "Three players in one mission"). Two cases stay
-untested: authenticated online play with three separate Steam accounts, and
-stock (unmodded) visitors.
+Status: three- and four-player co-op reach a mission in the isolated LAN rig
+through the Torii Gate without an Ochoko Cup. Each player needs the mod.
+Mission completion, deaths, revives and rewards still need a live Steam test.
+Use `package/README.md` for the candidate's installation and test sequence.
+The frozen zip in `dist/` does not include this support.
 
 ## What is here
 
@@ -310,21 +309,24 @@ window on the desktop and nothing written in your own Steam root. See
 `docs/RIG.md` for the launch options and observed failures.
 `DXVK_WSI_DRIVER=xcb` was an invalid workaround and is no longer set.
 
-## The experiment that answers the open question
+## Co-op modes and what is verified
 
-The open question needs a test on the host machine only. Install the mod on the
-host machine alone. Do not install it on the other clients. Then do these steps:
+The LAN rig verified two ways to bring more than two players into one mission:
 
-1. Start the game, go to the Torii Gates, and choose *Yokai Realm with a
-   Companion*.
-2. Ask two other players with stock clients to try to join.
-3. Send `nioh3p.log` back.
+* The shrine offering. The host offers an Ochoko Cup at a shrine, and the
+  visitors search with *Random Encounters*.
+* The Torii Gate, without an Ochoko Cup. Everyone picks *Yokai Realm with a
+  Companion*, *Without Conditions*, *Search*. The first player to search
+  becomes the host. The others must search during the host's preparation
+  countdown. Three and four players reached the mission on 2026-10-25
+  (`docs/RE_TOKOYO_COOP.md`, `docs/FINDINGS.md`).
 
-These steps answer three things at once. They show which mode-specific call site
-creates the lobby. They also show what the game thinks the member count is, and
-whether a stock client refuses a three-member lobby. The LAN rig verified the
-shrine-offering path (Ochoko Cup, then *Random Encounters* searches). Other co-op
-modes are untested.
+In the Torii Gate mode every player needs the mod. The host's copy sends the
+mission choice to every companion, and each later companion's copy keeps the
+mission start in step. The released player package (`dist/nioh3p-player.zip`)
+predates the Torii Gate support. The party HUD and the result screen still name
+one companion. A Himorogi Fragment used by any player ends the mission for all
+of them, as it does for two. Other co-op modes are untested.
 
 ## Verified so far
 
@@ -363,6 +365,11 @@ Reproduce with `tools/quiet.sh proxy` or `tools/quiet.sh game`. These wrap
 throwaway prefix. The run installs nothing and writes nothing in the game
 directory. `./build.sh --harness` builds the harness pieces.
 
+Set `NIOH3P_MAX_PLAYERS=3` or `4` to exercise either supported capacity.
+Set `NIOH3P_TRACE=0` for the player build or `1` for the research build.
+`tools/quiet.sh` returns the underlying smoke run's exit code.
+The capacity assertions cover both EOS requests and Steam's member limit.
+
 EOS safety regression: no Steam login is required, because the check uses a
 local SDK lifetime fixture. Run `DISPLAY=:9 tools/smoketest.sh ownership`. The
 returned lobby-info allocation must remain readable until the game caller
@@ -376,9 +383,10 @@ old proxy. These checks do not establish multiplayer gameplay.
 Three limits apply to the verified build. The items below name each limit.
 `docs/FINDINGS.md` holds the detail for the first two.
 
-* Verified only in the LAN rig, with the proxy on all three clients, via the
-  shrine offering and Random Encounters. The group did not finish a
-  three-player mission, and the party HUD lists one partner name.
+* Verified in the LAN rig through both the shrine and Torii Gate paths, with
+  the mod on every client. The group did not finish a three- or four-player
+  mission. The party HUD lists one partner name. The first live Steam test
+  must cover completion, deaths, revives and rewards.
 * On the single integrated GPU of the rig, the visitor who joins second can sit
   on the loading screen for ~5 minutes. The other two clients take the GPU.
   Given GPU time, it loads in about 30 s. The host can time that slot out in the

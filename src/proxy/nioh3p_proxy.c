@@ -18,6 +18,11 @@
  *      Two mechanisms: the documented IAT slot, plus a fallback that scans the
  *      main module for stored copies of the EOS entry point (a rebuilt or
  *      protected import table would defeat the first one).
+ *   4. Patches the game's own two-player assumptions once .text is plaintext:
+ *      the visitor allowance (shrine and Torii Gate recruitment) and, for the
+ *      Torii Gate companion mode, two inline hooks (the host mirrors the
+ *      preparation packets to every companion; later companions leave the
+ *      shared mission-start counter to slot 1). See docs/RE_TOKOYO_COOP.md.
  *
  * Built freestanding: no CRT and no api-ms-win-crt-* imports, because Proton's
  * Wine (like plain Wine) does not ship those apisets - a CRT-linked DLL would
@@ -37,10 +42,10 @@
  * Within the research build, two runtime modes are selected by the `trace`
  * key in nioh3p.ini:
  *   trace=0 (player mode, the default): only the hooks that change behaviour
- *     (lobby capacity, filter drops, force_unlock, the metadata guard) plus
- *     the rare lobby events (create/join/leave) and the numerical search
- *     filter (forwarded unchanged, but its key names go to the log) are
- *     installed. The
+ *     (lobby capacity, filter drops, force_unlock, the metadata guard, the
+ *     companion hooks) plus the rare lobby events (create/join/leave) and the
+ *     numerical search filter (forwarded unchanged, but its key names go to
+ *     the log) are installed. The
  *     per-P2P-packet, friends, socket and callback instrumentation is not
  *     installed at all - no hook, no log line - so the network path is
  *     untouched and a multi-hour session writes a small log.
@@ -557,8 +562,10 @@ static void cfg_load(const char *dir)
             line++;
     }
     VirtualFree(buf, 0, MEM_RELEASE);
-    /* 0 turns the clamps off; 2..4 are the only member counts the patches and
-     * the game's arrays support. Anything else falls back to 3. */
+    /* 0 turns the clamps off; 2..4 are the only member counts the patches
+     * address. Four slot entries and limit-sized member arrays are confirmed
+     * by a live four-client mission (docs/FINDINGS.md section 15). Anything
+     * else falls back to 3. */
     if (g_cfg.max_players != 0 && (g_cfg.max_players < 2 || g_cfg.max_players > 4)) {
         g_cfg_max_players_raw = (int)g_cfg.max_players;
         g_cfg_max_players_bad = 1;
@@ -1751,7 +1758,9 @@ static uint64_t EOS_CALL det_SteamCreateLobby(void *self, int lobby_type, int ma
         log_backtrace("Steam_ISteamMatchmaking::CreateLobby");
 #endif
     PFN_SteamCreateLobby o = (PFN_SteamCreateLobby)g_steam[0].orig;
-    return o ? o(self, lobby_type, max_members) : 0;
+    uint64_t call = o ? o(self, lobby_type, max_members) : 0;
+    LOG("Steam CreateLobby -> call %llu", (unsigned long long)call);
+    return call;
 }
 
 static uint8_t EOS_CALL det_SteamSetLobbyMemberLimit(void *self, uint64_t lobby, int max_members)
@@ -1778,6 +1787,13 @@ static void install_game_metadata_guard(void);
 static int EOS_CALL det_SteamSetLobbyData(void *self, uint64_t lobby, const char *key, const char *value)
 {
     SITE_NOTE("SteamSetLobbyData");
+    /* CreateLobby only returns an API call handle; the lobby id first shows up
+     * here, when the host publishes its data. One line per lobby. */
+    static volatile uint64_t s_logged_lobby;
+    if (lobby && lobby != s_logged_lobby) {
+        s_logged_lobby = lobby;
+        LOG("Steam host lobby id=%llu", (unsigned long long)lobby);
+    }
     if (__builtin_return_address(0) == g_base + 0x5ffe52)
         install_game_metadata_guard();
     const char *use = value;
@@ -2256,23 +2272,39 @@ static const char *EOS_CALL det_FriendPersonaName(void *self, uint64_t friend_id
 }
 
 /* ---- ISteamNetworking v006: the P2P channel and its session state ---- */
+/* The game protocol rides on this channel. The first 16 payload bytes carry
+ * the framing and the raw packet ID; the rest stays out of the log. */
+static void p2p_head(char *out, size_t cap, const void *data, unsigned size)
+{
+    static const char digits[] = "0123456789abcdef";
+    const uint8_t *b = (const uint8_t *)data;
+    size_t n = 0;
+    for (unsigned i = 0; b && i < size && i < 16 && n + 3 < cap; i++) {
+        out[n++] = digits[b[i] >> 4];
+        out[n++] = digits[b[i] & 15];
+        out[n++] = ' ';
+    }
+    out[n ? n - 1 : 0] = 0;
+}
+
 static int EOS_CALL det_P2PSend(void *self, uint64_t peer, const void *data, unsigned size, int send_type, int channel)
 {
     SITE_NOTE("P2PSend");
     int r = ((int EOS_CALL (*)(void *, uint64_t, const void *, unsigned, int, int))g_networking[P_SEND].orig)
           ? ((int EOS_CALL (*)(void *, uint64_t, const void *, unsigned, int, int))g_networking[P_SEND].orig)(self, peer, data, size, send_type, channel) : 0;
-    LOG("Steam p2p: SendP2PPacket(peer=%llu size=%u type=%d chan=%d) -> %d",
-        (unsigned long long)peer, size, send_type, channel, r);
+    char head[52];
+    p2p_head(head, sizeof head, data, size);
+    LOG("Steam p2p: SendP2PPacket(peer=%llu size=%u type=%d chan=%d) -> %d [%s]",
+        (unsigned long long)peer, size, send_type, channel, r, head);
     return r;
 }
 
+/* Polled every frame: logging it (or its call site) buried everything else
+ * (1.2M lines per session), so only the read that follows a hit is logged. */
 static int EOS_CALL det_P2PAvailable(void *self, unsigned *size, int channel)
 {
-    SITE_NOTE("P2PAvailable");
-    int r = ((int EOS_CALL (*)(void *, unsigned *, int))g_networking[P_AVAIL].orig)
-          ? ((int EOS_CALL (*)(void *, unsigned *, int))g_networking[P_AVAIL].orig)(self, size, channel) : 0;
-    LOG("Steam p2p: IsP2PPacketAvailable(chan=%d) -> %d size=%u", channel, r, r && size ? *size : 0);
-    return r;
+    return ((int EOS_CALL (*)(void *, unsigned *, int))g_networking[P_AVAIL].orig)
+         ? ((int EOS_CALL (*)(void *, unsigned *, int))g_networking[P_AVAIL].orig)(self, size, channel) : 0;
 }
 
 static int EOS_CALL det_P2PRead(void *self, void *dest, unsigned cap, unsigned *size, uint64_t *from, int channel)
@@ -2280,8 +2312,10 @@ static int EOS_CALL det_P2PRead(void *self, void *dest, unsigned cap, unsigned *
     SITE_NOTE("P2PRead");
     int r = ((int EOS_CALL (*)(void *, void *, unsigned, unsigned *, uint64_t *, int))g_networking[P_READ].orig)
           ? ((int EOS_CALL (*)(void *, void *, unsigned, unsigned *, uint64_t *, int))g_networking[P_READ].orig)(self, dest, cap, size, from, channel) : 0;
-    LOG("Steam p2p: ReadP2PPacket(chan=%d) -> %d size=%u from=%llu",
-        channel, r, r && size ? *size : 0, r && from ? (unsigned long long)*from : 0ull);
+    char head[52];
+    p2p_head(head, sizeof head, r ? dest : 0, r && size ? (*size < cap ? *size : cap) : 0);
+    LOG("Steam p2p: ReadP2PPacket(chan=%d) -> %d size=%u from=%llu [%s]",
+        channel, r, r && size ? *size : 0, r && from ? (unsigned long long)*from : 0ull, head);
     return r;
 }
 
@@ -2389,6 +2423,12 @@ static void *EOS_CALL det_FindOrCreateInterface(void *user, const char *version)
     return iface;
 }
 
+#ifdef NIOH3P_RESEARCH
+/* friend-invite section below: the rig's synthetic-invite trigger */
+static void det_SteamRunCallbacks(void);
+static void (*orig_RunCallbacks)(void);
+#endif
+
 static void install_steam_hooks(void)
 {
     if (g_steam_ready)
@@ -2402,6 +2442,14 @@ static void install_steam_hooks(void)
      * dispatch above; unsupported Steam interfaces pass through untouched. */
     FARPROC f;
 #ifdef NIOH3P_RESEARCH
+    /* The synthetic-invite trigger rides the callback pump: it is the one
+     * game thread the rig can rely on, and a real invite arrives through the
+     * same pump. See the friend-invite section below. */
+    f = GetProcAddress(st, "SteamAPI_RunCallbacks");
+    if (f)
+        install_hook("steam_api64.dll", "SteamAPI_RunCallbacks", (void *)f,
+                     (void *)(uintptr_t)det_SteamRunCallbacks,
+                     (void **)&orig_RunCallbacks);
     if (g_cfg.trace) {
         /* Callback watching and exit tracing are instrumentation only. */
         f = GetProcAddress(st, "SteamAPI_RegisterCallback");
@@ -2717,28 +2765,50 @@ static void install_game_metadata_guard(void)
  * allowance - admitted ordinary visitors > 0, so the stock value 1 refuses a
  * second visitor even with three native member slots. Every store that opens
  * recruitment with that single-visitor constant gets max_players - 1 instead;
- * consumption, departure and close paths are unchanged. The shrine setter
- * 0x140d5fb30 itself only accepts values below 3. Code is plaintext only after
- * the stub has decrypted .text, so wait for the exact original bytes. */
+ * consumption, departure and close paths are unchanged. Code is plaintext only
+ * after the stub has decrypted .text, so wait for the exact original bytes.
+ * Sites install individually: the mission and shrine paths decrypt during
+ * ordinary play, the torii-side store and the second setter call only after
+ * that menu is used, and one dormant site must not block the others.
+ * The setter 0x140d5fb30 rejects arguments >= 3 (cmp $3, jge at 0x140d5fb4a);
+ * when three visitors are configured its immediate is raised too, otherwise
+ * the setter keeps the stock cap and stays at 2. */
 typedef struct {
     uint32_t rva;           /* first byte of the instruction */
     uint8_t len;
     uint8_t imm;            /* offset of the immediate's low byte */
     uint8_t setter;         /* value is an argument to 0x140d5fb30 */
+    const char *name;
     uint8_t bytes[10];
 } AllowanceSite;
 
 static const AllowanceSite g_allowance_sites[] = {
     /* session root reset: movl $1, 0x39c(%rcx) */
-    {0xd7ac0c, 10, 6, 0, {0xc7, 0x81, 0x9c, 0x03, 0, 0, 0x01, 0, 0, 0}},
+    {0xd7ac0c, 10, 6, 0, "session root reset",
+     {0xc7, 0x81, 0x9c, 0x03, 0, 0, 0x01, 0, 0, 0}},
     /* shrine offering opens recruitment: movb $1, 0x39c(%rbx) */
-    {0xd7bb77, 7, 6, 0, {0xc6, 0x83, 0x9c, 0x03, 0, 0, 0x01}},
+    {0xd7bb77, 7, 6, 0, "shrine offering",
+     {0xc6, 0x83, 0x9c, 0x03, 0, 0, 0x01}},
     /* controller reset: movb $1, R+0x39c */
-    {0xd7ca03, 7, 6, 0, {0xc6, 0x05, 0x02, 0x44, 0xa1, 0x00, 0x01}},
+    {0xd7ca03, 7, 6, 0, "controller reset",
+     {0xc6, 0x05, 0x02, 0x44, 0xa1, 0x00, 0x01}},
     /* start recruiting: movb $1, R+0x39c */
-    {0xd7daa8, 7, 6, 0, {0xc6, 0x05, 0x5d, 0x33, 0xa1, 0x00, 0x01}},
+    {0xd7daa8, 7, 6, 0, "start recruiting",
+     {0xc6, 0x05, 0x5d, 0x33, 0xa1, 0x00, 0x01}},
+    /* second start-recruiting store (torii-side flow): movb $1, R+0x39c */
+    {0xd7de1f, 7, 6, 0, "start recruiting (alt)",
+     {0xc6, 0x05, 0xe6, 0x2f, 0xa1, 0x00, 0x01}},
     /* online shrine offering: mov $1, %ecx; call 0x140d5fb30 */
-    {0xcf9f36, 10, 1, 1, {0xb9, 0x01, 0, 0, 0, 0xe8, 0xf0, 0x5b, 0x06, 0x00}},
+    {0xcf9f36, 10, 1, 1, "shrine offering setter",
+     {0xb9, 0x01, 0, 0, 0, 0xe8, 0xf0, 0x5b, 0x06, 0x00}},
+    /* second offering (torii-side flow): mov $2, %ecx; call 0x140d5fb30 */
+    {0xcfa515, 10, 1, 1, "torii offering setter",
+     {0xb9, 0x02, 0, 0, 0, 0xe8, 0x11, 0x56, 0x06, 0x00}},
+};
+
+/* setter cap: cmp $3, %ebx; jge skip at 0x140d5fb4a */
+static const AllowanceSite g_setter_cap_site = {
+    0xd5fb4a, 4, 2, 2, "setter cap", {0x83, 0xfb, 0x03, 0x7d},
 };
 
 static void install_game_visitor_allowance(void)
@@ -2746,18 +2816,404 @@ static void install_game_visitor_allowance(void)
     if (g_cfg.max_players < 3 || !g_game_create_param_hook.nslots)
         return;
     uint8_t allowance = (uint8_t)(g_cfg.max_players > 4 ? 3 : g_cfg.max_players - 1);
-    uint8_t setter_allowance = allowance > 2 ? 2 : allowance;
     const unsigned n = sizeof g_allowance_sites / sizeof g_allowance_sites[0];
-    int ready = 0;
+    uint8_t installed[8] = {0};
+    unsigned done = 0;
+    int cap_done = 0;
     /* VMProtect decrypts .text lazily: poll tightly for the first minute (the
      * mission start is the interesting window), then slowly for nine more. */
-    for (int waited = 0; waited < 600000 && !ready; ) {
-        ready = 1;
-        for (unsigned i = 0; i < n && ready; i++) {
-            const AllowanceSite *s = &g_allowance_sites[i];
-            ready = readable(g_base + s->rva, s->len) &&
-                    !memcmp(g_base + s->rva, s->bytes, s->len);
+    for (int waited = 0; waited < 600000 && done < n; ) {
+        for (unsigned i = 0; i < n; i++) {
+            const AllowanceSite *s;
+            uint8_t *imm, value;
+            DWORD old;
+            if (installed[i])
+                continue;
+            s = &g_allowance_sites[i];
+            if (!readable(g_base + s->rva, s->len) ||
+                memcmp(g_base + s->rva, s->bytes, s->len))
+                continue;
+            /* With three visitors configured, hold setter-argument sites
+             * until the cap is raised: the stock cap rejects anything >= 3,
+             * and a patched site stores once, so installing it first would
+             * silently keep the stock 2 for the process lifetime. */
+            if (s->setter && allowance > 2 && !cap_done)
+                continue;
+            /* The page must stay executable while the immediate is stored:
+             * another game thread can execute anywhere in this 4 KB page, and
+             * a non-executable mapping would fault (DEP). RWX only for the
+             * store and the flush, then RX again. */
+            imm = g_base + s->rva + s->imm;
+            value = allowance;
+            if (!VirtualProtect(imm, 1, PAGE_EXECUTE_READWRITE, &old)) {
+                LOG("game visitor allowance: cannot write %#x (err %lu)", s->rva, GetLastError());
+                continue;
+            }
+            *imm = value;
+            FlushInstructionCache(GetCurrentProcess(), imm, 1);
+            if (!VirtualProtect(imm, 1, PAGE_EXECUTE_READ, &old))
+                LOG("game visitor allowance: cannot restore execute protection at %#x (err %lu)",
+                    s->rva, GetLastError());
+            installed[i] = 1;
+            done++;
+            LOG("game visitor allowance: %s opens %u visitor slot(s)",
+                s->name, value);
         }
+        /* Raise the setter's rejection threshold to allowance + 1 before the
+         * setter call sites carry more than the stock 2. */
+        if (!cap_done && allowance > 2 &&
+            readable(g_base + g_setter_cap_site.rva, g_setter_cap_site.len) &&
+            !memcmp(g_base + g_setter_cap_site.rva, g_setter_cap_site.bytes,
+                    g_setter_cap_site.len)) {
+            uint8_t *imm = g_base + g_setter_cap_site.rva + g_setter_cap_site.imm;
+            DWORD old;
+            if (VirtualProtect(imm, 1, PAGE_EXECUTE_READWRITE, &old)) {
+                *imm = (uint8_t)(allowance + 1);
+                FlushInstructionCache(GetCurrentProcess(), imm, 1);
+                if (!VirtualProtect(imm, 1, PAGE_EXECUTE_READ, &old))
+                    LOG("game visitor allowance: cannot restore execute protection at %#x (err %lu)",
+                        g_setter_cap_site.rva, GetLastError());
+                cap_done = 1;
+                LOG("game visitor allowance: setter cap raised to %u", allowance + 1);
+            } else {
+                LOG("game visitor allowance: cannot write setter cap %#x (err %lu)",
+                    g_setter_cap_site.rva, GetLastError());
+            }
+        }
+        if (done < n) {
+            int step = waited < 60000 ? 10 : 250;
+            Sleep((DWORD)step);
+            waited += step;
+        }
+    }
+    LOG("game visitor allowance: recruitment opens %u visitor slot(s); %u/%u site(s) patched%s",
+        allowance, done, n, cap_done ? "; setter cap raised" : "");
+}
+
+/* --------------------------------- Torii Gate companion (Tokoyo Coop) for 3-4 */
+
+/* Yokai Realm with a Companion is written for two players. Two places keep a
+ * second companion (member slot 2 or 3) out of the mission:
+ *
+ * 1. Preparation. The host sends the mission preview (packet 76), its ready
+ *    flag (74), the start flag (75) and the chosen mission (17) to slot 1
+ *    only, so a later companion waits on "Waiting for mission to be chosen".
+ *    The send hook mirrors these four packets to slots 2 and 3. Packet 17
+ *    carries the receiver's own slot at payload byte 6 (the visitor's handler
+ *    adopts it), so each copy gets its own slot. The send byte-swaps its
+ *    buffer in place, so the copies come from a snapshot taken before.
+ * 2. Mission start. Online::AddFlagWaitCoopPlayer (0x1408af1b0) is the
+ *    mission script's sync point: the host bumps mission flag 0x46, a visitor
+ *    bumps 0x47, and Online::IsWaitCoopPlayer holds each side until the other
+ *    catches up. 0x47 is one shared counter, so with two companions it runs
+ *    ahead of the host (host 1, visitors 3) and every client waits forever on
+ *    the loading screen. Only the slot-1 companion advances it; later
+ *    companions follow the host and slot 1.
+ *
+ * Game protocol entry points (docs/RE_TOKOYO_COOP.md):
+ *   0x140d6a560 send(id, data, len <= 0x100, target): target 0-3 is one
+ *               member slot, 4 or more is every connected slot but our own.
+ *   0x140d6acc0 dispatch(record, sender), research trace only: record+0x10
+ *               is the u16 raw id, record+0x18 the network-order payload.
+ * The hooks replace whole prologue instructions with a 14-byte absolute jump.
+ * They install at boot, before any session exists, so no game thread runs
+ * these functions while the bytes change. */
+#define GAME_ROOT_RVA      0x1790a70u  /* session root; +0x3c8 = own slot index */
+#define GAME_COOP_MODE_RVA 0x191de34u  /* 1 while a Tokoyo companion session prepares */
+#define GAME_MANAGER_RVA   0x18715e0u  /* online manager; +0x5b0 role, +0x660 Tokoyo */
+
+typedef uint8_t (*PFN_GameSend)(unsigned, const uint8_t *, unsigned, int);
+typedef void (*PFN_WaitFlag)(void);
+static PFN_GameSend g_game_send;
+static PFN_WaitFlag g_wait_flag;
+
+static int tokoyo_fanout_wanted(unsigned id, int target)
+{
+    if (target != 1 || g_cfg.max_players < 3)
+        return 0;
+    if (id != 17 && id != 74 && id != 75 && id != 76)
+        return 0;
+    const uint8_t *own = g_base + GAME_ROOT_RVA + 0x3c8;
+    const int32_t *mode = (const int32_t *)(g_base + GAME_COOP_MODE_RVA);
+    return readable(own, 1) && readable(mode, 4) && *own == 0 && *mode == 1;
+}
+
+#ifdef NIOH3P_RESEARCH
+typedef uintptr_t (*PFN_GameDispatch)(uint8_t *, int);
+static PFN_GameDispatch g_game_dispatch;
+static volatile LONG g_pkt_count[2][128];
+
+static int pkt_should_log(int dir, unsigned id)
+{
+    LONG n = InterlockedIncrement(&g_pkt_count[dir][id & 127]);
+    return n <= 40 || n % 500 == 0;
+}
+
+static uintptr_t det_GameDispatch(uint8_t *record, int sender)
+{
+    unsigned id = readable(record, 0x28) ? *(uint16_t *)(record + 0x10) : 0xffff;
+    if (g_cfg.trace && pkt_should_log(1, id)) {
+        char head[52];
+        p2p_head(head, sizeof head, record ? record + 0x18 : 0, id != 0xffff ? 16 : 0);
+        LOG("game pkt recv: id=%u from=%d #%ld [%s]", id, sender, g_pkt_count[1][id & 127], head);
+    }
+    return g_game_dispatch(record, sender);
+}
+#endif
+
+static uint8_t det_GameSend(unsigned id, const uint8_t *data, unsigned len, int target)
+{
+    id &= 0xffff;
+    uint8_t pristine[0x100];
+    int fan = tokoyo_fanout_wanted(id, target) && len <= sizeof pristine && readable(data, len);
+    if (fan)
+        memcpy(pristine, data, len);
+    uint8_t r = g_game_send(id, data, len, target);
+#ifdef NIOH3P_RESEARCH
+    if (g_cfg.trace && pkt_should_log(0, id)) {
+        char head[52];
+        p2p_head(head, sizeof head, data, readable(data, len < 16 ? len : 16) ? len : 0);
+        LOG("game pkt send: id=%u len=%u target=%d -> %u #%ld [%s]", id, len, target, r,
+            g_pkt_count[0][id & 127], head);
+    }
+#endif
+    for (int slot = 2; fan && slot < 4; slot++) {
+        uint8_t copy[0x100];
+        memcpy(copy, pristine, len);
+        if (id == 17 && len > 6)
+            copy[6] = (uint8_t)slot;
+        if (g_game_send(id, copy, len, slot))
+            LOG("game tokoyo: packet %u also sent to companion slot %d", id, slot);
+    }
+    return r;
+}
+
+static void det_WaitFlag(void)
+{
+    uint8_t *const *manager = (uint8_t *const *)(g_base + GAME_MANAGER_RVA);
+    const uint8_t *own = g_base + GAME_ROOT_RVA + 0x3c8;
+    if (g_cfg.max_players >= 3 && readable(manager, 8) && *manager &&
+        readable(*manager + 0x5b0, 0xb4) && readable(own, 1) &&
+        *(*manager + 0x660) && *(const int32_t *)(*manager + 0x5b0) == 1 && *own >= 2) {
+        LOG("game tokoyo: companion slot %u leaves the shared wait counter to slot 1", *own);
+        return;
+    }
+    g_wait_flag();
+}
+
+typedef struct {
+    uint32_t rva;
+    uint8_t n;              /* whole instructions replaced at the site */
+    const char *name;
+    void *detour;
+    void **orig;
+    uint8_t bytes[24];
+    /* NULL: the n site bytes are position independent and run as copied.
+     * Otherwise this writes an equivalent of them and returns its length. */
+    unsigned (*relocate)(uint8_t *out);
+} InlineHook;
+
+/* sub $0x28,%rsp; mov 0x18715e0(%rip),%rax; mov 0x5b0(%rax),%ecx, with the
+ * RIP-relative load turned into movabs from the absolute address. */
+static unsigned relocate_wait_flag(uint8_t *out)
+{
+    uintptr_t manager = (uintptr_t)(g_base + GAME_MANAGER_RVA);
+    static const uint8_t head[] = {0x48, 0x83, 0xec, 0x28, 0x48, 0xa1};
+    static const uint8_t tail[] = {0x8b, 0x88, 0xb0, 0x05, 0x00, 0x00};
+    memcpy(out, head, sizeof head);
+    memcpy(out + sizeof head, &manager, 8);
+    memcpy(out + sizeof head + 8, tail, sizeof tail);
+    return sizeof head + 8 + sizeof tail;
+}
+
+static InlineHook g_inline_hooks[] = {
+    {0xd6a560, 21, "game send", (void *)det_GameSend, (void **)&g_game_send,
+     {0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
+      0x48, 0x8d, 0xac, 0x24, 0x58, 0xfe, 0xff, 0xff}, NULL},
+    {0x8af1b0, 17, "coop wait flag", (void *)det_WaitFlag, (void **)&g_wait_flag,
+     {0x48, 0x83, 0xec, 0x28, 0x48, 0x8b, 0x05, 0x25, 0x24, 0xfc, 0x00,
+      0x8b, 0x88, 0xb0, 0x05, 0x00, 0x00}, relocate_wait_flag},
+#ifdef NIOH3P_RESEARCH
+    {0xd6acc0, 19, "game dispatch", (void *)det_GameDispatch, (void **)&g_game_dispatch,
+     {0x48, 0x8b, 0xc4, 0x55, 0x53, 0x57, 0x41, 0x57, 0x48, 0x8d, 0x68, 0xa1,
+      0x48, 0x81, 0xec, 0xc8, 0x00, 0x00, 0x00}, NULL},
+#endif
+};
+
+static void abs_jmp(uint8_t *at, const void *to)
+{
+    uintptr_t target = (uintptr_t)to;
+    at[0] = 0xff; at[1] = 0x25; at[2] = at[3] = at[4] = at[5] = 0;
+    memcpy(at + 6, &target, 8);
+}
+
+/* 1 installed, 0 bytes not (yet) the expected plaintext, -1 failed. */
+static int inline_install(InlineHook *h)
+{
+    uint8_t *site = g_base + h->rva;
+    if (!readable(site, h->n) || memcmp(site, h->bytes, h->n))
+        return 0;
+    uint8_t *tramp = VirtualAlloc(NULL, 64, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    DWORD old;
+    if (!tramp) {
+        LOG("game tokoyo: no trampoline for %s (err %lu)", h->name, GetLastError());
+        return -1;
+    }
+    unsigned body = h->relocate ? h->relocate(tramp) : h->n;
+    if (!h->relocate)
+        memcpy(tramp, site, h->n);
+    abs_jmp(tramp + body, site + h->n);
+    if (!VirtualProtect(tramp, 64, PAGE_EXECUTE_READ, &old)) {
+        LOG("game tokoyo: cannot seal the %s trampoline (err %lu)", h->name, GetLastError());
+        VirtualFree(tramp, 0, MEM_RELEASE);
+        return -1;
+    }
+    FlushInstructionCache(GetCurrentProcess(), tramp, 64);
+    *h->orig = tramp;
+    uint8_t patch[24];
+    memset(patch, 0x90, h->n);
+    abs_jmp(patch, h->detour);
+    if (!VirtualProtect(site, h->n, PAGE_EXECUTE_READWRITE, &old)) {
+        LOG("game tokoyo: cannot write %s (err %lu)", h->name, GetLastError());
+        return -1;
+    }
+    memcpy(site, patch, h->n);
+    FlushInstructionCache(GetCurrentProcess(), site, h->n);
+    if (!VirtualProtect(site, h->n, PAGE_EXECUTE_READ, &old))
+        LOG("game tokoyo: cannot restore execute protection at %#x (err %lu)",
+            h->rva, GetLastError());
+    return 1;
+}
+
+static DWORD WINAPI tokoyo_hooks_worker(LPVOID unused)
+{
+    (void)unused;
+    const unsigned n = sizeof g_inline_hooks / sizeof g_inline_hooks[0];
+    unsigned done = 0, ok = 0;
+    int state[4] = {0};
+    for (int waited = 0; waited < 600000 && done < n; waited += 50) {
+        for (unsigned i = 0; i < n; i++) {
+            if (state[i])
+                continue;
+            state[i] = inline_install(&g_inline_hooks[i]);
+            if (state[i])
+                done++;
+            if (state[i] > 0)
+                ok++;
+        }
+        if (done < n)
+            Sleep(50);
+    }
+    LOG("game tokoyo: %u/%u companion hook(s) installed", ok, n);
+    return 0;
+}
+
+/* -------------------------------------------------- game-side friend invite */
+
+/* A stock invite can never join. The GameLobbyJoinRequested callback handler
+ * (0x1405ef7e0) stores the lobby id and requests lobby data, but the pump
+ * turns the "lobby owner is someone else" state into error 0x80C81010 and
+ * latches the error bits that block every later session open. Nothing ever
+ * reaches SessionOpen_Start. Two small changes give an invite the same join
+ * the Torii Gate search uses:
+ *   1. the pump's state-3 branch ("cmp $0x3,%eax; je" at 0x5ef001) is
+ *      retargeted to the state-2 path, which only clears the invite state;
+ *   2. the callback's Run slot (vtable 0x141586b60, entry 1) is hooked. After
+ *      the original Run, the invited lobby id goes to the game's own
+ *      join-by-lobby task 0x140d73380(task, ptr_to_lobby_id), which builds
+ *      the kind-1 join descriptor and calls SessionOpen_Start. The
+ *      descriptor's second field is a pointer to the lobby id; the join
+ *      parameter's SetParam (0x1405f1390) dereferences it exactly once.
+ *      The task object is the open-request singleton at [manager+0xA8]. It
+ *      only exists once the game's session steps have created it; an idle
+ *      client has none (both game call sites read it straight and the game's
+ *      step 0x140d65740 creates it through factory 0x140d66910). The same
+ *      factory runs here first, so an invite works from a fresh boot. */
+static uint64_t g_invite_lobby_storage;
+static int g_invite_installed;
+
+static void game_invite_join(uint64_t lobby)
+{
+    static const uint8_t join_prologue[] = {
+        0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x40,
+    };
+    static const uint8_t factory_prologue[] = {
+        0x57, 0x48, 0x83, 0xec, 0x40, 0x48, 0xc7, 0x44, 0x24,
+    };
+    uint8_t *join = g_base + 0xd73380;
+    if (!readable(join, sizeof join_prologue) ||
+        memcmp(join, join_prologue, sizeof join_prologue)) {
+        LOG("game invite: join task instructions mismatch; invite dropped");
+        return;
+    }
+    void **manager_slot = (void **)(g_base + 0x17900b0);
+    if (!readable(manager_slot, sizeof *manager_slot) || !*manager_slot) {
+        LOG("game invite: game manager missing; invite dropped");
+        return;
+    }
+    void *manager = *manager_slot;
+    if (!readable(manager, 0xb0)) {
+        LOG("game invite: manager unreadable; invite dropped");
+        return;
+    }
+    void *task = *(void **)((uint8_t *)manager + 0xa8);
+    if (!task) {
+        uint8_t *factory = g_base + 0xd66910;
+        if (!readable(factory, sizeof factory_prologue) ||
+            memcmp(factory, factory_prologue, sizeof factory_prologue)) {
+            LOG("game invite: open task factory mismatch; invite dropped");
+            return;
+        }
+        typedef void (*OpenTaskFactory)(void *manager);
+        ((OpenTaskFactory)(void *)factory)(manager);
+        task = *(void **)((uint8_t *)manager + 0xa8);
+        if (!task) {
+            LOG("game invite: open task creation failed; invite dropped");
+            return;
+        }
+        LOG("game invite: open task object created");
+    }
+    g_invite_lobby_storage = lobby;
+    typedef int (*JoinByLobby)(void *, uint64_t *);
+    int posted = ((JoinByLobby)(void *)join)(task, &g_invite_lobby_storage);
+    LOG("game invite: lobby %llu %s", (unsigned long long)lobby,
+        posted ? "join posted" : "join refused (an open request may already be running)");
+}
+
+static void game_invite_run(void *self, void *param, uint8_t failed, uint64_t call);
+static Hook g_game_invite_hook = {
+    .name = "CCallback<CSessionP2pSteam,GameLobbyJoinRequested_t>::Run",
+    .detour = (void *)(uintptr_t)game_invite_run,
+};
+
+static void game_invite_run(void *self, void *param, uint8_t failed, uint64_t call)
+{
+    typedef void (*RunFn)(void *, void *, uint8_t, uint64_t);
+    ((RunFn)g_game_invite_hook.orig)(self, param, failed, call);
+    /* GameLobbyJoinRequested_t: m_ulSteamIDLobby is the first field. */
+    if (param && readable(param, sizeof(uint64_t)))
+        game_invite_join(*(uint64_t *)param);
+}
+
+static void install_game_invite_hooks(void)
+{
+    /* the capacity hook proves the supported game image; without it (harness,
+     * unsupported build) the invite patch has nothing to attach to */
+    if (!g_game_create_param_hook.nslots)
+        return;
+    static const uint8_t pump[] = {0x83, 0xf8, 0x03, 0x74, 0x14};
+    void **run_slot = (void **)(g_base + 0x1586b68);
+    int ready = 0;
+    /* VMProtect decrypts .text lazily: poll tightly for the first minute (an
+     * invite can only matter once online play starts), then slowly. */
+    for (int waited = 0; waited < 600000 && !ready; ) {
+        ready = readable(run_slot - 1, 3 * sizeof(void *)) &&
+                executable_ptr(run_slot[-1]) &&
+                run_slot[-1] == (void *)(g_base + 0x5f0650) &&
+                run_slot[0] == (void *)(g_base + 0x5f07d0) &&
+                run_slot[1] == (void *)(g_base + 0x5f0640) &&
+                readable(g_base + 0x5ef001, sizeof pump) &&
+                !memcmp(g_base + 0x5ef001, pump, sizeof pump);
         if (!ready) {
             int step = waited < 60000 ? 10 : 250;
             Sleep((DWORD)step);
@@ -2765,30 +3221,76 @@ static void install_game_visitor_allowance(void)
         }
     }
     if (!ready) {
-        LOG("game visitor allowance: recruitment instructions mismatch; not installed");
+        LOG("game invite: callback vtable or pump instructions mismatch; not installed");
         return;
     }
-    for (unsigned i = 0; i < n; i++) {
-        const AllowanceSite *s = &g_allowance_sites[i];
-        uint8_t *imm = g_base + s->rva + s->imm;
-        DWORD old;
-        /* The page must stay executable while the immediate is stored: another
-         * game thread can execute anywhere in this 4 KB page, and a
-         * non-executable mapping would fault (DEP). RWX only for the store and
-         * the flush, then RX again. */
-        if (!VirtualProtect(imm, 1, PAGE_EXECUTE_READWRITE, &old)) {
-            LOG("game visitor allowance: cannot write %#x (err %lu)", s->rva, GetLastError());
-            continue;
-        }
-        *imm = s->setter ? setter_allowance : allowance;
-        FlushInstructionCache(GetCurrentProcess(), imm, 1);
-        if (!VirtualProtect(imm, 1, PAGE_EXECUTE_READ, &old))
-            LOG("game visitor allowance: cannot restore execute protection at %#x (err %lu)",
-                s->rva, GetLastError());
+    if (!add_slot(&g_game_invite_hook, run_slot)) {
+        LOG("game invite: callback slot not hooked; not installed");
+        return;
     }
-    LOG("game visitor allowance: recruitment opens %u visitor slot(s) (shrine setter %u)",
-        allowance, setter_allowance);
+    /* Retarget the state-3 jump to the state-2 clear path: the rel8 operand
+     * of the je at 0x5ef004 changes from +0x14 (the error block at 0x5ef01a)
+     * to -0x10 (0x5eeff6, which only clears the invite state). Same RWX store
+     * window as the allowance sites: the page stays executable for the store
+     * and the flush, then returns to RX. */
+    uint8_t *imm = g_base + 0x5ef005;
+    DWORD old;
+    if (!VirtualProtect(imm, 1, PAGE_EXECUTE_READWRITE, &old)) {
+        LOG("game invite: cannot write %#x (err %lu)", 0x5ef005, GetLastError());
+        return;
+    }
+    *imm = 0xf0;
+    FlushInstructionCache(GetCurrentProcess(), imm, 1);
+    if (!VirtualProtect(imm, 1, PAGE_EXECUTE_READ, &old))
+        LOG("game invite: cannot restore execute protection at %#x (err %lu)",
+            0x5ef005, GetLastError());
+    g_invite_installed = 1;
+    LOG("game invite: friend invites join directly (callback hooked, error state neutralised)");
 }
+
+#ifdef NIOH3P_RESEARCH
+/* Rig trigger. The emulator rig cannot deliver GameLobbyJoinRequested_t, so
+ * a file named nioh3p.invite.txt in the game directory (the proxy's working
+ * directory) holding a decimal lobby id posts the same join. The file is
+ * consumed on use, so the run controls when the "invite" arrives: drive the
+ * visitor to the world map first, then write the file. Research build only. */
+static int g_runcallbacks_ticks;
+static int g_fake_invite_seen;
+
+static void det_SteamRunCallbacks(void)
+{
+    orig_RunCallbacks();
+    if (++g_runcallbacks_ticks % 120)   /* about once per two seconds */
+        return;
+    if (!g_invite_installed || g_fake_invite_seen)
+        return;
+    HANDLE f = CreateFileA("nioh3p.invite.txt", GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f == INVALID_HANDLE_VALUE)
+        return;
+    char buf[32];
+    DWORD got = 0;
+    BOOL ok = ReadFile(f, buf, sizeof buf - 1, &got, NULL);
+    CloseHandle(f);
+    if (!ok)
+        return;
+    uint64_t v = 0;
+    for (DWORD i = 0; i < got; i++) {
+        if (buf[i] == '\r' || buf[i] == '\n' || buf[i] == ' ')
+            continue;
+        if (buf[i] < '0' || buf[i] > '9')
+            return;             /* not a lobby id; leave the file alone */
+        v = v * 10 + (uint64_t)(buf[i] - '0');
+    }
+    if (!v)
+        return;
+    g_fake_invite_seen = 1;
+    MoveFileA("nioh3p.invite.txt", "nioh3p.invite.used.txt");
+    LOG("game invite: synthetic invite for lobby %llu", (unsigned long long)v);
+    game_invite_join(v);
+}
+#endif
 
 /* Does the loaded proxy DLL carry an RT_MANIFEST resource? Walk the resource
  * directory root of this module's PE image; the startup log then proves that
@@ -2817,6 +3319,47 @@ static int manifest_resource_present(HMODULE self)
 }
 
 /* ------------------------------------------------------------ main worker */
+
+#ifdef NIOH3P_RESEARCH
+static uint8_t *g_dump_disk;
+static size_t g_dump_disk_size;
+
+static DWORD WINAPI dump_worker(LPVOID unused)
+{
+    (void)unused;
+    int waited = 0;
+    while (g_dump_disk && waited < 60000) {
+        if (text_is_decrypted(g_dump_disk, g_dump_disk_size))
+            break;
+        /* a copy started outside Steam dies on the DRM stub within ~30 ms,
+         * so poll tightly for the first two seconds */
+        int step = waited < 2000 ? 10 : 200;
+        Sleep((DWORD)step);
+        waited += step;
+    }
+    if (g_dump_disk) {
+        VirtualFree(g_dump_disk, 0, MEM_RELEASE);
+        g_dump_disk = 0;
+    }
+    LOG("worker: dump trigger after %d ms", waited);
+    dump_image("boot");
+    if (g_cfg.redump_after_s > 0) {
+        Sleep((DWORD)g_cfg.redump_after_s * 1000);
+        dump_image("settled");
+    }
+    /* VMProtect decrypts page by page as the game runs, so a single dump
+     * only holds what had executed by then: keep taking snapshots. */
+    if (g_cfg.dump_every_s > 0) {
+        for (int n = 1; n <= 12; n++) {
+            char tag[32];
+            fmt(tag, sizeof tag, "t%ds", n * g_cfg.dump_every_s);
+            Sleep((DWORD)g_cfg.dump_every_s * 1000);
+            dump_image(tag);
+        }
+    }
+    return 0;
+}
+#endif
 
 static DWORD WINAPI worker(LPVOID unused)
 {
@@ -2987,42 +3530,39 @@ static DWORD WINAPI worker(LPVOID unused)
     }
 
 #ifdef NIOH3P_RESEARCH
+    /* The dump schedule can take 36 minutes; on this thread it held back the
+     * allowance installer, so a research host refused its second visitor.
+     * The dump thread owns the on-disk copy from here on. */
     if (g_cfg.dump_image) {
-        int waited = 0;
-        while (disk && waited < 60000) {
-            if (text_is_decrypted(disk, disk_size))
-                break;
-            /* a copy started outside Steam dies on the DRM stub within ~30 ms,
-             * so poll tightly for the first two seconds */
-            int step = waited < 2000 ? 10 : 200;
-            Sleep((DWORD)step);
-            waited += step;
-        }
-        LOG("worker: dump trigger after %d ms", waited);
-        dump_image("boot");
-        if (g_cfg.redump_after_s > 0) {
-            Sleep((DWORD)g_cfg.redump_after_s * 1000);
-            dump_image("settled");
-        }
-        /* VMProtect decrypts page by page as the game runs, so a single dump
-         * only holds what had executed by then: keep taking snapshots. */
-        if (g_cfg.dump_every_s > 0) {
-            for (int n = 1; n <= 12; n++) {
-                char tag[32];
-                fmt(tag, sizeof tag, "t%ds", n * g_cfg.dump_every_s);
-                Sleep((DWORD)g_cfg.dump_every_s * 1000);
-                dump_image(tag);
-            }
-        }
+        g_dump_disk = disk;
+        g_dump_disk_size = disk_size;
+        disk = 0;
+        HANDLE t = CreateThread(NULL, 0, dump_worker, NULL, 0, NULL);
+        if (t)
+            CloseHandle(t);
+        else
+            LOG("worker: cannot start the dump thread (err %lu)", GetLastError());
     }
-#endif
-    /* the allowance poll can wait up to 10 minutes; run it after the dumps */
-    if (g_cfg.hook_eos && mod_active)
-        install_game_visitor_allowance();
-#ifdef NIOH3P_RESEARCH
     if (disk)
         VirtualFree(disk, 0, MEM_RELEASE);
 #endif
+    /* Companion hooks: the 3-4 player fixes, and in research builds with
+     * trace=1 the game packet trace that rides on the same entry points. */
+    int want_tokoyo = g_cfg.max_players >= 3;
+#ifdef NIOH3P_RESEARCH
+    want_tokoyo = want_tokoyo || g_cfg.trace;
+#endif
+    if (want_tokoyo && g_cfg.hook_eos && mod_active && g_game_create_param_hook.nslots) {
+        HANDLE t = CreateThread(NULL, 0, tokoyo_hooks_worker, NULL, 0, NULL);
+        if (t)
+            CloseHandle(t);
+        else
+            LOG("game tokoyo: cannot start the hook thread (err %lu)", GetLastError());
+    }
+    if (g_cfg.hook_eos && mod_active) {
+        install_game_visitor_allowance();
+        install_game_invite_hooks();
+    }
 
     if (g_cfg.hook_eos && mod_active) {
         for (int i = 0; i < 24; i++) {          /* 2 minutes of restoration watch */

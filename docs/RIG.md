@@ -9,11 +9,13 @@ $RIG = ~/nioh3p-test
 │     ├── steamapps/common/Proton - Experimental
 │     └── steamapps/compatdata/485510/pfx   own Wine prefix, own saves, own config
 ├── home-b/…                       slot b: same, stock game (no mod DLL)
-├── lan-a/, lan-b/, lan-c/         separate LAN game copies, all with the proxy
+├── lan-a/, lan-b/, lan-c/, lan-d/ separate LAN game copies, all with the proxy
 ├── compat-c/pfx                  third LAN prefix (not inside a Steam root)
+├── compat-d/pfx                  fourth LAN prefix (not inside a Steam root)
 ├── home-c/                       third instance's private HOME
-├── logs-a/, logs-b/, logs-c/      research-era logs (out_dir); player ini logs to lan-*/
-├── run-a/, run-b/, run-c/         per-slot XDG_RUNTIME_DIR
+├── home-d/                       fourth instance's private HOME
+├── logs-a/, logs-b/, logs-c/     research-era logs (out_dir); player ini logs to lan-*/
+├── run-a/, run-b/, run-c/, run-d/ per-slot XDG_RUNTIME_DIR
 └── shots/                         screenshots taken from the rig display
 ```
 
@@ -21,15 +23,30 @@ Steam's UI uses `Xvfb :9` for slot a and `:10` for slot b. The game must run ins
 
 ## Running it
 
-The commands below start the rig and send it input. Run them from the repository root. The comment on each line gives its effect.
+`tools/rig/rig.py` runs the whole LAN rig. Run it from the repository root. The LAN copies use a Steam emulator, so no Steam client and no Steam account is needed for these steps.
+
+```sh
+tools/rig/rig.py up b a c d       # start the lan games in turn; each waits for the proxy's preflight line and a frame
+tools/rig/rig.py status           # rig processes per slot (matched by rig HOME only)
+tools/rig/rig.py state b a c d    # read-only game state through peek.exe: loader phase, Tokoyo mode, role, slot, sync counters, frame brightness
+tools/rig/rig.py deploy research a b   # copy build/research/dinput8.dll (or "player": build/dinput8.dll) into lan-<slot>; refuses a running slot
+tools/rig/rig.py ini a trace=1 dump_image=1   # set keys in lan-<slot>/nioh3p.ini, keeping its line endings
+tools/rig/rig.py collect NAME     # copy every slot's logs, launch output and the newest coop trace to $RIG/runs/NAME
+tools/rig/rig.py down             # stop all games (--client also stops the slot b Steam client)
+```
+
+`down` sends SIGTERM to `nioh.exe` first, then to the rest of the slot's Wine and compositor processes, then SIGKILL to what is left. It decides ownership by the `HOME` in `/proc/<pid>/environ`, so the user's own Steam can never match.
+
+The lower-level commands below remain for the Steam-library slots and for input:
 
 ```sh
 tools/rig/setup.sh            # build/refresh the clones (idempotent, fast)
 tools/rig/login.sh a          # start slot a's client and pick its account tile
 tools/rig/run.sh a client     # the same client start, without the tile click
 tools/rig/run.sh a game       # request launch through the running Steam client
-tools/rig/run.sh a lan        # prepared LAN game; cloned native client must be running
-tools/rig/run.sh c lan        # compat-c + lan-c, reusing slot b's cloned Proton/client files
+tools/rig/run.sh a lan        # prepared LAN game in headless gamescope
+tools/rig/run.sh c lan        # compat-c + lan-c (d: compat-d + lan-d), reusing slot b's cloned Proton
+tools/rig/run.sh a probe peek.exe 4 '*0x1418715e0+0x5d0'   # read-only probe from $RIG/tools-tmp in the slot's prefix
 tools/rig/shot.sh a name      # screenshot slot a -> $RIG/shots/name.png
 DISPLAY=:9 python3 tools/rig/xkey.py key Return Down space
 DISPLAY=:9 python3 tools/rig/xkey.py move 535 384 && … click 1
@@ -63,11 +80,13 @@ Stored authentication sometimes survives cloning and a restart, and sometimes it
 
 ## Decision-model driver
 
-`tools/rig/coop.py` replaces OCR menu matching with a loop of screenshot, decision model and deterministic key table. The model only reports what it sees: `screen`, `highlight`, and the predicates `pray_prompt` and `coop_partner`. A per-state table sends keys only from the verified recipes. An unclear frame cannot turn into an improvised keypress.
+`tools/rig/coop.py` replaces OCR menu matching with a loop of screenshot, decision model and deterministic key table. The model only reports what it sees: `screen`, `highlight`, and the predicates `without_conditions` and `coop_partner`. A per-state table sends keys only from the verified recipes. An unclear frame cannot turn into an improvised keypress.
+
+The tables follow the Torii Gate companion flow: Starting Point, Torii Gate, Yokai Realm with a Companion, Without Conditions, Search. The host and the visitors use the same table. The first client to search finds no lobby and creates one, so it becomes the host. Every later client finds that lobby. No Ochoko Cup is used. A third table, `leave`, takes a client out of a mission with the Himorogi Fragment. That item stays in the inventory, but the character loses the Amrita that it carries.
 
 The engine is a reusable harness. Perception lives in `tools/rig/perceive.py`, execution in `tools/rig/drive.py`, and all Nioh choices and rules in `tools/rig/profiles/nioh-coop.json`. `coop.py` is the thin Nioh front-end: the CLI plus a few named hooks. To drive another game or window manager, add a profile instead of editing the loop. See [`docs/RIG_HARNESS.md`](RIG_HARNESS.md) for the question-spec format, the `CommandCapture`/`CommandActuator` route, and confidence guidance.
 
-Two backends exist. Choose one with `--backend {mercury,luna}` or `COOP_BACKEND`. The default is `mercury`.
+Two backends exist. Choose one with `--backend {mercury,luna}` or `COOP_BACKEND`. The default is `luna`. The OpenRouter key for `mercury` is revoked.
 
 - `mercury`: OpenRouter Mercury Decide (`inception/mercury-decide:free`) at `https://openrouter.ai/api/alpha/decisions`. It has a free tier and is rate limited. It sends choices as `criteria` maps and predicates as `noul` questions.
 - `luna`: Experiential Labs Decisions (`gpt-6-luna-decisions`). It uses named questions and choices, and `probability` answers.
@@ -79,19 +98,20 @@ Environment variables:
 - `OPENROUTER_API_KEY`, or `OPENROUTER_ENV_FILE` naming a file that holds an `OPENROUTER_API_KEY=` line. This variable belongs to backend `mercury`.
 - `EXPLABS_API_KEY`, or `EXPLABS_KEY_FILE` naming a file that holds it. This variable belongs to backend `luna`.
 
-Keys are never logged or printed. The driver sends one request per step. It re-shoots once if a choice falls below 0.6 confidence. If the choice is still below 0.6, `screen` degrades to `other` (wait) and `highlight` degrades to `uncertain`. No Return rule matches then, so only safe moves and waits fire. The trace keeps the raw choice and confidence. Every step appends one JSON line to `$RIG/shots/coop-<timestamp>.jsonl` with the screenshot, answers, action and latency, and prints a one-line summary.
+Keys are never logged or printed. The driver sends one request per step. The model gets a quality-85 JPEG of the frame, not the 1.6 MB PNG from gamescope. On ten rig frames the answers matched, the upload was 1/15 of the size, and the median Luna latency fell from 2.3 s to 0.9 s. The driver re-shoots once if a low-confidence answer could change the action: the `screen` itself, or the `highlight` on a screen whose rules test the highlight. A low highlight on a waiting screen (searching, preparation, in mission) needs no second frame. In one three-client run this cut 65 of 119 steps from two requests to one. If the choice is still below 0.6, `screen` degrades to `other` (wait) and `highlight` degrades to `uncertain`. No Return rule matches then, so only safe moves and waits fire. The trace keeps the raw choice and confidence. Every step appends one JSON line to `$RIG/shots/coop-<timestamp>.jsonl` with the screenshot, answers, action and latency, and prints a one-line summary.
 
-Accuracy on rig screenshots: Mercury Decide classified 7/7 screens and 6/6 highlighted items. It rejected 3/3 mission-node negatives, so it never mistook a mission node for STARTING POINT. It took roughly 1.2 s per request on the free tier.
+Accuracy on rig screenshots: Mercury Decide classified 7/7 screens and 6/6 highlighted items. It rejected 3/3 mission-node negatives, so it never mistook a mission node for STARTING POINT. Luna drove the whole companion flow on 2026-10-25 for two, three and four clients, from a cold boot to a joined mission.
+
+A model-free classifier was measured against the 717 labeled frames of the earlier traces and rejected. Full-frame OCR (tesseract, 0.3 s) read the hint boxes but missed most screens without text, and a frame-hash cache matched only 13 % of frames at a threshold with no wrong labels, because the menu backgrounds animate. The rule tables stay deterministic. Only perception uses the model. An agent without a model can still drive one step at a time with `decide` and the `rig.py state` fields.
 
 ```sh
-python3 tools/rig/coop.py host b
-python3 tools/rig/coop.py visit a
-python3 tools/rig/coop.py visit c --relieve a
-python3 tools/rig/coop.py run --host b --visitors a c   # offer, A, then C (A paused)
-python3 tools/rig/coop.py host b --dry-run              # perceive + print action only
-python3 tools/rig/coop.py decide a --role visitor       # one frame, no keys sent
-python3 tools/rig/coop.py visit a --backend luna        # use Experiential Labs
-python3 tools/rig/coop.py visit a --profile my-game.json
+export EXPLABS_KEY_FILE=~/.omp/agent/provider-keys/experiential-labs
+python3 tools/rig/coop.py host b --backend luna            # B searches first and owns the lobby
+python3 tools/rig/coop.py visit a --backend luna           # A searches and joins B
+python3 tools/rig/coop.py run --host b --visitors a c --backend luna   # B, then A and C together
+python3 tools/rig/coop.py leave b --backend luna           # back to the Torii Gate (costs Amrita)
+python3 tools/rig/coop.py decide a --role visitor --backend luna   # one frame, no keys sent
+python3 tools/rig/coop.py host b --dry-run --backend luna  # perceive + print action only
 ```
 
 `decide` captures one frame. It prints the perception and the action that the guard or table selects as JSON. It exits 0 without sending anything.
@@ -99,18 +119,18 @@ python3 tools/rig/coop.py visit a --profile my-game.json
 Safety rules:
 
 - On the title menu, the driver sends `Return` only when `highlight` is `continue` with confidence ≥ 0.9. `new_game` gets `Down` and `load_or_system` gets `Up`. Anything else, including `uncertain`, waits 1.5 s. This rule keeps a run from starting a new game.
-- On `world_map`, the driver sends `Return` only when `highlight` is `starting_point_node` with confidence ≥ 0.9. Every other world-map frame gets `BackSpace`. The footer binding `B: STARTING POINT` jumps the cursor onto the starting point instead of cycling node by node. This rule prevents a visitor from starting a solo mission.
-- A visitor accepts a `dialog` only when `highlight` is `confirm_button`, the boot autosave notice. The driver cancels every other dialog frame with `BackSpace`. The recipe never needs YES, and a stray YES can start a solo mission. The host keeps accepting dialogs with `Return`.
-- The host taps `w` at most once per run, for 300 ms, when `in_mission` shows no PRAY prompt. It then waits 1 s and perceives again. After 4 such perceptions it taps `w` for 150 ms once more. Then it fails with a clear message instead of walking away from the shrine.
+- On `world_map`, the driver sends `Return` only when `highlight` is `starting_point_node` with confidence ≥ 0.9. Every other world-map frame gets `BackSpace`. The footer binding `B: STARTING POINT` jumps the cursor onto the starting point instead of cycling node by node. This rule prevents a client from starting a solo mission.
+- On the companion panel, the driver first sets the top row to `Without Conditions`. It sends `Right` only while that row is selected, so a press cannot change the Friends or Secret Word rows. It sends `Return` only on the Search button.
+- The driver accepts a `dialog` only when `highlight` is `confirm_button`. It cancels every other dialog frame with `BackSpace`. The `leave` table also accepts YES, because the Himorogi Fragment asks for it.
 - A visitor that shows `in_mission` without a new `Steam JoinLobby:` log line is reported, and the run stops. There is no automatic recovery from a solo mission.
-- Once the `Steam JoinLobby:` line of a visitor exists, the driver sends no keys at all. Every screen waits 3 s until success or timeout. The world map can reappear during the join load, where `Return` is unsafe.
-- After any `Return`, an unchanged `(screen, highlight)` gets a 1.5 s wait instead of another `Return`. The driver resends the key only after 3 unchanged perceptions, because the game can drop it. This rule applies to both tables.
-- A new `Steam_ISteamMatchmaking::CreateLobby` line in `$RIG/lan-b/nioh3p.log` and a later `in_mission` frame show the host offering. The closing of the menu does not show it. Once that line exists, the host never sends `Return` again. Every non-gameplay frame gets `BackSpace` until the mission is visible.
-- On the Summon Visitor plaque the host sends `Return` at most twice per run, to offer and to accept. After that the state gets `BackSpace` or a wait. The driver always exits the `summon_status` panel (`Invoke Visitor … A: STOP OFFERING, B: BACK`) with `BackSpace`, never `Return`, so the offer is not stopped.
-- `--relieve` pauses the `nioh.exe` of the other visitor (matched by rig HOME) with `SIGSTOP` for 5 s. It then sends `SIGCONT` and waits 2 s after every step of the visitor run, starting with the first. `SIGCONT` runs from a `finally` block. This starves the iGPU less, so the visitor's game stops dropping keys. The host is never paused.
-- The no-progress guard counts only steps that sent a key. Debounce waits and other waits do not count. Six keys with the same `(screen, highlight)` end the run. 60 steps or the 600 s wall clock (`--timeout`) also end it, instead of guessing more keys.
+- Once the `Steam JoinLobby:` line of a visitor exists, the driver sends no keys at all. Every screen waits 3 s until success or timeout.
+- The host succeeds when a new `Steam_ISteamMatchmaking::CreateLobby` line appears. From then on it sends no keys, because `Return` on the searching popup would cancel the search. The driver reads the log in the `out_dir` of the slot INI, or in the game folder when `out_dir` is empty.
+- After any `Return`, an unchanged `(screen, highlight)` gets a 1.5 s wait instead of another `Return`. The driver resends the key only after 3 unchanged perceptions, because the game can drop it.
+- `run` starts the host first. When the host owns its lobby, all visitors run at the same time, because the lobby takes visitors only until its preparation countdown ends.
+- `--relieve` (on `visit` only) pauses the `nioh.exe` of another visitor (matched by rig HOME) with `SIGSTOP` for 5 s. It then sends `SIGCONT` and waits 2 s after every step. `SIGCONT` runs from a `finally` block. The host is never paused.
+- The no-progress guard counts only steps that sent a key. Six keys with the same `(screen, highlight)` end the run. 150 steps or the 600 s wall clock (`--timeout`) also end it, instead of guessing more keys.
 
-Cost and latency: Mercury Decide (free) bills nothing, and the free tier is rate limited. The Luna Decisions API is input-only at $0.10 per 1M input tokens (OpenAI pricing). Each step sends one 1280×720 PNG plus a short prompt and four questions. A request takes about 1.2 s on Mercury and 1–3 s on Luna. A three-client run needs on the order of 40–60 requests. Game loading takes more time than the API.
+Cost and latency: the Luna API reported `cost` 0.0 for every request in the 2026-10-25 traces, at about 2,300 input tokens per frame. A request takes about 1 s. A three-client Torii run from a cold boot to the mission takes about 5 minutes and 150 requests. Game loading takes more time than the API.
 
 ## Verified on this machine
 
@@ -158,7 +178,9 @@ Slot c uses its own `HOME`, runtime directory, `compat-c/pfx`, save account and 
 
 The third LAN identity is SteamID `<steamid-lan-c>` (`Nioh-LAN-C`), with a distinct Epic emulator ID ending in `03`. Its save account directory is `<accountid-c>`. The save transfer used the original [Nioh Savedata Decryption Tool v1.3](https://github.com/pawREP/Nioh-Savedata-Decryption-Tool/releases/tag/1.3). The command was `-i source/SAVEDATA.BIN -sid <accountid-c> -o SAVEDATA.BIN`, for both the system and character save. Run the tool with the destination save folder as its working directory. The tool discards directory components from `-o`. Do not disable checksum checks and do not change source saves.
 
-The navigation harness discovers displays and compositor sockets from the environment of each live `nioh.exe`. Use `nioh_nav.py -s c shot name.png` for C. Actual keyboard controls: BackSpace returns to the previous menu. Escape opens the equipment and system overlay. At a shrine, hold E for about 1.5 seconds to pray rather than tapping it.
+The fourth LAN identity is SteamID `<steamid-lan-d>` (`Nioh-LAN-D`), with a distinct Epic emulator ID ending in `04` (epicid `00000000000000000000000000000004`, productuserid `<productuserid-lan-d>`). Its save account directory is `<accountid-d>`. The same tool converted slot c's `<accountid-c>` saves for slot d. Run it as `-i <c file> -sid <accountid-d> -o SAVEDATA.BIN`. Use the destination save folder as the working directory. The tool writes the output and then waits on stdin. Give it Enter or stop it once the file exists. While the tool runs, Proton also starts its Xalia helper process next to the game.
+
+The navigation harness discovers displays and compositor sockets from the environment of each live `nioh.exe`. Use `nioh_nav.py -s <slot> shot name.png`; the harness lists a, b, c and d. Actual keyboard controls: BackSpace returns to the previous menu. Escape opens the equipment and system overlay. At a shrine, hold E for about 1.5 seconds to pray rather than tapping it.
 
 Enable process tracing without changing the files of Proton:
 
@@ -175,7 +197,7 @@ If the title animates but ignores XTest input, inspect the compositor output. On
 
 ## Windows 11 VM (Defender test)
 
-A Windows 11 Pro VM runs in Docker with `dockurr/windows`. Its disk, OEM script and SSH key live in `~/nioh3p-test/winvm`. No sudo and no Steam account are needed. The OEM script enables OpenSSH, so you can run commands with the key in that folder.
+A Windows 11 Pro VM runs in Docker with `dockurr/windows`. The container `nioh3p-winvm` uses the local image `nioh3p/windows:6.06-trustfix`, built from `~/nioh3p-test/winvm/image-trustfix/Dockerfile`. The stopped container `nioh3p-winvm-6.06-orig` is the rollback copy. Do not start both, because they share the VM disk. Its disk, OEM script and SSH key live in `~/nioh3p-test/winvm`. No sudo and no Steam account are needed. The OEM script enables OpenSSH, so you can run commands with the key in that folder.
 
 ```bash
 docker start nioh3p-winvm                       # boot the VM; the screen is at http://127.0.0.1:8006/
@@ -209,3 +231,15 @@ This rig ran three-player co-op: host B plus visitors A and C in one mission. Ea
 - Shutdown this session: all three games quit through their native dialog (exit 0). Steam showed Invisible (`shots/steam-b-invisible-stop5.png`) and shut down normally. Xvfb `:10` stopped, and a final scan found no live process with a rig HOME. The 4.7 GB research-era `logs-*/nioh3p.log` files went to trash.
 
 To resume: start `Xvfb :10`, run `tools/rig/run.sh b client`, make sure that the Friends window shows Invisible, then run `tools/rig/run.sh {b,a,c} lan`.
+
+## Checkpoint (2026-10-23, four players)
+
+This rig ran four-player co-op: host B plus visitors A, C and D in one mission. The branch is `four-player`. Its player build has SHA-256 prefix `6db5351d` and 38,400 bytes, and `./build.sh` produced it. The proxy on this branch also raises the shrine setter cap. It patches the byte at RVA `0xd5fb4c`, the immediate of the cmp at `0xd5fb4a` (`cmp $0x3,%ebx`, bytes `83 fb 03`), to 4 when the allowance is 3, so the online shrine site can now pass the value 3 past the setter's cap check. With allowance 2 the game bytes stay stock.
+
+- Smoke harness: it passed with `max_players` 3 and 4, in player and research mode, plus the ownership harness at both counts. The harness now reads `max_players` from `nioh3p.ini` to build its expectation. `NIOH3P_MAX_PLAYERS` appends an overriding `max_players` key in `tools/smoketest.sh`.
+- Three-player regression with the branch build: host b plus visitors a and c, driven by `coop.py run --host b --visitors a c`. All three roles passed. The host logged `game create request: raising max members 2 -> 3 before allocation`. Every client logged `game visitor allowance: recruitment opens 2 visitor slot(s) (shrine setter 2)`. Host shot `shots/4p-reg-3p-b.png` shows three player characters.
+- Four-player run: all four lan slots ran `max_players=4`. Each lan slot keeps its three-player ini as `lan-*/nioh3p.ini.3p`. Every client logged `game visitor allowance: recruitment opens 3 visitor slot(s) (shrine setter 3)`, so the setter cap raise installed on all four. Host b logged `game create request: raising max members 2 -> 4 before allocation` at 13:44:01.
+- Join order: a, c and then d, driven by `coop.py run --host b --visitors a c d`. The driver relief (SIGSTOP pauses of the waiting visitors) paused a and c while d loaded. a and c passed the driver checks. d searched, found the lobby and sent JoinLobby at 13:56:28, with three JoinLobby lines in its log. The driver then hit its default 600 s wall timeout while d was still loading. d finished loading on its own and entered the host mission right after the driver timed out.
+- Evidence shots: `shots/4p-mission-b.png` and `shots/4p-move3-b.png` show the host view with the host and two visible visitors; the third visitor is off camera (the driver trace records all four). Visitor a view with the host and the two other visitors in `shots/4p-hostmove-a.png`. Movement was shown both ways. After a, c and d each walked, `4p-move3-b.png` is the before frame and `4p-move-b.png` the after frame; the visitor positions differ between them. After the host walked, the visitor shots `4p-hostmove-a.png`, `4p-hostmove-c.png` and `4p-hostmove-d.png` were taken. Driver trace: `shots/coop-20261023-134257.jsonl`, 104 steps.
+- Rig script changes: `tools/rig/run.sh` accepts slot d for lan (compat-d prefix, slot b client files). `tools/rig/nioh_nav.py` lists a, b, c and d. `tools/rig/coop.py` accepts two or three visitors, and `--relieve` now takes several slots. `tools/rig/setup.sh` writes `max_players=4` into slot a's ini on this branch.
+- Remaining gaps at four: the party HUD still names only one partner. The coop driver default timeout of 600 s is too short for a fourth client's load. Pass `--timeout 900` for four-player runs. Mission finish, deaths, revives, rewards and a new offering after a visitor leaves are untested at four. d's join needed the relief pauses on a and c.

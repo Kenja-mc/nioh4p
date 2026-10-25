@@ -1283,6 +1283,152 @@ Other observations:
   times this session (once with the previously failing 61,952-byte build, twice
   with allowance builds).
 
+### Torii Gate companion hosting (2026-10-25)
+
+This run tested the Torii Gate path that does not use an Ochoko Cup:
+Yokai Realm with a Companion, Without Conditions, Search. The research build
+of the `friend-invite` branch ran on B (`max_players=4`) and A, and the player
+build ran on C. The Luna decision model drove every menu
+(`tools/rig/coop.py`, traces `shots/coop-20261025-*.jsonl`).
+
+The host side works. At boot B logged all seven allowance sites, including
+`start recruiting (alt)` and `torii offering setter`, with 3 visitor slots and
+the setter cap raised to 4. When B searched and found no lobby, the create
+request was raised from 2 to 4 members before allocation. Steam then created
+a lobby with `maxMembers=4`. The Ochoko counter stayed at `6/3/14`.
+
+Two players work. A searched and joined the lobby of B. Both games showed the
+preparation menu, chose a mission, counted down and loaded it, and each showed
+the other player (`shots/torii-2p-b.png`, `shots/torii-2p-a.png`).
+
+A third player does not get into the mission. The companion mode pairs the
+host with one companion:
+
+- C joined the same Steam lobby (`Steam JoinLobby` with stock filters, no
+  dropped filter). C then showed `Waiting for mission to be chosen` with
+  `Companion: Nioh-LAN-B`. The host menu shows one `Companion` field only.
+- When A and C searched at the same time, both joined during the preparation
+  countdown. The host chose the mission with A only. A loaded into the
+  mission, and C stayed on `Waiting for mission to be chosen` until the run
+  stopped.
+- A client that joins after the mission starts gets the same waiting screen.
+  The lobby stays listed while the mission runs.
+
+The lobby and allowance patches are therefore not enough for this mode. The
+next section finds the single-companion code and fixes it.
+
+`CreateLobby` returns a Steam API call handle, not a lobby id. The proxy now
+logs `Steam CreateLobby -> call N`. It logs the real id once per lobby, as
+`Steam host lobby id=N`, when the host first publishes lobby data.
+
+### Torii Gate with three and four players (2026-10-25)
+
+A research-build packet trace (`game pkt send`/`recv` at the game's own send
+and dispatch functions, below the encrypted Steam P2P layer) showed the cause.
+The full packet map is in `docs/RE_TOKOYO_COOP.md`.
+
+- Both later searchers were admitted (packet 73). The host then sent the
+  mission preview (76), its ready flag (74), the chosen mission (17) and the
+  start flag (75) to member slot 1 only. Each sender hard-codes "the other
+  player" as slot 1. The companion in slot 2 never left "Waiting for mission
+  to be chosen".
+- With those four packets mirrored to slot 2 (a research hook), both
+  companions received the mission, loaded it, and ran the load handshake with
+  each other (18 to 21 already loop over all slots). All three clients then
+  stayed on the loading screen with an idle iGPU. Read-only probes showed
+  loader phase 1 on one companion, and a thread sample showed the mission
+  script polling `Online::IsWaitCoopPlayer`. The sync counters read host 1,
+  visitors 3: every companion increments the one shared visitor counter
+  (mission flag `0x47`), so it runs ahead of the host.
+- With the second fix (only the slot-1 companion advances flag `0x47`), the
+  counters stayed equal (3/3) and all clients reached the mission.
+
+Results on the rig, all menus driven by Luna:
+
+| Run | Build | Result |
+| --- | --- | --- |
+| B host, A and C search together | research | all three in the mission (loader 12, state 14, counters 3/3), each client shows the other two (`shots/torii-3p-{b,a,c}.png`). A moved and B rendered the move. |
+| the same | player `1750668e` | all three in the mission, 267 s from the coop start |
+| B host, A, C and D search together | player `1750668e` | all four in the mission (`shots/torii-4p-{b,a,c,d}.png`), slots 0 to 3, counters 2/2 |
+| C uses a Himorogi Fragment in the four-player mission | player | all four get "Yokai Realm with a Companion: Failed" and return to the Torii Gate. This is the stock rule for two players as well. |
+
+The player build installs both hooks at boot (`game tokoyo: 2/2 companion
+hook(s) installed`). On the host it logs `game tokoyo: packet N also sent to
+companion slot S`. On a later companion it logs `companion slot S leaves the
+shared wait counter to slot 1`. The party HUD and the result screen still name
+one companion. Mission completion, death and revival with the assist gauge,
+and rewards were not played through. They need a real session.
+
+One rig artifact was found on the way. In research builds, `dump_every_s`
+used to run on the worker thread before the allowance installer. A host with
+`dump_every_s=180` patched no allowance site for 36 minutes, and the third
+client left the Steam lobby 0.6 s after joining it. The dumps now run on their
+own thread.
+
+Windows 11 VM, Defender at its defaults (definitions 1.461.144.0, not updated
+for this run): the player build `1750668e` passed the harness (6 PASS) with 0
+detections, and the real `nioh.exe` loaded it (`preflight: exe=ok`) before
+exiting with code 53 for lack of Steam. The companion hooks install only
+after `.text` is decrypted, so they did not run in the VM.
+
+### Integrated live-test candidate (2026-10-25)
+
+Both development branches are merged into `master`. The separate candidate
+is `build/live-test/nioh3p-live-test.zip`. The player DLL is 44,544 bytes with
+SHA-256 `632684d0a17e457abfdad2c18cf827e312f511ed74a0a08ee3a9a7238c188a81`.
+The frozen release zip and the user's Steam installation are unchanged.
+
+The merged four-player harness still expected a Steam member limit of three.
+It failed with exit 5 while the proxy correctly sent four. The expectation
+now follows the configured count for both EOS and Steam capacity calls.
+`tools/quiet.sh` also hid that failure behind its final output command.
+It now returns the underlying exit code. An invalid smoke mode returned 2
+through the wrapper.
+
+The integrated smoke matrix passed at both `max_players=3` and `4`:
+
+| Mode | Result per player count |
+| --- | --- |
+| Player proxy | exit 0, 6 PASS, no FAIL |
+| Research proxy | exit 0, 4 PASS, two player-only log checks skipped |
+| Player ownership | exit 0, 1 PASS, no FAIL |
+
+Artifacts are under `~/.cache/nioh3p/integrated-{3,4}p-t{0,1}-{proxy,ownership}`.
+Only the combinations in the table were run.
+
+Luna drove a fresh three-player Torii Gate run with the integrated player DLL,
+`max_players=3`, and stock search filters on every client. Both visitors reached
+the mission in 242 seconds. Read-only probes showed loader 12, state 14,
+slots 0 to 2 and counters 2/2 on every client. The screenshots show three
+characters in the same cave. Evidence: `shots/integrated-torii-3p.png`,
+`shots/coop-20261025-151440.jsonl` and `runs/integrated-torii-3p`.
+
+The four-player run also passed with `max_players=4` and stock filters.
+Every client reached loader 12 and state 14 with counters 3/3.
+The member slots were B=0, D=1, A=2 and C=3. The first companion was D,
+so this run also exercised the wait-counter fix with a different first joiner.
+Every client logged both companion hooks and all seven allowance sites.
+The host mirrored packet 17 to slots 2 and 3. Evidence:
+`shots/integrated-torii-4p.png`, `shots/coop-20261025-152049.jsonl`
+and `runs/integrated-torii-4p`.
+
+The same four processes then left through the host's Himorogi Fragment and
+formed another group without restarting. All four reached the next mission
+with loader 12, state 14 and counters 3/3. The new slot order was
+B=0, A=1, D=2 and C=3. Evidence: `shots/integrated-torii-reform.png`,
+`shots/coop-20261025-152641.jsonl` and `runs/integrated-torii-reform`.
+This proves repeat group formation after an aborted mission, not completion
+or reward handling. The rig then shut down with no rig processes remaining.
+
+In the Windows VM, this exact DLL passed the rebuilt harness with exit 0
+and 6 PASS. Defender real-time and behavior protection were enabled.
+A custom scan found no new detection. The threat count stayed at zero.
+Definitions were `1.461.144.0`, not updated for this run. This was a harness
+test, not Windows multiplayer gameplay. No public scan or upload was made.
+The Windows console output is saved privately at
+`~/nioh3p-test/runs/integrated-windows-smoke.out`.
+The test directory was removed from the guest, and the VM shut down cleanly.
+
 ### Launch-command and filesystem limits
 
 Several archived compound commands used `pgrep -f 'lan-b'` or
@@ -1414,3 +1560,156 @@ clean, so the `Wacatac.C!ml` verdict on `1003e4e7…` did not carry over. The CA
 sandbox reported 0 malicious behavior. Zenbox and CAPE were still running at the
 time of writing. Report:
 https://www.virustotal.com/gui/file/48415ff045d11e34cb8e76ca9fc17afa2c8965b3d4f1c447ad96e01c646223a7
+
+## 15. Four-player static research (2026-10-23)
+
+The branch `four-player` asked whether the game code carries another limit
+for a third visitor besides the allowance value. All addresses below were read in
+`~/.cache/nioh3p/out/text.dis`. No client was run for this section.
+
+### The shrine setter cap is one immediate byte
+
+`0x140D5FB30` refuses its argument with `cmp $0x3,%ebx; jge` at `0x140D5FB4A`.
+The immediate `0x03` sits at RVA `0xD5FB4C` inside the three bytes
+`83 fb 03`. The compare immediate bounds the accepted range, so changing it
+to `0x04` makes the setter accept 0 to 3. The store at
+`0x140D5FB54` then writes the value to `root+0x39c` and the tail call at
+`0x140D5FB67` runs the same propagation `0x140D7C950` that the direct stores
+use. The setter has exactly two callers. The online shrine offering passes the
+constant 1 at `0x140CF9F36`, which the proxy already rewrites. An item path
+(`0x140CFA480`, item `0x74CC`) passes the constant 2 at `0x140CFA515`, and the
+proxy leaves it alone. Raising the compare immediate does not touch either
+caller.
+
+### Consumption, admission and departure hold no second cap
+
+The admission handler keeps its old shape at any allowance. It loads
+`root+0x39c`, subtracts the admitted count from `0x140D79E50` and rejects with
+reason 2 only when the signed delta is zero or less (`0x140D6B490`,
+`0x140D6B4EA`). The accept path clears `root+0x39c` only when the delta was
+exactly 1 (`0x140D6B51E`, `0x140D6B539`), so allowance 3 clears on the third
+visitor the way allowance 2 cleared on the second. The departure path
+decrements the allowance with a floor of zero (`0x140D7B222` to `0x140D7B234`)
+and the close paths compare the allowance against a live count, never against
+a constant (`0x140D7BCD2`, `0x140D7E2BA`).
+
+### The slot table is four entries
+
+Every slot loop in the session code runs while the index is below 4. The
+admission counters scan non-host slots 1 to 3 (`0x140D79E97`, `0x140D7A227`),
+the departure cleanup walks slots 0 to 3 (`0x140D7B186`), the admission tail
+walks a four-entry bitmask (`0x140D6B60F`) and the recruitment-full scan walks
+slots below 4 (`0x140D7BCCD`). The slots sit inline in the session root at
+`0x141790A70` with stride `0xA8`, so slots 0 to 3 fill the first `0x2A0` bytes.
+The table natively holds a host plus three visitors.
+
+### The second member array is sized and read by the same limit
+
+The create worker allocates the first member array with `limit` entries and a
+second array with `limit - 2` entries only when `limit > 2`
+(`0x1406049F0` to `0x140604A06`). The join preparation does the same from
+`GetLobbyMemberLimit` (`0x140603D0B` to `0x140603D1F`). The second array at
+`CSessionP2pSteam+0x1A8` is touched by four functions: two of them allocate
+it, and `0x1405F7239` nulls it on teardown. Three of the four also read it:
+`0x1405EF250`, `0x1405F2A3F` and `0x14060D62F`. All three readers compute
+their loop bound as member count minus two and also guard each index against
+the live member count at `+0x198`. None of them assumes a single entry, so a
+limit of 4 with count 4 walks two entries of a two-entry array. Readers of the
+first array at `+0x1A0` bound every index against the live count at `+0x198`
+as well. No member array index is compared against a constant 2 or 3.
+
+### What remains open
+
+The mission layer and the packet layer are still untested beyond three
+members. The
+co-op partner calls are singular (`Online::GetCoopPartnerPlayerPosition`) and
+the party HUD shows one name with three players. Only a live four-client run
+can settle those paths.
+
+## 16. Four players in one mission (2026-10-23)
+
+Section 15 left the four-client question to a live run. This section
+records that run. It took place on 2026-10-23 on branch `four-player`.
+The player build from this branch has SHA-256 prefix `6db5351d` and is
+38,400 bytes. `./build.sh` produced it.
+
+### The code change and the smoke status
+
+The proxy now also raises the shrine setter cap. It patches the byte at
+RVA `0xd5fb4c`, the immediate of the cmp at `0xd5fb4a` (`cmp $0x3,%ebx`,
+bytes `83 fb 03`), to 4 when the allowance is 3. The online shrine site can
+then pass the value 3 past the setter's cap check. With allowance 2 the game
+bytes stay stock.
+
+The smoke harness passed with `max_players` 3 and 4, in player and
+research mode, plus the ownership harness at both counts. The harness now
+reads `max_players` from `nioh3p.ini` to build its expectation.
+`NIOH3P_MAX_PLAYERS` appends an overriding `max_players` key in
+`tools/smoketest.sh`.
+
+### The three-player regression
+
+Before the four-client run, the branch build passed a three-player
+regression. Host b took visitors a and c, driven by
+`coop.py run --host b --visitors a c`. All three roles passed. The host
+logged `game create request: raising max members 2 -> 3 before
+allocation`. Every client logged `game visitor allowance: recruitment
+opens 2 visitor slot(s) (shrine setter 2)`. The host shot
+`shots/4p-reg-3p-b.png` shows three player characters.
+
+### The four-player run
+
+All four lan slots then ran `max_players=4`. The three-player ini is
+kept as `lan-*/nioh3p.ini.3p` in each slot. Every client logged `game
+visitor allowance: recruitment opens 3 visitor slot(s) (shrine setter
+3)`, so the setter cap raise installed on all four. Host b logged
+`game create request: raising max members 2 -> 4 before allocation` at
+13:44:01.
+
+Visitors joined in order a, c and d, driven by
+`coop.py run --host b --visitors a c d`. The driver relief (SIGSTOP pauses of
+the waiting visitors) paused a and c while d loaded. a and c passed the
+driver checks. d searched, found the lobby and sent JoinLobby at 13:56:28.
+Three JoinLobby lines appear in its log. The driver then hit its default
+600 s wall timeout while d was still loading. d finished loading on its own
+and entered the host mission right after the driver timed out.
+
+The evidence shots show four players in one mission. `shots/4p-mission-b.png`
+and `shots/4p-move3-b.png` show the host view with the host and two visible
+visitors; the third visitor is off camera (the driver trace records all
+four). Visitor a's view with the host and the two other visitors is
+`shots/4p-hostmove-a.png`. Movement was shown both ways. After a, c and
+d each walked, `4p-move3-b.png` is the before frame and `4p-move-b.png` the
+after frame; the visitor positions differ between them. After the host
+walked, the visitor shots `4p-hostmove-a.png`, `4p-hostmove-c.png` and
+`4p-hostmove-d.png` were taken. The driver trace is
+`shots/coop-20261023-134257.jsonl` with 104 steps.
+
+### Slot d identity and its save conversion
+
+Slot d runs as SteamID `<steamid-lan-d>`, name `Nioh-LAN-D`, with an
+Epic emulator id ending in 04 (epicid
+`00000000000000000000000000000004`, productuserid
+`<productuserid-lan-d>`) and save account `<accountid-d>`. The Nioh
+Savedata Decryption Tool v1.3 converted slot c's `<accountid-c>` saves for
+slot d. Run it as `-i <c file> -sid <accountid-d> -o SAVEDATA.BIN`. Use the
+destination save folder as the working directory. The tool writes the output
+and then waits on stdin. Give it Enter or stop it once the file exists.
+While the tool runs, Proton also starts its Xalia helper process next to
+the game.
+
+### Rig script changes
+
+`tools/rig/run.sh` accepts slot d for lan with the `compat-d` prefix
+and slot b client files. `tools/rig/nioh_nav.py` lists a, b, c and d.
+`tools/rig/coop.py` accepts two or three visitors, and `--relieve` now
+takes several slots. `tools/rig/setup.sh` writes `max_players=4` into
+slot a's ini on this branch.
+
+### What remains open at four
+
+The party HUD still names only one partner. The coop driver default
+timeout of 600 s is too short for a fourth client's load. Pass
+`--timeout 900` for four-player runs. Mission finish, deaths, revives,
+rewards and a new offering after a visitor leaves are untested at
+four. d's join needed the relief pauses on a and c.

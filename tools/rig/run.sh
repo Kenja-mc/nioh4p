@@ -8,19 +8,23 @@
 #   run.sh a lan      run the prepared lan-a copy in headless gamescope
 #   run.sh c lan      use compat-c with slot b's cloned Proton/client files
 #                     (the running native client stays on its private Xvfb)
+#   run.sh d lan      same for slot d, with compat-d
+#   run.sh a probe peek.exe 4 '*0x1418715e0+0x5d0'
+#                     run a read-only probe from $RIG/tools-tmp inside the
+#                     running lan game's prefix (Wine shares its wineserver)
 #
 # The rig client runs from its own HOME/root, so the user's foreground Steam
 # client is never touched.
 set -eu
 . "$(dirname "$0")/env.sh"
 
-slot="${1:?usage: run.sh <a|b|c> [client|login|game|direct|lan]}"
+slot="${1:?usage: run.sh <a|b|c|d> [client|login|game|direct|lan|probe EXE ARGS]}"
 what="${2:-client}"
 client_slot="$slot"
 case "$slot" in
     a|b) ;;
-    c)
-        [ "$what" = lan ] || { echo "slot c supports lan only" >&2; exit 2; }
+    c|d)
+        case "$what" in lan|probe) ;; *) echo "slot $slot supports lan and probe only" >&2; exit 2 ;; esac
         client_slot=b
         ;;
     *) echo "unknown rig slot: $slot" >&2; exit 2 ;;
@@ -45,10 +49,10 @@ case "$what" in
         # die with it
         exec "$root/ubuntu12_32/steam" -applaunch 485510
         ;;
-    lan)
+    lan|probe)
         game_dir="$RIG/lan-$slot"
         prefix="$root/steamapps/compatdata/485510"
-        [ "$slot" != c ] || prefix="$RIG/compat-c"
+        case "$slot" in c|d) prefix="$RIG/compat-$slot" ;; esac
         [ -f "$game_dir/nioh.exe" ] && [ -d "$prefix/pfx" ] || {
             echo "slot $slot needs a prepared LAN copy and prefix" >&2; exit 1;
         }
@@ -59,6 +63,11 @@ case "$what" in
         export NIOH3P_HEADLESS=1 NIOH3P_SCOPE=0
         export NIOH3P_GPU=RAPHAEL_MENDOCINO NIOH3P_VK_DEVICE="$IGPU_ID"
         cd "$game_dir"
+        if [ "$what" = probe ]; then
+            shift 2
+            exe="${1:?usage: run.sh <slot> probe <exe> [args]}"; shift
+            exec "$root/steamapps/common/Proton - Experimental/proton" runinprefix "$RIG/tools-tmp/$exe" "$@"
+        fi
         exec "$launcher" "$root/steamapps/common/Proton - Experimental/proton" run "$game_dir/nioh.exe"
         ;;
     direct)

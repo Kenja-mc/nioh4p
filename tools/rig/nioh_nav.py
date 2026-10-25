@@ -29,7 +29,7 @@ import time
 RIG = os.path.expanduser("~/nioh3p-test")
 SLOTS = {
     slot: {"display": None, "rundir": f"{RIG}/run-{slot}", "wayland": "gamescope-0"}
-    for slot in ("a", "b", "c")
+    for slot in ("a", "b", "c", "d")
 }
 SHOTS = f"{RIG}/shots"
 
@@ -215,13 +215,28 @@ def wait_state(slot, state, timeout=120):
 
 
 # ---- transitions ----
-def goto(slot, target):
-    for _ in range(40):
+SKIP_STATES = ("boot_notice", "logo", "press_any", "lore_continue", "unknown",
+              "mission_brief", "dialog_yesno", "title_menu", "world_map",
+              "torii_menu", "shrine_menu")
+
+
+def goto(slot, target, skip=False):
+    """Scripted transition to a target state. skip=True is a test-only mode:
+    it taps Return through lore screens, cutscene dialogs, briefings and
+    menus so a run reaches gameplay without a decision model."""
+    for _ in range(60):
         state, ev = classify(slot)
         if state == target:
             print(f"goto: at {target}")
             return True
         inp = Input(SLOTS[slot]["display"])
+        if skip:
+            if state == "dark":
+                time.sleep(4)
+                continue
+            inp.tap("Return")
+            time.sleep(3)
+            continue
         if state in ("boot_notice", "logo", "press_any", "lore_continue"):
             inp.tap("Return")
         elif state == "dark":
@@ -263,6 +278,8 @@ def main():
     ap.add_argument("cmd", choices=["shot", "classify", "wait", "tap", "walk",
                                     "ocr", "goto", "map_select"])
     ap.add_argument("args", nargs="*")
+    ap.add_argument("--skip", action="store_true",
+                    help="goto only: tap through lore, dialogs and menus (test mode)")
     a = ap.parse_args()
     if not resolve_slot(a.slot) and a.cmd != "shot":
         ap.error(f"no live nioh.exe for slot {a.slot}")
@@ -289,7 +306,7 @@ def main():
         crop = tuple(int(v) for v in a.args) if len(a.args) == 4 else None
         print(ocr(p, crop))
     elif a.cmd == "goto":
-        ok = goto(a.slot, a.args[0])
+        ok = goto(a.slot, a.args[0], skip=a.skip)
         sys.exit(0 if ok else 1)
     elif a.cmd == "map_select":
         ok = map_select(a.slot, a.args[0])

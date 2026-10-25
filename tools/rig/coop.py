@@ -9,13 +9,14 @@ express stays here as hooks in ``GUARDS`` / ``CHECKS``, referenced by name from
 the profile; a hook may raise ``drive.Stop(reason)``.
 
 usage:
-  coop.py host b                       host offers co-op at the starting shrine
-  coop.py visit a [--relieve c]        visitor joins through Torii Gate
-  coop.py run --host b --visitors a c  host offer, then A, then C (A paused)
+  coop.py host b                       host opens a lobby: Torii Gate, companion search
+  coop.py visit a [--relieve c]        visitor joins the same way (search finds the host)
+  coop.py run --host b --visitors a c  host lobby, then A and C search together
+  coop.py leave b                      leave the mission (Himorogi Fragment; costs Amrita)
   coop.py decide a [--role visitor]    one frame: print perception + action
   --dry-run                            perceive once and print the action only
   --timeout SECONDS                    wall clock limit (default 600)
-  --backend {mercury,luna}             default mercury, or $COOP_BACKEND
+  --backend {mercury,luna}             default luna, or $COOP_BACKEND
   --model MODEL / --profile PATH       override model or profile
 
 Environment: OPENROUTER_API_KEY or OPENROUTER_ENV_FILE (mercury);
@@ -26,6 +27,7 @@ import argparse
 import json
 import os
 import sys
+import threading
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import drive  # noqa: E402
@@ -42,16 +44,42 @@ def load_profile(path):
         return json.load(handle)
 
 
-def make_view(slot, profile, backend, model):
+def make_view(slot, profile, backend, model, table):
+    # A second frame costs a model call and a settle. It only helps when the
+    # low-confidence answer could change the action: the screen itself, or
+    # the highlight on a screen whose rules test the highlight.
+    keyed = {rule["screen"] for rule in table
+             if isinstance(rule.get("when"), dict) and "highlight" in rule["when"]}
+
+    def retry_if(low, answers):
+        return "screen" in low or ("highlight" in low and
+                                   answers["screen"].get("choice") in keyed)
+
     return perceive.Perceiver.from_profile(
         profile, drive.GamescopeCapture(slot), backend, model,
-        prefix=f"coop-{slot}", label=f"slot {slot}")
+        prefix=f"coop-{slot}", label=f"slot {slot}", retry_if=retry_if)
+
+
+def slot_log_dir(slot):
+    """The directory the slot's proxy logs to: its ini out_dir, else the game dir."""
+    game_dir = os.path.join(RIG, f"lan-{slot}")
+    try:
+        with open(os.path.join(game_dir, "nioh3p.ini"), encoding="utf-8", errors="replace") as ini:
+            for line in ini:
+                key, _, value = line.strip().partition("=")
+                if key.strip() == "out_dir" and value.strip():
+                    value = value.strip()
+                    if value[:2].upper() == "Z:":   # Wine's view of the Linux root
+                        value = value[2:].replace("\\", "/")
+                    return value
+    except OSError:
+        pass
+    return game_dir
 
 
 def make_oracle(profile, role, slot):
     spec = profile["oracles"][role["oracle"]]
-    path = spec["file"].format(slot=slot, rig=RIG).replace("${RIG}", RIG).replace("$RIG", RIG)
-    return perceive.NeedleOracle(os.path.expanduser(os.path.expandvars(path)),
+    return perceive.NeedleOracle(os.path.join(slot_log_dir(slot), spec["file"]),
                                  spec["needle"])
 
 
@@ -66,11 +94,8 @@ def _other_limit(state, ctx):
 
 
 def host_check(state, ctx):
-    if not state["host_offering"]:
-        return _other_limit(state, ctx)
-    if state["screen"] == "in_mission":
-        return "success", ("host offering active (new CreateLobby line) and back "
-                           "in the mission")
+    if state["host_offering"]:
+        return "success", "host owns a companion lobby (new CreateLobby line)"
     return _other_limit(state, ctx)
 
 
@@ -86,13 +111,8 @@ def visitor_check(state, ctx):
 
 
 def host_guard(state, ctx):
-    """Never Return once the lobby exists; walk fallback at the shrine."""
-    if state["host_offering"] and state["screen"] != "in_mission":
-        return drive.tap("BackSpace", 90, 0.6)
-    if (state["screen"] == "in_mission"
-            and state["pray_prompt"] < ctx["safety"]["predicate_min"]):
-        return _host_walk(ctx)
-    return None
+    """Once the lobby exists, any key could cancel the search: send none."""
+    return drive.wait(3.0) if state["host_offering"] else None
 
 
 def visitor_guard(state, ctx):
@@ -100,69 +120,64 @@ def visitor_guard(state, ctx):
     return drive.wait(3.0) if state["join_seen"] else None
 
 
-def _host_walk(ctx):
-    """At most one long walk, then one short retry, then a clean failure."""
-    walk, cfg = ctx["walk"], ctx["safety"]["host_walk"]
-    if not walk["long"]:
-        walk["long"] = True
-        return drive.tap("w", cfg["long_ms"], 1.0)
-    walk["stuck"] += 1
-    if walk["short"]:
-        raise drive.Stop(f"host shows in_mission with no PRAY prompt after a "
-                         f"{cfg['long_ms']} ms and a {cfg['short_ms']} ms walk; "
-                         f"stopping instead of walking away from the shrine")
-    if walk["stuck"] >= cfg["stuck"]:
-        walk["short"] = True
-        return drive.tap("w", cfg["short_ms"], 1.0)
-    return drive.wait(1.0)
+def leave_check(state, ctx):
+    if state["screen"] in ("world_map", "map_menu", "torii_menu"):
+        return "success", "out of the mission (world map or Torii Gate)"
+    return _other_limit(state, ctx)
 
 
 GUARDS = {"host_guard": host_guard, "visitor_guard": visitor_guard}
-CHECKS = {"host_check": host_check, "visitor_check": visitor_check}
+CHECKS = {"host_check": host_check, "visitor_check": visitor_check,
+          "leave_check": leave_check}
 
 
-# ---- relief: pause the other visitor between steps ----
-def pause_cycle(slot, seconds=5.0, pause=2.0):
-    marker = f"HOME={os.path.join(RIG, f'home-{slot}')}"
-    return drive.pause_process("nioh.exe", marker.encode(), seconds, pause,
-                               lambda why: print(f"coop: relief: {why}"))
+# ---- relief: pause the other visitor(s) between steps ----
+def pause_cycle(slots, seconds=5.0, pause=2.0):
+    paused = []
+    for slot in slots:
+        marker = f"HOME={os.path.join(RIG, f'home-{slot}')}"
+        drive.pause_process("nioh.exe", marker.encode(), seconds, pause,
+                            lambda why: print(f"coop: relief: {why}"))
+        paused.append(slot)
+    return paused
 
 
 # ---- roles ----
 def run_role(slot, role_name, profile, trace, *, dry_run=False, timeout=None,
              backend=perceive.DEFAULT_BACKEND, model=None, relieve=None):
-    if relieve == slot:
+    relieve = list(relieve or [])
+    if slot in relieve:
         return False, f"refusing to pause slot {slot}, the newcomer itself"
     if not resolve_slot(slot):
         return False, f"no live game for slot {slot}"
     role, safety = profile["roles"][role_name], profile["safety"]
-    table = profile["rules"][role_name]
+    table = profile["rules"][role["rules"]]
     guard, check = role.get("guard"), role.get("check")
     for name, registry in ((guard, GUARDS), (check, CHECKS)):
         if name and name not in registry:
             raise RuntimeError(f"unknown hook {name!r} in profile")
-    view = make_view(slot, profile, backend, model)
-    oracle = make_oracle(profile, role, slot)
-    ctx = {"safety": safety, "walk": {"long": False, "short": False, "stuck": 0}}
+    view = make_view(slot, profile, backend, model, table)
+    oracle = make_oracle(profile, role, slot) if role.get("oracle") else None
+    ctx = {"safety": safety}
     other_run = 0
 
     def perceive_step(step):
         nonlocal other_run
         state = view.perceive(step)
         state["slot"] = slot
-        oracle.scan()
         other_run = other_run + 1 if state["screen"] == "other" else 0
         state.update(other_run=other_run, host_offering=False, join_seen=False)
-        state[role["flag"]] = oracle.found()
+        if oracle:
+            oracle.scan()
+            state[role["flag"]] = oracle.found()
         return state
 
     def on_step(row):
-        row["summon_returns"] = row["counts"].get("summon", 0)
         row["latency"] = round(row["latency"], 2)
         trace.write(**row)
         print(f"coop step {trace.n} slot={row['slot']} screen={row['screen']} "
               f"highlight={row['highlight']} action={row['action']} "
-              f"pray={row['pray_prompt']:.2f} coop={row['coop_partner']:.2f} "
+              f"coop={row['coop_partner']:.2f} "
               f"api={row['latency']:.1f}s backend={row['backend']}")
 
     actuator = None
@@ -172,7 +187,7 @@ def run_role(slot, role_name, profile, trace, *, dry_run=False, timeout=None,
             relief = profile["relief"]
             actuator = drive.ReliefActuator(
                 actuator, lambda: pause_cycle(relieve, relief["seconds"], relief["pause"]))
-            print(f"coop: relief: pausing slot {relieve} for "
+            print(f"coop: relief: pausing slot(s) {', '.join(relieve)} for "
                   f"{relief['seconds']:.0f} s after every step")
     driver = drive.Driver(
         table, perceive_step, actuator=actuator,
@@ -193,17 +208,18 @@ def decide(slot, role_name, profile, *, backend, model):
     if not resolve_slot(slot):
         print(f"coop: no live game for slot {slot}", file=sys.stderr)
         return 1
-    role, table = profile["roles"][role_name], profile["rules"][role_name]
+    role = profile["roles"][role_name]
+    table = profile["rules"][role["rules"]]
     try:
-        state = make_view(slot, profile, backend, model).perceive(0)
+        state = make_view(slot, profile, backend, model, table).perceive(0)
     except Exception as exc:
         print(f"coop: perception failed: {exc}", file=sys.stderr)
         return 1
     state.update(other_run=1 if state["screen"] == "other" else 0,
                  host_offering=False, join_seen=False)
-    state[role["flag"]] = False
-    ctx = {"safety": profile["safety"], "walk": {"long": False, "short": False,
-                                                 "stuck": 0}}
+    if role.get("flag"):
+        state[role["flag"]] = False
+    ctx = {"safety": profile["safety"]}
     try:
         source, rule, action = drive.plan(
             state, table,
@@ -224,23 +240,25 @@ def main():
     host.add_argument("slot")
     visitor = commands.add_parser("visit", help="join a host through Torii Gate")
     visitor.add_argument("slot")
-    visitor.add_argument("--relieve", metavar="SLOT",
-                         help="pause this other visitor after every step")
-    whole = commands.add_parser("run", help="host offer, then two visitors")
+    visitor.add_argument("--relieve", metavar="SLOT", nargs="+",
+                         help="pause these other visitors after every step")
+    whole = commands.add_parser("run", help="host opens a lobby, then all visitors search together")
     whole.add_argument("--host", required=True)
-    whole.add_argument("--visitors", nargs=2, required=True, metavar=("A", "B"))
+    whole.add_argument("--visitors", nargs="+", required=True, metavar="SLOT")
+    leave = commands.add_parser("leave", help="leave the mission with the Himorogi Fragment")
+    leave.add_argument("slot")
     one = commands.add_parser("decide", help="perceive one frame and print the action")
     one.add_argument("slot")
-    one.add_argument("--role", choices=("host", "visitor"), default="host")
+    one.add_argument("--role", choices=("host", "visitor", "leave"), default="host")
     backend = os.environ.get(BACKEND_ENV, perceive.DEFAULT_BACKEND).strip().lower()
     if backend not in perceive.BACKENDS:
         parser.error(f"{BACKEND_ENV} must be one of {', '.join(perceive.BACKENDS)}")
-    for sub in (host, visitor, whole, one):
+    for sub in (host, visitor, whole, leave, one):
         sub.add_argument("--profile", default=PROFILE_PATH)
         sub.add_argument("--backend", choices=perceive.BACKENDS, default=backend,
                          help="decision backend (default: %(default)s)")
         sub.add_argument("--model", help="override the backend model id")
-    for sub in (host, visitor, whole):
+    for sub in (host, visitor, whole, leave):
         sub.add_argument("--dry-run", action="store_true")
         sub.add_argument("--timeout", type=float, default=None)
     args = parser.parse_args()
@@ -251,32 +269,47 @@ def main():
     if args.command == "decide":
         return decide(args.slot, args.role, profile, backend=args.backend,
                       model=args.model)
+    # Waves run in order; the roles inside one wave run at the same time. The
+    # companion lobby only takes the visitors that arrive before its
+    # preparation countdown ends, so all visitors must search together.
     if args.command == "run":
-        if len({args.host, *args.visitors}) != 3:
-            parser.error("host and the two visitors must be distinct slots")
-        steps = [(args.host, "host", None), (args.visitors[0], "visitor", None),
-                 (args.visitors[1], "visitor", args.visitors[0])]
+        if len({args.host, *args.visitors}) != 1 + len(args.visitors):
+            parser.error("host and visitors must be distinct slots")
+        waves = [[(args.host, "host", None)],
+                 [(slot, "visitor", None) for slot in args.visitors]]
     elif args.command == "host":
-        steps = [(args.slot, "host", None)]
+        waves = [[(args.slot, "host", None)]]
+    elif args.command == "leave":
+        waves = [[(args.slot, "leave", None)]]
     else:
-        steps = [(args.slot, "visitor", args.relieve)]
+        waves = [[(args.slot, "visitor", args.relieve)]]
     trace = perceive.Trace(SHOTS)
     print(f"coop: trace {trace.path}")
-    ok, message = False, "nothing done"
-    try:
-        for slot, role_name, relieve in steps:
+    results = []
+
+    def one(slot, role_name, relieve):
+        try:
             ok, message = run_role(slot, role_name, profile, trace,
                                    dry_run=args.dry_run, timeout=args.timeout,
                                    backend=args.backend, model=args.model,
                                    relieve=relieve)
-            print(f"coop: slot {slot}: {'OK' if ok else 'FAILED'}: {message}")
-            if not ok:
+        except RuntimeError as exc:
+            ok, message = False, str(exc)
+        print(f"coop: slot {slot}: {'OK' if ok else 'FAILED'}: {message}")
+        results.append(ok)
+
+    try:
+        for wave in waves:
+            threads = [threading.Thread(target=one, args=item) for item in wave]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            if not all(results):
                 break
-    except RuntimeError as exc:
-        ok, message = False, str(exc)
     finally:
         trace.close()
-    return 0 if ok else 1
+    return 0 if results and all(results) else 1
 
 
 if __name__ == "__main__":

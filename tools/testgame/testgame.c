@@ -132,6 +132,55 @@ static void num(const char *label, unsigned long v)
     out(buf);
 }
 
+/* What the proxy should clamp to: max_players from nioh3p.ini next to this
+ * exe (the same file the proxy reads). 0 turns the proxy clamps off, so the
+ * raw value 2 then stays 2. A missing file or key means the proxy default 3.
+ * Freestanding build, so the scan is a plain byte loop. */
+static int expected_max(void)
+{
+    /* static: a 4 KB stack buffer would need __chkstk_ms, which the
+     * freestanding link has no CRT for */
+    static char buf[4096];
+    char path[512];
+    DWORD n = GetModuleFileNameA(NULL, path, sizeof path);
+    DWORD dir = n;
+    while (dir && path[dir - 1] != '\\') dir--;
+    if (!dir || dir + 13 > sizeof path)
+        return 3;
+    path[dir++] = 'n'; path[dir++] = 'i'; path[dir++] = 'o'; path[dir++] = 'h';
+    path[dir++] = '3'; path[dir++] = 'p'; path[dir++] = '.'; path[dir++] = 'i';
+    path[dir++] = 'n'; path[dir++] = 'i'; path[dir] = 0;
+    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                           NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE)
+        return 3;
+    DWORD got = 0;
+    BOOL ok = ReadFile(h, buf, sizeof buf - 1, &got, NULL);
+    CloseHandle(h);
+    if (!ok)
+        return 3;
+    buf[got] = 0;
+    static const char key[] = "max_players=";
+    int found = -1;   /* last occurrence wins, like the proxy parser */
+    for (DWORD i = 0; i + sizeof key - 1 <= got; i++) {
+        DWORD j = 0;
+        while (j < sizeof key - 1 && buf[i + j] == key[j]) j++;
+        if (j == sizeof key - 1) {
+            int v = 0, any = 0;
+            for (DWORD k = i + j; k < got && buf[k] != '\r' && buf[k] != '\n'; k++) {
+                if (buf[k] < '0' || buf[k] > '9') break;
+                v = v * 10 + (buf[k] - '0');
+                any = 1;
+            }
+            if (any && v >= 0 && v <= 4)
+                found = v;
+        }
+    }
+    if (found < 0)
+        return 3;
+    return found ? found : 2;   /* 0: clamps off, the raw 2 stays 2 */
+}
+
 void mainCRTStartup(void)
 {
     out("TEST: harness start\r\n");
@@ -186,6 +235,9 @@ void mainCRTStartup(void)
 
     Sleep(1500);   /* let the proxy install its hooks before we exercise them */
 
+    int want = expected_max();
+    num("TEST: expected clamp from nioh3p.ini = ", (unsigned long)want);
+
     CreateLobbyOptions o;
     o.ApiVersion = 7;   /* what the game image builds (docs/RE_EOS_CALLSITES.md §4.1) */
     o.LocalUserId = 0;
@@ -207,15 +259,19 @@ void mainCRTStartup(void)
         buf[i] = 0;
         out(buf);
     }
-    out(o.MaxLobbyMembers == 3 ? " (clamped by proxy, expected 3)\r\n"
-                              : " (NOT clamped)\r\n");
+    out((int)o.MaxLobbyMembers == want ? " (clamped by proxy, expected match)\r\n"
+                                       : " (NOT the expected clamp)\r\n");
 
     SetMaxMembersOptions m;
     m.ApiVersion = 2;
     m.MaxMembers = 2;
     EOS_LobbyModification_SetMaxMembers(0, &m);
-    out(m.MaxMembers == 3 ? "TEST: SetMaxMembers clamped to 3 OK\r\n"
-                          : "TEST: SetMaxMembers NOT clamped\r\n");
+    out((int)m.MaxMembers == want ? "TEST: SetMaxMembers clamped OK\r\n"
+                                  : "TEST: SetMaxMembers NOT the expected clamp\r\n");
+    if ((int)o.MaxLobbyMembers != want || (int)m.MaxMembers != want) {
+        out("FAIL: EOS lobby capacity did not match the configured player count\n");
+        ExitProcess(5);
+    }
 
     {
         struct { int32_t ApiVersion; void *details; void *user; int32_t presence; } j;
@@ -317,7 +373,8 @@ void mainCRTStartup(void)
             uint64_t (*cf)(void *, int, int) = (uint64_t (*)(void *, int, int))vt[13];
             uint8_t (*sf)(void *, uint64_t, int) = (uint8_t (*)(void *, uint64_t, int))vt[31];
             cf(iface, 2, 2);
-            if (!sf(iface, 0x0180000103C821A2ull, 2) || nioh3p_test_setmax() != 3) {
+            if (nioh3p_test_create_max() != want ||
+                !sf(iface, 0x0180000103C821A2ull, 2) || nioh3p_test_setmax() != want) {
                 out("FAIL: lobby member limit did not update the requested lobby\n");
                 ExitProcess(5);
             }
