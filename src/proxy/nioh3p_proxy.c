@@ -2801,13 +2801,18 @@ static void install_game_visitor_allowance(void)
             if (!readable(g_base + s->rva, s->len) ||
                 memcmp(g_base + s->rva, s->bytes, s->len))
                 continue;
+            /* With three visitors configured, hold setter-argument sites
+             * until the cap is raised: the stock cap rejects anything >= 3,
+             * and a patched site stores once, so installing it first would
+             * silently keep the stock 2 for the process lifetime. */
+            if (s->setter && allowance > 2 && !cap_done)
+                continue;
             /* The page must stay executable while the immediate is stored:
              * another game thread can execute anywhere in this 4 KB page, and
              * a non-executable mapping would fault (DEP). RWX only for the
              * store and the flush, then RX again. */
             imm = g_base + s->rva + s->imm;
-            value = s->setter ? (cap_done ? allowance : (allowance > 2 ? 2 : allowance))
-                              : allowance;
+            value = allowance;
             if (!VirtualProtect(imm, 1, PAGE_EXECUTE_READWRITE, &old)) {
                 LOG("game visitor allowance: cannot write %#x (err %lu)", s->rva, GetLastError());
                 continue;
