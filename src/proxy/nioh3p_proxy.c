@@ -2717,28 +2717,50 @@ static void install_game_metadata_guard(void)
  * allowance - admitted ordinary visitors > 0, so the stock value 1 refuses a
  * second visitor even with three native member slots. Every store that opens
  * recruitment with that single-visitor constant gets max_players - 1 instead;
- * consumption, departure and close paths are unchanged. The shrine setter
- * 0x140d5fb30 itself only accepts values below 3. Code is plaintext only after
- * the stub has decrypted .text, so wait for the exact original bytes. */
+ * consumption, departure and close paths are unchanged. Code is plaintext only
+ * after the stub has decrypted .text, so wait for the exact original bytes.
+ * Sites install individually: the mission and shrine paths decrypt during
+ * ordinary play, the torii-side store and the second setter call only after
+ * that menu is used, and one dormant site must not block the others.
+ * The setter 0x140d5fb30 rejects arguments >= 3 (cmp $3, jge at 0x140d5fb4a);
+ * when three visitors are configured its immediate is raised too, otherwise
+ * the setter keeps the stock cap and stays at 2. */
 typedef struct {
     uint32_t rva;           /* first byte of the instruction */
     uint8_t len;
     uint8_t imm;            /* offset of the immediate's low byte */
     uint8_t setter;         /* value is an argument to 0x140d5fb30 */
+    const char *name;
     uint8_t bytes[10];
 } AllowanceSite;
 
 static const AllowanceSite g_allowance_sites[] = {
     /* session root reset: movl $1, 0x39c(%rcx) */
-    {0xd7ac0c, 10, 6, 0, {0xc7, 0x81, 0x9c, 0x03, 0, 0, 0x01, 0, 0, 0}},
+    {0xd7ac0c, 10, 6, 0, "session root reset",
+     {0xc7, 0x81, 0x9c, 0x03, 0, 0, 0x01, 0, 0, 0}},
     /* shrine offering opens recruitment: movb $1, 0x39c(%rbx) */
-    {0xd7bb77, 7, 6, 0, {0xc6, 0x83, 0x9c, 0x03, 0, 0, 0x01}},
+    {0xd7bb77, 7, 6, 0, "shrine offering",
+     {0xc6, 0x83, 0x9c, 0x03, 0, 0, 0x01}},
     /* controller reset: movb $1, R+0x39c */
-    {0xd7ca03, 7, 6, 0, {0xc6, 0x05, 0x02, 0x44, 0xa1, 0x00, 0x01}},
+    {0xd7ca03, 7, 6, 0, "controller reset",
+     {0xc6, 0x05, 0x02, 0x44, 0xa1, 0x00, 0x01}},
     /* start recruiting: movb $1, R+0x39c */
-    {0xd7daa8, 7, 6, 0, {0xc6, 0x05, 0x5d, 0x33, 0xa1, 0x00, 0x01}},
+    {0xd7daa8, 7, 6, 0, "start recruiting",
+     {0xc6, 0x05, 0x5d, 0x33, 0xa1, 0x00, 0x01}},
+    /* second start-recruiting store (torii-side flow): movb $1, R+0x39c */
+    {0xd7de1f, 7, 6, 0, "start recruiting (alt)",
+     {0xc6, 0x05, 0xe6, 0x2f, 0xa1, 0x00, 0x01}},
     /* online shrine offering: mov $1, %ecx; call 0x140d5fb30 */
-    {0xcf9f36, 10, 1, 1, {0xb9, 0x01, 0, 0, 0, 0xe8, 0xf0, 0x5b, 0x06, 0x00}},
+    {0xcf9f36, 10, 1, 1, "shrine offering setter",
+     {0xb9, 0x01, 0, 0, 0, 0xe8, 0xf0, 0x5b, 0x06, 0x00}},
+    /* second offering (torii-side flow): mov $2, %ecx; call 0x140d5fb30 */
+    {0xcfa515, 10, 1, 1, "torii offering setter",
+     {0xb9, 0x02, 0, 0, 0, 0xe8, 0x11, 0x56, 0x06, 0x00}},
+};
+
+/* setter cap: cmp $3, %ebx; jge skip at 0x140d5fb4a */
+static const AllowanceSite g_setter_cap_site = {
+    0xd5fb4a, 4, 2, 2, "setter cap", {0x83, 0xfb, 0x03, 0x7d},
 };
 
 static void install_game_visitor_allowance(void)
@@ -2746,48 +2768,73 @@ static void install_game_visitor_allowance(void)
     if (g_cfg.max_players < 3 || !g_game_create_param_hook.nslots)
         return;
     uint8_t allowance = (uint8_t)(g_cfg.max_players > 4 ? 3 : g_cfg.max_players - 1);
-    uint8_t setter_allowance = allowance > 2 ? 2 : allowance;
     const unsigned n = sizeof g_allowance_sites / sizeof g_allowance_sites[0];
-    int ready = 0;
+    uint8_t installed[8] = {0};
+    unsigned done = 0;
+    int cap_done = 0;
     /* VMProtect decrypts .text lazily: poll tightly for the first minute (the
      * mission start is the interesting window), then slowly for nine more. */
-    for (int waited = 0; waited < 600000 && !ready; ) {
-        ready = 1;
-        for (unsigned i = 0; i < n && ready; i++) {
-            const AllowanceSite *s = &g_allowance_sites[i];
-            ready = readable(g_base + s->rva, s->len) &&
-                    !memcmp(g_base + s->rva, s->bytes, s->len);
+    for (int waited = 0; waited < 600000 && done < n; ) {
+        for (unsigned i = 0; i < n; i++) {
+            const AllowanceSite *s;
+            uint8_t *imm, value;
+            DWORD old;
+            if (installed[i])
+                continue;
+            s = &g_allowance_sites[i];
+            if (!readable(g_base + s->rva, s->len) ||
+                memcmp(g_base + s->rva, s->bytes, s->len))
+                continue;
+            /* The page must stay executable while the immediate is stored:
+             * another game thread can execute anywhere in this 4 KB page, and
+             * a non-executable mapping would fault (DEP). RWX only for the
+             * store and the flush, then RX again. */
+            imm = g_base + s->rva + s->imm;
+            value = s->setter ? (cap_done ? allowance : (allowance > 2 ? 2 : allowance))
+                              : allowance;
+            if (!VirtualProtect(imm, 1, PAGE_EXECUTE_READWRITE, &old)) {
+                LOG("game visitor allowance: cannot write %#x (err %lu)", s->rva, GetLastError());
+                continue;
+            }
+            *imm = value;
+            FlushInstructionCache(GetCurrentProcess(), imm, 1);
+            if (!VirtualProtect(imm, 1, PAGE_EXECUTE_READ, &old))
+                LOG("game visitor allowance: cannot restore execute protection at %#x (err %lu)",
+                    s->rva, GetLastError());
+            installed[i] = 1;
+            done++;
+            LOG("game visitor allowance: %s opens %u visitor slot(s)",
+                s->name, value);
         }
-        if (!ready) {
+        /* Raise the setter's rejection threshold to allowance + 1 before the
+         * setter call sites carry more than the stock 2. */
+        if (!cap_done && allowance > 2 &&
+            readable(g_base + g_setter_cap_site.rva, g_setter_cap_site.len) &&
+            !memcmp(g_base + g_setter_cap_site.rva, g_setter_cap_site.bytes,
+                    g_setter_cap_site.len)) {
+            uint8_t *imm = g_base + g_setter_cap_site.rva + g_setter_cap_site.imm;
+            DWORD old;
+            if (VirtualProtect(imm, 1, PAGE_EXECUTE_READWRITE, &old)) {
+                *imm = (uint8_t)(allowance + 1);
+                FlushInstructionCache(GetCurrentProcess(), imm, 1);
+                if (!VirtualProtect(imm, 1, PAGE_EXECUTE_READ, &old))
+                    LOG("game visitor allowance: cannot restore execute protection at %#x (err %lu)",
+                        g_setter_cap_site.rva, GetLastError());
+                cap_done = 1;
+                LOG("game visitor allowance: setter cap raised to %u", allowance + 1);
+            } else {
+                LOG("game visitor allowance: cannot write setter cap %#x (err %lu)",
+                    g_setter_cap_site.rva, GetLastError());
+            }
+        }
+        if (done < n) {
             int step = waited < 60000 ? 10 : 250;
             Sleep((DWORD)step);
             waited += step;
         }
     }
-    if (!ready) {
-        LOG("game visitor allowance: recruitment instructions mismatch; not installed");
-        return;
-    }
-    for (unsigned i = 0; i < n; i++) {
-        const AllowanceSite *s = &g_allowance_sites[i];
-        uint8_t *imm = g_base + s->rva + s->imm;
-        DWORD old;
-        /* The page must stay executable while the immediate is stored: another
-         * game thread can execute anywhere in this 4 KB page, and a
-         * non-executable mapping would fault (DEP). RWX only for the store and
-         * the flush, then RX again. */
-        if (!VirtualProtect(imm, 1, PAGE_EXECUTE_READWRITE, &old)) {
-            LOG("game visitor allowance: cannot write %#x (err %lu)", s->rva, GetLastError());
-            continue;
-        }
-        *imm = s->setter ? setter_allowance : allowance;
-        FlushInstructionCache(GetCurrentProcess(), imm, 1);
-        if (!VirtualProtect(imm, 1, PAGE_EXECUTE_READ, &old))
-            LOG("game visitor allowance: cannot restore execute protection at %#x (err %lu)",
-                s->rva, GetLastError());
-    }
-    LOG("game visitor allowance: recruitment opens %u visitor slot(s) (shrine setter %u)",
-        allowance, setter_allowance);
+    LOG("game visitor allowance: recruitment opens %u visitor slot(s); %u/%u site(s) patched%s",
+        allowance, done, n, cap_done ? "; setter cap raised" : "");
 }
 
 /* Does the loaded proxy DLL carry an RT_MANIFEST resource? Walk the resource
