@@ -154,7 +154,7 @@ cp -a nioh3p.sites.txt "$A_LIB/nioh3p.sites.txt"
 cat > "$A_LIB/nioh3p.ini" <<EOF
 out_dir=Z:\\home\\kenja\\nioh3p-test\\logs-a
 
-max_players=3
+max_players=4
 dump_image=0
 redump_after_s=0
 dump_every_s=0

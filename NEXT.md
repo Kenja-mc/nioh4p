@@ -24,10 +24,10 @@ Git does not track `build/`, `dist/` or `.local/`.
 - A Windows 11 VM for Defender tests is stopped and kept in
   `~/nioh3p-test/winvm` (13 GB). Usage is in `docs/RIG.md`.
 
-## Branch `friend-invite` (not in master)
+## Integrated development
 
-This branch holds the current work. The older `four-player` branch (`030d265`)
-is not merged. Its rig slot d is ported here (`run.sh`, `nioh_nav.py`).
+`master` contains the `friend-invite` and `four-player` branches.
+The branch names remain for reference. Nothing is pushed or published.
 
 - Friend invite (direct join): pump byte patch, CCallback vtable hook, join task
   0x140d73380. The open-task singleton at [manager+0xa8] is now created through

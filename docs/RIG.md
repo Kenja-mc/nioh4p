@@ -9,11 +9,13 @@ $RIG = ~/nioh3p-test
 │     ├── steamapps/common/Proton - Experimental
 │     └── steamapps/compatdata/485510/pfx   own Wine prefix, own saves, own config
 ├── home-b/…                       slot b: same, stock game (no mod DLL)
-├── lan-a/, lan-b/, lan-c/         separate LAN game copies, all with the proxy
+├── lan-a/, lan-b/, lan-c/, lan-d/ separate LAN game copies, all with the proxy
 ├── compat-c/pfx                  third LAN prefix (not inside a Steam root)
+├── compat-d/pfx                  fourth LAN prefix (not inside a Steam root)
 ├── home-c/                       third instance's private HOME
-├── logs-a/, logs-b/, logs-c/      research-era logs (out_dir); player ini logs to lan-*/
-├── run-a/, run-b/, run-c/         per-slot XDG_RUNTIME_DIR
+├── home-d/                       fourth instance's private HOME
+├── logs-a/, logs-b/, logs-c/     research-era logs (out_dir); player ini logs to lan-*/
+├── run-a/, run-b/, run-c/, run-d/ per-slot XDG_RUNTIME_DIR
 └── shots/                         screenshots taken from the rig display
 ```
 
@@ -176,7 +178,9 @@ Slot c uses its own `HOME`, runtime directory, `compat-c/pfx`, save account and 
 
 The third LAN identity is SteamID `76561198023713187` (`Nioh-LAN-C`), with a distinct Epic emulator ID ending in `03`. Its save account directory is `63447459`. The save transfer used the original [Nioh Savedata Decryption Tool v1.3](https://github.com/pawREP/Nioh-Savedata-Decryption-Tool/releases/tag/1.3). The command was `-i source/SAVEDATA.BIN -sid 63447459 -o SAVEDATA.BIN`, for both the system and character save. Run the tool with the destination save folder as its working directory. The tool discards directory components from `-o`. Do not disable checksum checks and do not change source saves.
 
-The navigation harness discovers displays and compositor sockets from the environment of each live `nioh.exe`. Use `nioh_nav.py -s c shot name.png` for C. Actual keyboard controls: BackSpace returns to the previous menu. Escape opens the equipment and system overlay. At a shrine, hold E for about 1.5 seconds to pray rather than tapping it.
+The fourth LAN identity is SteamID `76561198023713188` (`Nioh-LAN-D`), with a distinct Epic emulator ID ending in `04` (epicid `00000000000000000000000000000004`, productuserid `79165699f5c687119e1e19e0e2fc59b9`). Its save account directory is `63447460`. The same tool converted slot c's `63447459` saves for slot d. Run it as `-i <c file> -sid 63447460 -o SAVEDATA.BIN`. Use the destination save folder as the working directory. The tool writes the output and then waits on stdin. Give it Enter or stop it once the file exists. While the tool runs, Proton also starts its Xalia helper process next to the game.
+
+The navigation harness discovers displays and compositor sockets from the environment of each live `nioh.exe`. Use `nioh_nav.py -s <slot> shot name.png`; the harness lists a, b, c and d. Actual keyboard controls: BackSpace returns to the previous menu. Escape opens the equipment and system overlay. At a shrine, hold E for about 1.5 seconds to pray rather than tapping it.
 
 Enable process tracing without changing the files of Proton:
 
@@ -227,3 +231,15 @@ This rig ran three-player co-op: host B plus visitors A and C in one mission. Ea
 - Shutdown this session: all three games quit through their native dialog (exit 0). Steam showed Invisible (`shots/steam-b-invisible-stop5.png`) and shut down normally. Xvfb `:10` stopped, and a final scan found no live process with a rig HOME. The 4.7 GB research-era `logs-*/nioh3p.log` files went to trash.
 
 To resume: start `Xvfb :10`, run `tools/rig/run.sh b client`, make sure that the Friends window shows Invisible, then run `tools/rig/run.sh {b,a,c} lan`.
+
+## Checkpoint (2026-10-23, four players)
+
+This rig ran four-player co-op: host B plus visitors A, C and D in one mission. The branch is `four-player`. Its player build has SHA-256 prefix `6db5351d` and 38,400 bytes, and `./build.sh` produced it. The proxy on this branch also raises the shrine setter cap. It patches the byte at RVA `0xd5fb4c`, the immediate of the cmp at `0xd5fb4a` (`cmp $0x3,%ebx`, bytes `83 fb 03`), to 4 when the allowance is 3, so the online shrine site can now pass the value 3 past the setter's cap check. With allowance 2 the game bytes stay stock.
+
+- Smoke harness: it passed with `max_players` 3 and 4, in player and research mode, plus the ownership harness at both counts. The harness now reads `max_players` from `nioh3p.ini` to build its expectation. `NIOH3P_MAX_PLAYERS` appends an overriding `max_players` key in `tools/smoketest.sh`.
+- Three-player regression with the branch build: host b plus visitors a and c, driven by `coop.py run --host b --visitors a c`. All three roles passed. The host logged `game create request: raising max members 2 -> 3 before allocation`. Every client logged `game visitor allowance: recruitment opens 2 visitor slot(s) (shrine setter 2)`. Host shot `shots/4p-reg-3p-b.png` shows three player characters.
+- Four-player run: all four lan slots ran `max_players=4`. Each lan slot keeps its three-player ini as `lan-*/nioh3p.ini.3p`. Every client logged `game visitor allowance: recruitment opens 3 visitor slot(s) (shrine setter 3)`, so the setter cap raise installed on all four. Host b logged `game create request: raising max members 2 -> 4 before allocation` at 13:44:01.
+- Join order: a, c and then d, driven by `coop.py run --host b --visitors a c d`. The driver relief (SIGSTOP pauses of the waiting visitors) paused a and c while d loaded. a and c passed the driver checks. d searched, found the lobby and sent JoinLobby at 13:56:28, with three JoinLobby lines in its log. The driver then hit its default 600 s wall timeout while d was still loading. d finished loading on its own and entered the host mission right after the driver timed out.
+- Evidence shots: `shots/4p-mission-b.png` and `shots/4p-move3-b.png` show the host view with the host and two visible visitors; the third visitor is off camera (the driver trace records all four). Visitor a view with the host and the two other visitors in `shots/4p-hostmove-a.png`. Movement was shown both ways. After a, c and d each walked, `4p-move3-b.png` is the before frame and `4p-move-b.png` the after frame; the visitor positions differ between them. After the host walked, the visitor shots `4p-hostmove-a.png`, `4p-hostmove-c.png` and `4p-hostmove-d.png` were taken. Driver trace: `shots/coop-20261023-134257.jsonl`, 104 steps.
+- Rig script changes: `tools/rig/run.sh` accepts slot d for lan (compat-d prefix, slot b client files). `tools/rig/nioh_nav.py` lists a, b, c and d. `tools/rig/coop.py` accepts two or three visitors, and `--relieve` now takes several slots. `tools/rig/setup.sh` writes `max_players=4` into slot a's ini on this branch.
+- Remaining gaps at four: the party HUD still names only one partner. The coop driver default timeout of 600 s is too short for a fourth client's load. Pass `--timeout 900` for four-player runs. Mission finish, deaths, revives, rewards and a new offering after a visitor leaves are untested at four. d's join needed the relief pauses on a and c.

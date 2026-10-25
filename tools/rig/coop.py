@@ -131,17 +131,22 @@ CHECKS = {"host_check": host_check, "visitor_check": visitor_check,
           "leave_check": leave_check}
 
 
-# ---- relief: pause the other visitor between steps ----
-def pause_cycle(slot, seconds=5.0, pause=2.0):
-    marker = f"HOME={os.path.join(RIG, f'home-{slot}')}"
-    return drive.pause_process("nioh.exe", marker.encode(), seconds, pause,
-                               lambda why: print(f"coop: relief: {why}"))
+# ---- relief: pause the other visitor(s) between steps ----
+def pause_cycle(slots, seconds=5.0, pause=2.0):
+    paused = []
+    for slot in slots:
+        marker = f"HOME={os.path.join(RIG, f'home-{slot}')}"
+        drive.pause_process("nioh.exe", marker.encode(), seconds, pause,
+                            lambda why: print(f"coop: relief: {why}"))
+        paused.append(slot)
+    return paused
 
 
 # ---- roles ----
 def run_role(slot, role_name, profile, trace, *, dry_run=False, timeout=None,
              backend=perceive.DEFAULT_BACKEND, model=None, relieve=None):
-    if relieve == slot:
+    relieve = list(relieve or [])
+    if slot in relieve:
         return False, f"refusing to pause slot {slot}, the newcomer itself"
     if not resolve_slot(slot):
         return False, f"no live game for slot {slot}"
@@ -182,7 +187,7 @@ def run_role(slot, role_name, profile, trace, *, dry_run=False, timeout=None,
             relief = profile["relief"]
             actuator = drive.ReliefActuator(
                 actuator, lambda: pause_cycle(relieve, relief["seconds"], relief["pause"]))
-            print(f"coop: relief: pausing slot {relieve} for "
+            print(f"coop: relief: pausing slot(s) {', '.join(relieve)} for "
                   f"{relief['seconds']:.0f} s after every step")
     driver = drive.Driver(
         table, perceive_step, actuator=actuator,
@@ -235,8 +240,8 @@ def main():
     host.add_argument("slot")
     visitor = commands.add_parser("visit", help="join a host through Torii Gate")
     visitor.add_argument("slot")
-    visitor.add_argument("--relieve", metavar="SLOT",
-                         help="pause this other visitor after every step")
+    visitor.add_argument("--relieve", metavar="SLOT", nargs="+",
+                         help="pause these other visitors after every step")
     whole = commands.add_parser("run", help="host opens a lobby, then all visitors search together")
     whole.add_argument("--host", required=True)
     whole.add_argument("--visitors", nargs="+", required=True, metavar="SLOT")

@@ -562,8 +562,10 @@ static void cfg_load(const char *dir)
             line++;
     }
     VirtualFree(buf, 0, MEM_RELEASE);
-    /* 0 turns the clamps off; 2..4 are the only member counts the patches and
-     * the game's arrays support. Anything else falls back to 3. */
+    /* 0 turns the clamps off; 2..4 are the only member counts the patches
+     * address. Four slot entries and limit-sized member arrays are confirmed
+     * by a live four-client mission (docs/FINDINGS.md section 15). Anything
+     * else falls back to 3. */
     if (g_cfg.max_players != 0 && (g_cfg.max_players < 2 || g_cfg.max_players > 4)) {
         g_cfg_max_players_raw = (int)g_cfg.max_players;
         g_cfg_max_players_bad = 1;
