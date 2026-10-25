@@ -1751,7 +1751,9 @@ static uint64_t EOS_CALL det_SteamCreateLobby(void *self, int lobby_type, int ma
         log_backtrace("Steam_ISteamMatchmaking::CreateLobby");
 #endif
     PFN_SteamCreateLobby o = (PFN_SteamCreateLobby)g_steam[0].orig;
-    return o ? o(self, lobby_type, max_members) : 0;
+    uint64_t lobby = o ? o(self, lobby_type, max_members) : 0;
+    LOG("Steam CreateLobby -> lobby=%llu", (unsigned long long)lobby);
+    return lobby;
 }
 
 static uint8_t EOS_CALL det_SteamSetLobbyMemberLimit(void *self, uint64_t lobby, int max_members)
@@ -2389,6 +2391,12 @@ static void *EOS_CALL det_FindOrCreateInterface(void *user, const char *version)
     return iface;
 }
 
+#ifdef NIOH3P_RESEARCH
+/* friend-invite section below: the rig's synthetic-invite trigger */
+static void det_SteamRunCallbacks(void);
+static void (*orig_RunCallbacks)(void);
+#endif
+
 static void install_steam_hooks(void)
 {
     if (g_steam_ready)
@@ -2402,6 +2410,14 @@ static void install_steam_hooks(void)
      * dispatch above; unsupported Steam interfaces pass through untouched. */
     FARPROC f;
 #ifdef NIOH3P_RESEARCH
+    /* The synthetic-invite trigger rides the callback pump: it is the one
+     * game thread the rig can rely on, and a real invite arrives through the
+     * same pump. See the friend-invite section below. */
+    f = GetProcAddress(st, "SteamAPI_RunCallbacks");
+    if (f)
+        install_hook("steam_api64.dll", "SteamAPI_RunCallbacks", (void *)f,
+                     (void *)(uintptr_t)det_SteamRunCallbacks,
+                     (void **)&orig_RunCallbacks);
     if (g_cfg.trace) {
         /* Callback watching and exit tracing are instrumentation only. */
         f = GetProcAddress(st, "SteamAPI_RegisterCallback");
@@ -2837,6 +2853,190 @@ static void install_game_visitor_allowance(void)
         allowance, done, n, cap_done ? "; setter cap raised" : "");
 }
 
+/* -------------------------------------------------- game-side friend invite */
+
+/* A stock invite can never join. The GameLobbyJoinRequested callback handler
+ * (0x1405ef7e0) stores the lobby id and requests lobby data, but the pump
+ * turns the "lobby owner is someone else" state into error 0x80C81010 and
+ * latches the error bits that block every later session open. Nothing ever
+ * reaches SessionOpen_Start. Two small changes give an invite the same join
+ * the Torii Gate search uses:
+ *   1. the pump's state-3 branch ("cmp $0x3,%eax; je" at 0x5ef001) is
+ *      retargeted to the state-2 path, which only clears the invite state;
+ *   2. the callback's Run slot (vtable 0x141586b60, entry 1) is hooked. After
+ *      the original Run, the invited lobby id goes to the game's own
+ *      join-by-lobby task 0x140d73380(task, ptr_to_lobby_id), which builds
+ *      the kind-1 join descriptor and calls SessionOpen_Start. The
+ *      descriptor's second field is a pointer to the lobby id; the join
+ *      parameter's SetParam (0x1405f1390) dereferences it exactly once.
+ *      The task object is the open-request singleton at [manager+0xA8]. It
+ *      only exists once the game's session steps have created it; an idle
+ *      client has none (both game call sites read it straight and the game's
+ *      step 0x140d65740 creates it through factory 0x140d66910). The same
+ *      factory runs here first, so an invite works from a fresh boot. */
+static uint64_t g_invite_lobby_storage;
+static int g_invite_installed;
+
+static void game_invite_join(uint64_t lobby)
+{
+    static const uint8_t join_prologue[] = {
+        0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x40,
+    };
+    static const uint8_t factory_prologue[] = {
+        0x57, 0x48, 0x83, 0xec, 0x40, 0x48, 0xc7, 0x44, 0x24,
+    };
+    uint8_t *join = g_base + 0xd73380;
+    if (!readable(join, sizeof join_prologue) ||
+        memcmp(join, join_prologue, sizeof join_prologue)) {
+        LOG("game invite: join task instructions mismatch; invite dropped");
+        return;
+    }
+    void **manager_slot = (void **)(g_base + 0x17900b0);
+    if (!readable(manager_slot, sizeof *manager_slot) || !*manager_slot) {
+        LOG("game invite: game manager missing; invite dropped");
+        return;
+    }
+    void *manager = *manager_slot;
+    if (!readable(manager, 0xb0)) {
+        LOG("game invite: manager unreadable; invite dropped");
+        return;
+    }
+    void *task = *(void **)((uint8_t *)manager + 0xa8);
+    if (!task) {
+        uint8_t *factory = g_base + 0xd66910;
+        if (!readable(factory, sizeof factory_prologue) ||
+            memcmp(factory, factory_prologue, sizeof factory_prologue)) {
+            LOG("game invite: open task factory mismatch; invite dropped");
+            return;
+        }
+        typedef void (*OpenTaskFactory)(void *manager);
+        ((OpenTaskFactory)(void *)factory)(manager);
+        task = *(void **)((uint8_t *)manager + 0xa8);
+        if (!task) {
+            LOG("game invite: open task creation failed; invite dropped");
+            return;
+        }
+        LOG("game invite: open task object created");
+    }
+    g_invite_lobby_storage = lobby;
+    typedef int (*JoinByLobby)(void *, uint64_t *);
+    int posted = ((JoinByLobby)(void *)join)(task, &g_invite_lobby_storage);
+    LOG("game invite: lobby %llu %s", (unsigned long long)lobby,
+        posted ? "join posted" : "join refused (an open request may already be running)");
+}
+
+static void game_invite_run(void *self, void *param, uint8_t failed, uint64_t call);
+static Hook g_game_invite_hook = {
+    .name = "CCallback<CSessionP2pSteam,GameLobbyJoinRequested_t>::Run",
+    .detour = (void *)(uintptr_t)game_invite_run,
+};
+
+static void game_invite_run(void *self, void *param, uint8_t failed, uint64_t call)
+{
+    typedef void (*RunFn)(void *, void *, uint8_t, uint64_t);
+    ((RunFn)g_game_invite_hook.orig)(self, param, failed, call);
+    /* GameLobbyJoinRequested_t: m_ulSteamIDLobby is the first field. */
+    if (param && readable(param, sizeof(uint64_t)))
+        game_invite_join(*(uint64_t *)param);
+}
+
+static void install_game_invite_hooks(void)
+{
+    /* the capacity hook proves the supported game image; without it (harness,
+     * unsupported build) the invite patch has nothing to attach to */
+    if (!g_game_create_param_hook.nslots)
+        return;
+    static const uint8_t pump[] = {0x83, 0xf8, 0x03, 0x74, 0x14};
+    void **run_slot = (void **)(g_base + 0x1586b68);
+    int ready = 0;
+    /* VMProtect decrypts .text lazily: poll tightly for the first minute (an
+     * invite can only matter once online play starts), then slowly. */
+    for (int waited = 0; waited < 600000 && !ready; ) {
+        ready = readable(run_slot - 1, 3 * sizeof(void *)) &&
+                executable_ptr(run_slot[-1]) &&
+                run_slot[-1] == (void *)(g_base + 0x5f0650) &&
+                run_slot[0] == (void *)(g_base + 0x5f07d0) &&
+                run_slot[1] == (void *)(g_base + 0x5f0640) &&
+                readable(g_base + 0x5ef001, sizeof pump) &&
+                !memcmp(g_base + 0x5ef001, pump, sizeof pump);
+        if (!ready) {
+            int step = waited < 60000 ? 10 : 250;
+            Sleep((DWORD)step);
+            waited += step;
+        }
+    }
+    if (!ready) {
+        LOG("game invite: callback vtable or pump instructions mismatch; not installed");
+        return;
+    }
+    if (!add_slot(&g_game_invite_hook, run_slot)) {
+        LOG("game invite: callback slot not hooked; not installed");
+        return;
+    }
+    /* Retarget the state-3 jump to the state-2 clear path: the rel8 operand
+     * of the je at 0x5ef004 changes from +0x14 (the error block at 0x5ef01a)
+     * to -0x10 (0x5eeff6, which only clears the invite state). Same RWX store
+     * window as the allowance sites: the page stays executable for the store
+     * and the flush, then returns to RX. */
+    uint8_t *imm = g_base + 0x5ef005;
+    DWORD old;
+    if (!VirtualProtect(imm, 1, PAGE_EXECUTE_READWRITE, &old)) {
+        LOG("game invite: cannot write %#x (err %lu)", 0x5ef005, GetLastError());
+        return;
+    }
+    *imm = 0xf0;
+    FlushInstructionCache(GetCurrentProcess(), imm, 1);
+    if (!VirtualProtect(imm, 1, PAGE_EXECUTE_READ, &old))
+        LOG("game invite: cannot restore execute protection at %#x (err %lu)",
+            0x5ef005, GetLastError());
+    g_invite_installed = 1;
+    LOG("game invite: friend invites join directly (callback hooked, error state neutralised)");
+}
+
+#ifdef NIOH3P_RESEARCH
+/* Rig trigger. The emulator rig cannot deliver GameLobbyJoinRequested_t, so
+ * a file named nioh3p.invite.txt in the game directory (the proxy's working
+ * directory) holding a decimal lobby id posts the same join. The file is
+ * consumed on use, so the run controls when the "invite" arrives: drive the
+ * visitor to the world map first, then write the file. Research build only. */
+static int g_runcallbacks_ticks;
+static int g_fake_invite_seen;
+
+static void det_SteamRunCallbacks(void)
+{
+    orig_RunCallbacks();
+    if (++g_runcallbacks_ticks % 120)   /* about once per two seconds */
+        return;
+    if (!g_invite_installed || g_fake_invite_seen)
+        return;
+    HANDLE f = CreateFileA("nioh3p.invite.txt", GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f == INVALID_HANDLE_VALUE)
+        return;
+    char buf[32];
+    DWORD got = 0;
+    BOOL ok = ReadFile(f, buf, sizeof buf - 1, &got, NULL);
+    CloseHandle(f);
+    if (!ok)
+        return;
+    uint64_t v = 0;
+    for (DWORD i = 0; i < got; i++) {
+        if (buf[i] == '\r' || buf[i] == '\n' || buf[i] == ' ')
+            continue;
+        if (buf[i] < '0' || buf[i] > '9')
+            return;             /* not a lobby id; leave the file alone */
+        v = v * 10 + (uint64_t)(buf[i] - '0');
+    }
+    if (!v)
+        return;
+    g_fake_invite_seen = 1;
+    MoveFileA("nioh3p.invite.txt", "nioh3p.invite.used.txt");
+    LOG("game invite: synthetic invite for lobby %llu", (unsigned long long)v);
+    game_invite_join(v);
+}
+#endif
+
 /* Does the loaded proxy DLL carry an RT_MANIFEST resource? Walk the resource
  * directory root of this module's PE image; the startup log then proves that
  * the embedded manifest actually reached the linked DLL. */
@@ -3064,8 +3264,10 @@ static DWORD WINAPI worker(LPVOID unused)
     }
 #endif
     /* the allowance poll can wait up to 10 minutes; run it after the dumps */
-    if (g_cfg.hook_eos && mod_active)
+    if (g_cfg.hook_eos && mod_active) {
         install_game_visitor_allowance();
+        install_game_invite_hooks();
+    }
 #ifdef NIOH3P_RESEARCH
     if (disk)
         VirtualFree(disk, 0, MEM_RELEASE);
