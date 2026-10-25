@@ -16,7 +16,7 @@ usage:
   coop.py decide a [--role visitor]    one frame: print perception + action
   --dry-run                            perceive once and print the action only
   --timeout SECONDS                    wall clock limit (default 600)
-  --backend {mercury,luna}             default mercury, or $COOP_BACKEND
+  --backend {mercury,luna}             default luna, or $COOP_BACKEND
   --model MODEL / --profile PATH       override model or profile
 
 Environment: OPENROUTER_API_KEY or OPENROUTER_ENV_FILE (mercury);
@@ -44,10 +44,20 @@ def load_profile(path):
         return json.load(handle)
 
 
-def make_view(slot, profile, backend, model):
+def make_view(slot, profile, backend, model, table):
+    # A second frame costs a model call and a settle. It only helps when the
+    # low-confidence answer could change the action: the screen itself, or
+    # the highlight on a screen whose rules test the highlight.
+    keyed = {rule["screen"] for rule in table
+             if isinstance(rule.get("when"), dict) and "highlight" in rule["when"]}
+
+    def retry_if(low, answers):
+        return "screen" in low or ("highlight" in low and
+                                   answers["screen"].get("choice") in keyed)
+
     return perceive.Perceiver.from_profile(
         profile, drive.GamescopeCapture(slot), backend, model,
-        prefix=f"coop-{slot}", label=f"slot {slot}")
+        prefix=f"coop-{slot}", label=f"slot {slot}", retry_if=retry_if)
 
 
 def slot_log_dir(slot):
@@ -141,7 +151,7 @@ def run_role(slot, role_name, profile, trace, *, dry_run=False, timeout=None,
     for name, registry in ((guard, GUARDS), (check, CHECKS)):
         if name and name not in registry:
             raise RuntimeError(f"unknown hook {name!r} in profile")
-    view = make_view(slot, profile, backend, model)
+    view = make_view(slot, profile, backend, model, table)
     oracle = make_oracle(profile, role, slot) if role.get("oracle") else None
     ctx = {"safety": safety}
     other_run = 0
@@ -196,7 +206,7 @@ def decide(slot, role_name, profile, *, backend, model):
     role = profile["roles"][role_name]
     table = profile["rules"][role["rules"]]
     try:
-        state = make_view(slot, profile, backend, model).perceive(0)
+        state = make_view(slot, profile, backend, model, table).perceive(0)
     except Exception as exc:
         print(f"coop: perception failed: {exc}", file=sys.stderr)
         return 1

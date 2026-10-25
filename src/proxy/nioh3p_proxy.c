@@ -2265,23 +2265,39 @@ static const char *EOS_CALL det_FriendPersonaName(void *self, uint64_t friend_id
 }
 
 /* ---- ISteamNetworking v006: the P2P channel and its session state ---- */
+/* The game protocol rides on this channel. The first 16 payload bytes carry
+ * the framing and the raw packet ID; the rest stays out of the log. */
+static void p2p_head(char *out, size_t cap, const void *data, unsigned size)
+{
+    static const char digits[] = "0123456789abcdef";
+    const uint8_t *b = (const uint8_t *)data;
+    size_t n = 0;
+    for (unsigned i = 0; b && i < size && i < 16 && n + 3 < cap; i++) {
+        out[n++] = digits[b[i] >> 4];
+        out[n++] = digits[b[i] & 15];
+        out[n++] = ' ';
+    }
+    out[n ? n - 1 : 0] = 0;
+}
+
 static int EOS_CALL det_P2PSend(void *self, uint64_t peer, const void *data, unsigned size, int send_type, int channel)
 {
     SITE_NOTE("P2PSend");
     int r = ((int EOS_CALL (*)(void *, uint64_t, const void *, unsigned, int, int))g_networking[P_SEND].orig)
           ? ((int EOS_CALL (*)(void *, uint64_t, const void *, unsigned, int, int))g_networking[P_SEND].orig)(self, peer, data, size, send_type, channel) : 0;
-    LOG("Steam p2p: SendP2PPacket(peer=%llu size=%u type=%d chan=%d) -> %d",
-        (unsigned long long)peer, size, send_type, channel, r);
+    char head[52];
+    p2p_head(head, sizeof head, data, size);
+    LOG("Steam p2p: SendP2PPacket(peer=%llu size=%u type=%d chan=%d) -> %d [%s]",
+        (unsigned long long)peer, size, send_type, channel, r, head);
     return r;
 }
 
+/* Polled every frame: logging it (or its call site) buried everything else
+ * (1.2M lines per session), so only the read that follows a hit is logged. */
 static int EOS_CALL det_P2PAvailable(void *self, unsigned *size, int channel)
 {
-    SITE_NOTE("P2PAvailable");
-    int r = ((int EOS_CALL (*)(void *, unsigned *, int))g_networking[P_AVAIL].orig)
-          ? ((int EOS_CALL (*)(void *, unsigned *, int))g_networking[P_AVAIL].orig)(self, size, channel) : 0;
-    LOG("Steam p2p: IsP2PPacketAvailable(chan=%d) -> %d size=%u", channel, r, r && size ? *size : 0);
-    return r;
+    return ((int EOS_CALL (*)(void *, unsigned *, int))g_networking[P_AVAIL].orig)
+         ? ((int EOS_CALL (*)(void *, unsigned *, int))g_networking[P_AVAIL].orig)(self, size, channel) : 0;
 }
 
 static int EOS_CALL det_P2PRead(void *self, void *dest, unsigned cap, unsigned *size, uint64_t *from, int channel)
@@ -2289,8 +2305,10 @@ static int EOS_CALL det_P2PRead(void *self, void *dest, unsigned cap, unsigned *
     SITE_NOTE("P2PRead");
     int r = ((int EOS_CALL (*)(void *, void *, unsigned, unsigned *, uint64_t *, int))g_networking[P_READ].orig)
           ? ((int EOS_CALL (*)(void *, void *, unsigned, unsigned *, uint64_t *, int))g_networking[P_READ].orig)(self, dest, cap, size, from, channel) : 0;
-    LOG("Steam p2p: ReadP2PPacket(chan=%d) -> %d size=%u from=%llu",
-        channel, r, r && size ? *size : 0, r && from ? (unsigned long long)*from : 0ull);
+    char head[52];
+    p2p_head(head, sizeof head, r ? dest : 0, r && size ? (*size < cap ? *size : cap) : 0);
+    LOG("Steam p2p: ReadP2PPacket(chan=%d) -> %d size=%u from=%llu [%s]",
+        channel, r, r && size ? *size : 0, r && from ? (unsigned long long)*from : 0ull, head);
     return r;
 }
 
@@ -2865,6 +2883,210 @@ static void install_game_visitor_allowance(void)
         allowance, done, n, cap_done ? "; setter cap raised" : "");
 }
 
+#ifdef NIOH3P_RESEARCH
+/* ------------------------------------------- game protocol trace (research) */
+
+/* The Steam P2P payloads are encrypted (CPacketReliable), so the wire log
+ * cannot name a game packet. Two entry points carry them in the clear:
+ *   0x140d6a560 send(id, data, len <= 0x100, target): target 0-3 is one
+ *               member slot, 4 or more is every connected slot but our own.
+ *   0x140d6acc0 dispatch(record, sender): record+0x10 is the u16 raw id and
+ *               record+0x18 the payload, still in network byte order.
+ * Both prologues are position independent, so a trampoline can run them
+ * elsewhere. The 14-byte entry patch is not atomic; research builds only. */
+typedef uint8_t (*PFN_GameSend)(unsigned, const uint8_t *, unsigned, int);
+typedef uintptr_t (*PFN_GameDispatch)(uint8_t *, int);
+static PFN_GameSend g_game_send;
+static PFN_GameDispatch g_game_dispatch;
+static volatile LONG g_pkt_count[2][128];
+
+static int pkt_should_log(int dir, unsigned id)
+{
+    LONG n = InterlockedIncrement(&g_pkt_count[dir][id & 127]);
+    return n <= 40 || n % 500 == 0;
+}
+
+/* Tokoyo Coop preparation is written for two players: the host sends the
+ * mission preview (76), its ready flag (74), the start flag (75) and the
+ * chosen mission (17) to slot 1 only, so a second companion in slot 2 waits
+ * on "Waiting for mission to be chosen" forever. Experiment: mirror those
+ * four packets to every other member slot. Packet 17 carries the receiver's
+ * own slot at payload byte 6 (the visitor's handler adopts it), so each copy
+ * gets its own slot. The send byte-swaps its buffer in place, so the copies
+ * come from a snapshot taken before the original call. */
+#define GAME_ROOT_RVA      0x1790a70u  /* session root; +0x3c8 = own slot index */
+#define GAME_COOP_MODE_RVA 0x191de34u  /* 1 while a Tokoyo companion session prepares */
+
+static int tokoyo_fanout_wanted(unsigned id, int target)
+{
+    if (target != 1 || g_cfg.max_players < 3)
+        return 0;
+    if (id != 17 && id != 74 && id != 75 && id != 76)
+        return 0;
+    const uint8_t *own = g_base + GAME_ROOT_RVA + 0x3c8;
+    const int32_t *mode = (const int32_t *)(g_base + GAME_COOP_MODE_RVA);
+    return readable(own, 1) && readable(mode, 4) && *own == 0 && *mode == 1;
+}
+
+static uint8_t det_GameSend(unsigned id, const uint8_t *data, unsigned len, int target)
+{
+    id &= 0xffff;
+    uint8_t pristine[0x100];
+    int fan = tokoyo_fanout_wanted(id, target) && len <= sizeof pristine && readable(data, len);
+    if (fan)
+        memcpy(pristine, data, len);
+    uint8_t r = g_game_send(id, data, len, target);
+    if (pkt_should_log(0, id)) {
+        char head[52];
+        p2p_head(head, sizeof head, data, readable(data, len < 16 ? len : 16) ? len : 0);
+        LOG("game pkt send: id=%u len=%u target=%d -> %u #%ld [%s]", id, len, target, r,
+            g_pkt_count[0][id & 127], head);
+    }
+    for (int slot = 2; fan && slot < 4; slot++) {
+        uint8_t copy[0x100];
+        memcpy(copy, pristine, len);
+        if (id == 17 && len > 6)
+            copy[6] = (uint8_t)slot;
+        if (g_game_send(id, copy, len, slot))
+            LOG("game tokoyo fanout: id=%u also sent to slot %d", id, slot);
+    }
+    return r;
+}
+
+static uintptr_t det_GameDispatch(uint8_t *record, int sender)
+{
+    unsigned id = readable(record, 0x28) ? *(uint16_t *)(record + 0x10) : 0xffff;
+    if (pkt_should_log(1, id)) {
+        char head[52];
+        p2p_head(head, sizeof head, record ? record + 0x18 : 0, id != 0xffff ? 16 : 0);
+        LOG("game pkt recv: id=%u from=%d #%ld [%s]", id, sender, g_pkt_count[1][id & 127], head);
+    }
+    return g_game_dispatch(record, sender);
+}
+
+/* Online::AddFlagWaitCoopPlayer (0x1408af1b0) is the mission script's sync
+ * point. The host bumps mission flag 0x46, a visitor bumps flag 0x47, and
+ * Online::IsWaitCoopPlayer holds each side until the other side's counter
+ * catches up. Flag 0x47 is one shared counter, so a second companion bumps
+ * it as well: the counters read host 1 / visitors 3, every client waits for
+ * every other, and the mission never fades in (rig run 2026-10-25 13:51).
+ * Experiment: in Tokoyo Coop only the slot-1 companion advances flag 0x47;
+ * later companions follow the host and slot 1. */
+typedef void (*PFN_WaitFlag)(void);
+static PFN_WaitFlag g_wait_flag;
+
+static void det_WaitFlag(void)
+{
+    uint8_t *const *manager = (uint8_t *const *)(g_base + 0x18715e0);
+    const uint8_t *own = g_base + GAME_ROOT_RVA + 0x3c8;
+    if (readable(manager, 8) && *manager && readable(*manager + 0x5b0, 0xb4) &&
+        readable(own, 1) && *(*manager + 0x660) && *(const int32_t *)(*manager + 0x5b0) == 1 &&
+        *own >= 2) {
+        LOG("game tokoyo wait: companion slot %u leaves the shared visitor counter alone", *own);
+        return;
+    }
+    g_wait_flag();
+}
+
+typedef struct {
+    uint32_t rva;
+    uint8_t n;              /* whole instructions replaced at the site */
+    const char *name;
+    void *detour;
+    void **orig;
+    uint8_t bytes[24];
+    /* NULL: the n site bytes are position independent and run as copied.
+     * Otherwise this writes an equivalent of them and returns its length. */
+    unsigned (*relocate)(uint8_t *out, const uint8_t *site);
+} InlineHook;
+
+/* sub $0x28,%rsp; mov 0x18715e0(%rip),%rax; mov 0x5b0(%rax),%ecx, with the
+ * RIP-relative load turned into movabs from the absolute address. */
+static unsigned relocate_wait_flag(uint8_t *out, const uint8_t *site)
+{
+    uintptr_t manager = (uintptr_t)(g_base + 0x18715e0);
+    (void)site;
+    out[0] = 0x48; out[1] = 0x83; out[2] = 0xec; out[3] = 0x28;
+    out[4] = 0x48; out[5] = 0xa1;
+    memcpy(out + 6, &manager, 8);
+    out[14] = 0x8b; out[15] = 0x88; out[16] = 0xb0; out[17] = 0x05; out[18] = 0; out[19] = 0;
+    return 20;
+}
+
+static InlineHook g_inline_hooks[] = {
+    {0xd6a560, 21, "game send", (void *)det_GameSend, (void **)&g_game_send,
+     {0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
+      0x48, 0x8d, 0xac, 0x24, 0x58, 0xfe, 0xff, 0xff}, NULL},
+    {0xd6acc0, 19, "game dispatch", (void *)det_GameDispatch, (void **)&g_game_dispatch,
+     {0x48, 0x8b, 0xc4, 0x55, 0x53, 0x57, 0x41, 0x57, 0x48, 0x8d, 0x68, 0xa1,
+      0x48, 0x81, 0xec, 0xc8, 0x00, 0x00, 0x00}, NULL},
+    {0x8af1b0, 17, "wait flag", (void *)det_WaitFlag, (void **)&g_wait_flag,
+     {0x48, 0x83, 0xec, 0x28, 0x48, 0x8b, 0x05, 0x25, 0x24, 0xfc, 0x00,
+      0x8b, 0x88, 0xb0, 0x05, 0x00, 0x00}, relocate_wait_flag},
+};
+
+static void abs_jmp(uint8_t *at, const void *to)
+{
+    uintptr_t target = (uintptr_t)to;
+    at[0] = 0xff; at[1] = 0x25; at[2] = at[3] = at[4] = at[5] = 0;
+    memcpy(at + 6, &target, 8);
+}
+
+static int inline_install(InlineHook *h)
+{
+    uint8_t *site = g_base + h->rva;
+    if (!readable(site, h->n) || memcmp(site, h->bytes, h->n))
+        return 0;
+    uint8_t *tramp = VirtualAlloc(NULL, 64, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!tramp) {
+        LOG("game pkt trace: no trampoline for %s (err %lu)", h->name, GetLastError());
+        return -1;
+    }
+    unsigned body = h->n;
+    if (h->relocate)
+        body = h->relocate(tramp, site);
+    else
+        memcpy(tramp, site, h->n);
+    abs_jmp(tramp + body, site + h->n);
+    FlushInstructionCache(GetCurrentProcess(), tramp, 64);
+    *h->orig = tramp;
+    uint8_t patch[24];
+    memset(patch, 0x90, h->n);
+    abs_jmp(patch, h->detour);
+    DWORD old;
+    if (!VirtualProtect(site, h->n, PAGE_EXECUTE_READWRITE, &old)) {
+        LOG("game pkt trace: cannot write %s (err %lu)", h->name, GetLastError());
+        return -1;
+    }
+    memcpy(site, patch, h->n);
+    FlushInstructionCache(GetCurrentProcess(), site, h->n);
+    VirtualProtect(site, h->n, PAGE_EXECUTE_READ, &old);
+    LOG("game pkt trace: %s hooked at %p (trampoline %p)", h->name, site, tramp);
+    return 1;
+}
+
+static DWORD WINAPI game_pkt_trace_worker(LPVOID unused)
+{
+    (void)unused;
+    const unsigned n = sizeof g_inline_hooks / sizeof g_inline_hooks[0];
+    unsigned done = 0;
+    int state[4] = {0};
+    for (int waited = 0; waited < 600000 && done < n; waited += 50) {
+        for (unsigned i = 0; i < n; i++) {
+            if (state[i])
+                continue;
+            state[i] = inline_install(&g_inline_hooks[i]);
+            if (state[i])
+                done++;
+        }
+        if (done < n)
+            Sleep(50);
+    }
+    LOG("game pkt trace: %u/%u entry point(s) handled", done, n);
+    return 0;
+}
+#endif
+
 /* -------------------------------------------------- game-side friend invite */
 
 /* A stock invite can never join. The GameLobbyJoinRequested callback handler
@@ -3077,6 +3299,47 @@ static int manifest_resource_present(HMODULE self)
 
 /* ------------------------------------------------------------ main worker */
 
+#ifdef NIOH3P_RESEARCH
+static uint8_t *g_dump_disk;
+static size_t g_dump_disk_size;
+
+static DWORD WINAPI dump_worker(LPVOID unused)
+{
+    (void)unused;
+    int waited = 0;
+    while (g_dump_disk && waited < 60000) {
+        if (text_is_decrypted(g_dump_disk, g_dump_disk_size))
+            break;
+        /* a copy started outside Steam dies on the DRM stub within ~30 ms,
+         * so poll tightly for the first two seconds */
+        int step = waited < 2000 ? 10 : 200;
+        Sleep((DWORD)step);
+        waited += step;
+    }
+    if (g_dump_disk) {
+        VirtualFree(g_dump_disk, 0, MEM_RELEASE);
+        g_dump_disk = 0;
+    }
+    LOG("worker: dump trigger after %d ms", waited);
+    dump_image("boot");
+    if (g_cfg.redump_after_s > 0) {
+        Sleep((DWORD)g_cfg.redump_after_s * 1000);
+        dump_image("settled");
+    }
+    /* VMProtect decrypts page by page as the game runs, so a single dump
+     * only holds what had executed by then: keep taking snapshots. */
+    if (g_cfg.dump_every_s > 0) {
+        for (int n = 1; n <= 12; n++) {
+            char tag[32];
+            fmt(tag, sizeof tag, "t%ds", n * g_cfg.dump_every_s);
+            Sleep((DWORD)g_cfg.dump_every_s * 1000);
+            dump_image(tag);
+        }
+    }
+    return 0;
+}
+#endif
+
 static DWORD WINAPI worker(LPVOID unused)
 {
     HINSTANCE self = (HINSTANCE)unused;
@@ -3246,44 +3509,33 @@ static DWORD WINAPI worker(LPVOID unused)
     }
 
 #ifdef NIOH3P_RESEARCH
+    /* The dump schedule can take 36 minutes; on this thread it held back the
+     * allowance installer, so a research host refused its second visitor.
+     * The dump thread owns the on-disk copy from here on. */
     if (g_cfg.dump_image) {
-        int waited = 0;
-        while (disk && waited < 60000) {
-            if (text_is_decrypted(disk, disk_size))
-                break;
-            /* a copy started outside Steam dies on the DRM stub within ~30 ms,
-             * so poll tightly for the first two seconds */
-            int step = waited < 2000 ? 10 : 200;
-            Sleep((DWORD)step);
-            waited += step;
-        }
-        LOG("worker: dump trigger after %d ms", waited);
-        dump_image("boot");
-        if (g_cfg.redump_after_s > 0) {
-            Sleep((DWORD)g_cfg.redump_after_s * 1000);
-            dump_image("settled");
-        }
-        /* VMProtect decrypts page by page as the game runs, so a single dump
-         * only holds what had executed by then: keep taking snapshots. */
-        if (g_cfg.dump_every_s > 0) {
-            for (int n = 1; n <= 12; n++) {
-                char tag[32];
-                fmt(tag, sizeof tag, "t%ds", n * g_cfg.dump_every_s);
-                Sleep((DWORD)g_cfg.dump_every_s * 1000);
-                dump_image(tag);
-            }
-        }
+        g_dump_disk = disk;
+        g_dump_disk_size = disk_size;
+        disk = 0;
+        HANDLE t = CreateThread(NULL, 0, dump_worker, NULL, 0, NULL);
+        if (t)
+            CloseHandle(t);
+        else
+            LOG("worker: cannot start the dump thread (err %lu)", GetLastError());
     }
+    if (g_cfg.trace && g_cfg.hook_eos && mod_active && g_game_create_param_hook.nslots) {
+        HANDLE t = CreateThread(NULL, 0, game_pkt_trace_worker, NULL, 0, NULL);
+        if (t)
+            CloseHandle(t);
+        else
+            LOG("game pkt trace: cannot start its thread (err %lu)", GetLastError());
+    }
+    if (disk)
+        VirtualFree(disk, 0, MEM_RELEASE);
 #endif
-    /* the allowance poll can wait up to 10 minutes; run it after the dumps */
     if (g_cfg.hook_eos && mod_active) {
         install_game_visitor_allowance();
         install_game_invite_hooks();
     }
-#ifdef NIOH3P_RESEARCH
-    if (disk)
-        VirtualFree(disk, 0, MEM_RELEASE);
-#endif
 
     if (g_cfg.hook_eos && mod_active) {
         for (int i = 0; i < 24; i++) {          /* 2 minutes of restoration watch */

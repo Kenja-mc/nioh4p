@@ -299,14 +299,29 @@ class ReliefActuator(BaseActuator):
 
 # ---- capturers ----
 class GamescopeCapture:
-    """Screenshot the rig slot's gamescope compositor."""
+    """Screenshot the rig slot's gamescope compositor.
 
-    def __init__(self, slot):
+    gamescope writes a 1.6 MB PNG. The model gets a quality-85 JPEG of the
+    same frame instead: the same answers, 1/15 of the upload, and half the
+    median latency (measured on Luna, 10 rig frames). The PNG is removed.
+    """
+
+    def __init__(self, slot, jpeg=True):
         self.slot = slot
+        self.jpeg = jpeg
 
     def __call__(self, name, settle=0.5):
         from nioh_nav import shot
-        return shot(self.slot, name, settle)
+        path = shot(self.slot, name, settle)
+        if not path or not self.jpeg:
+            return path
+        jpeg = os.path.splitext(path)[0] + ".jpg"
+        result = subprocess.run(["magick", path, "-alpha", "off", "-quality", "85", jpeg],
+                                capture_output=True, timeout=20)
+        if result.returncode or not os.path.exists(jpeg):
+            return path
+        os.unlink(path)
+        return jpeg
 
 
 class CommandCapture:

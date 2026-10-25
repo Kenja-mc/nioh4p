@@ -51,7 +51,7 @@
     "coop_partner": {"type": "predicate", "instructions": "Is another player character (gold-outlined visitor, or a name plate like Nioh-LAN-A/B/C) visible or listed in the party HUD at top-left?"}
   },
   "fallbacks": {"screen": "other", "highlight": "uncertain"},
-  "safety": {"confidence_min": 0.6, "predicate_min": 0.5, "step_limit": 60, "timeout": 600.0, "sent_key_limit": 6, "return_un": 3, "return_settle": 1.5, "loading_screens": ["searching", "notice", "other"], "other_limit": 15, "uncertain_highlight": "uncertain"},
+  "safety": {"confidence_min": 0.6, "predicate_min": 0.5, "step_limit": 150, "timeout": 600.0, "sent_key_limit": 6, "return_un": 3, "return_settle": 1.5, "loading_screens": ["searching", "notice", "other"], "other_limit": 15, "uncertain_highlight": "uncertain"},
   "oracles": {
     "host": {"file": "nioh3p.log", "needle": "Steam_ISteamMatchmaking::CreateLobby"},
     "visitor": {"file": "nioh3p.log", "needle": "Steam JoinLobby:"}
