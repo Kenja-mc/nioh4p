@@ -58,9 +58,9 @@ slot d and the first four-client mission) is not merged into it.
 
 ## Next actions
 
-1. Research the companion session of the Torii mode: where the host stores its
-   one companion, and which code sends the mission choice and the start signal.
-   A third player needs the host to send both to every companion. Use the
+1. Follow `docs/TORII_PLAN.md` (Torii Gate with three and four players). Start
+   with Phase 1: record what the host sends to its one companion, and find why
+   a third client never gets the mission choice and the start signal. Use the
    saved disassembly and research-build traces, not a debugger.
 2. Rig test the friend invite: take the id from `Steam host lobby id=`, put it
    in `nioh3p.invite.txt` in the visitor game dir, and expect `open task object

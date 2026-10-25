@@ -176,7 +176,7 @@ If the title animates but ignores XTest input, inspect the compositor output. On
 
 ## Windows 11 VM (Defender test)
 
-A Windows 11 Pro VM runs in Docker with `dockurr/windows`. Its disk, OEM script and SSH key live in `~/nioh3p-test/winvm`. No sudo and no Steam account are needed. The OEM script enables OpenSSH, so you can run commands with the key in that folder.
+A Windows 11 Pro VM runs in Docker with `dockurr/windows`. The container `nioh3p-winvm` uses the local image `nioh3p/windows:6.06-trustfix`, built from `~/nioh3p-test/winvm/image-trustfix/Dockerfile`. The stopped container `nioh3p-winvm-6.06-orig` is the rollback copy. Do not start both, because they share the VM disk. Its disk, OEM script and SSH key live in `~/nioh3p-test/winvm`. No sudo and no Steam account are needed. The OEM script enables OpenSSH, so you can run commands with the key in that folder.
 
 ```bash
 docker start nioh3p-winvm                       # boot the VM; the screen is at http://127.0.0.1:8006/
