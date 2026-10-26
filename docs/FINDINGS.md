@@ -1816,3 +1816,18 @@ That reframes the live report: the third player left ten minutes into a running
 mission and could not get back in, which is the documented "join before the
 preparation countdown ends" limit, not a counter bug. The counter instrumentation
 stays in the research build and the limit is what the release notes say.
+
+## Research build dies at startup on some slots (2026-10-25)
+
+The research build `fd6e7c07` exited seconds after `preflight:` on slots `d`
+(twice, 21:42 and 21:45) and `a` (22:16, 22:19), and ran normally on `c` in the
+same batch. The log stops right after the mode line, so the crash is in a
+worker that the player build does not have. Relaunching the same binary on the
+same slot succeeded once earlier (a at 21:35), so it is intermittent.
+
+The player build `7e19577b` never showed this: three-player formation passed on
+it minutes earlier, and the smoke matrix runs it eight times per pass.
+
+Consequence: invite-path testing, which needs the research build, is blocked
+until this is understood. Invites are compiled out of the player build, so the
+release is unaffected.
