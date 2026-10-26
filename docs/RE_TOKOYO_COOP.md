@@ -155,3 +155,23 @@ departure, which decides between patching the departure store at `0x140d7b234`
 and replacing the admission check with a live slot count.
 
 
+
+## Next targets, and why they need a live client
+
+The name pool in `analysis/symbols.txt` is useful for naming a system but not
+for finding it: the strings are real (`Character::InteractionStrayKodama` at
+`0x1411f4140`, `Gadget::RequestStrayKodama` at `0x141211978`) and no code in
+the image references them with a `lea`, so they are a name table without
+xrefs. Addresses have to come from a live pointer or a packet.
+
+| Feature | Search target | What one session has to provide |
+| --- | --- | --- |
+| Kodama for everyone | `Character::InteractionStrayKodama`, `Gadget::RequestStrayKodama`, `Gadget::CreateStrayKodama` | the packet produced when a visitor picks one up, and whether the flag travels as raw 71 |
+| Shrines for everyone | the Pray prompt predicate; no class name found, so start from the shader/UI string and the interact radius | whether a visitor's pray sends anything, and what the host does with it |
+| Assist gauge and revive | `CoopHeaderGauge@Menu` (`0x14129b3f8`), `CoopPlayerGauge@Menu`, `TokoyoCoopGauge@Menu` (`0x14129b3f8` is the gauge; see classmap for the other two) | one death in a three-player party: which raw id carries it, and what `sel`/`allow` do around it |
+| Enemy scaling | the mission-setup reader of the party size; member records are at `root + slot*0xa8` | enemy HP at 2, 3 and 4 players, read with `rig.py state` or a memory poller |
+| Rejoin | `0x140d7b234` and `root+0x39c`, plus the `integer_82` equality filter | the `session:` probe lines from a host that admits, loses and readmits a companion |
+| Companion cycling | `root+0x4e8` (`0x140d7c940` writes it) and the `sel` field of the probe | whether `sel` changes when the panel switches companions |
+
+Every one of these needs a client that is actually in a session. That is the
+boundary of what the dump can answer.
