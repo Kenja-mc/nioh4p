@@ -3157,20 +3157,28 @@ static DWORD WINAPI tokoyo_hooks_worker(LPVOID unused)
 {
     (void)unused;
     const unsigned n = sizeof g_inline_hooks / sizeof g_inline_hooks[0];
-    unsigned done = 0, ok = 0;
+    unsigned ok = 0;
     int state[4] = {0};
-    for (int waited = 0; waited < 600000 && done < n; waited += 50) {
+    /* Stop as soon as every hook is settled, installed or permanently failed.
+     * A failed site never recovers, so polling for the full ten minutes only
+     * keeps a thread alive for nothing. */
+    for (int waited = 0; waited < 600000; waited += 50) {
+        unsigned settled = 0;
         for (unsigned i = 0; i < n; i++) {
-            if (state[i])
+            if (state[i]) {
+                settled++;
                 continue;
+            }
             state[i] = inline_install(&g_inline_hooks[i]);
-            if (state[i])
-                done++;
-            if (state[i] > 0)
-                ok++;
+            if (state[i]) {
+                settled++;
+                if (state[i] > 0)
+                    ok++;
+            }
         }
-        if (done < n)
-            Sleep(50);
+        if (settled == n)
+            break;
+        Sleep(50);
     }
     LOG("game tokoyo: %u/%u companion hook(s) installed", ok, n);
     return 0;
