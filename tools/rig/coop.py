@@ -126,6 +126,14 @@ def leave_check(state, ctx):
     return _other_limit(state, ctx)
 
 
+def lobby_check(state, ctx):
+    """Stop as soon as the visitor is inside the host's lobby, before the
+    preparation countdown starts the mission."""
+    if state["screen"] == "companion_prep":
+        return "success", "visitor inside the companion lobby"
+    return _other_limit(state, ctx)
+
+
 def leave_lobby_check(state, ctx):
     """Backing out of a companion lobby returns to the Yokai Realm panel."""
     if state["screen"] in ("companion_panel", "torii_menu"):
@@ -135,7 +143,8 @@ def leave_lobby_check(state, ctx):
 
 GUARDS = {"host_guard": host_guard, "visitor_guard": visitor_guard}
 CHECKS = {"host_check": host_check, "visitor_check": visitor_check,
-          "leave_check": leave_check, "leave_lobby_check": leave_lobby_check}
+          "leave_check": leave_check, "leave_lobby_check": leave_lobby_check,
+          "lobby_check": lobby_check}
 
 
 # ---- relief: pause the other visitor(s) between steps ----
@@ -254,6 +263,9 @@ def main():
     whole.add_argument("--visitors", nargs="+", required=True, metavar="SLOT")
     leave = commands.add_parser("leave", help="leave the mission with the Himorogi Fragment")
     leave.add_argument("slot")
+    visit_lobby = commands.add_parser("visit-lobby",
+                                      help="join a host and stop inside its lobby")
+    visit_lobby.add_argument("slot")
     lobby = commands.add_parser("leave-lobby",
                                 help="back out of a companion lobby without ending it")
     lobby.add_argument("slot")
@@ -263,12 +275,12 @@ def main():
     backend = os.environ.get(BACKEND_ENV, perceive.DEFAULT_BACKEND).strip().lower()
     if backend not in perceive.BACKENDS:
         parser.error(f"{BACKEND_ENV} must be one of {', '.join(perceive.BACKENDS)}")
-    for sub in (host, visitor, whole, leave, lobby, one):
+    for sub in (host, visitor, whole, leave, lobby, visit_lobby, one):
         sub.add_argument("--profile", default=PROFILE_PATH)
         sub.add_argument("--backend", choices=perceive.BACKENDS, default=backend,
                          help="decision backend (default: %(default)s)")
         sub.add_argument("--model", help="override the backend model id")
-    for sub in (host, visitor, whole, leave, lobby):
+    for sub in (host, visitor, whole, leave, lobby, visit_lobby):
         sub.add_argument("--dry-run", action="store_true")
         sub.add_argument("--timeout", type=float, default=None)
     args = parser.parse_args()
@@ -293,6 +305,8 @@ def main():
         waves = [[(args.slot, "leave", None)]]
     elif args.command == "leave-lobby":
         waves = [[(args.slot, "leave_lobby", None)]]
+    elif args.command == "visit-lobby":
+        waves = [[(args.slot, "visit_lobby", None)]]
     else:
         waves = [[(args.slot, "visitor", args.relieve)]]
     trace = perceive.Trace(SHOTS)

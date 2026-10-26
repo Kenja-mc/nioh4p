@@ -117,6 +117,7 @@
     "host": {"rules": "companion", "oracle": "host", "flag": "host_offering", "guard": "host_guard", "check": "host_check"},
     "visitor": {"rules": "companion", "oracle": "visitor", "flag": "join_seen", "guard": "visitor_guard", "check": "visitor_check", "uncertain_settle": 1.5, "uncertain_safe_keys": ["BackSpace", "Up", "Down"]},
     "leave": {"rules": "leave", "check": "leave_check", "uncertain_settle": 1.5, "uncertain_safe_keys": ["Up", "Down"]},
-    "leave_lobby": {"rules": "leave_lobby", "check": "leave_lobby_check", "uncertain_settle": 1.5, "uncertain_safe_keys": ["Up", "Down"]}
+    "leave_lobby": {"rules": "leave_lobby", "check": "leave_lobby_check", "uncertain_settle": 1.5, "uncertain_safe_keys": ["Up", "Down"]},
+    "visit_lobby": {"rules": "companion", "check": "lobby_check", "uncertain_settle": 1.5, "uncertain_safe_keys": ["BackSpace", "Up", "Down"]}
   }
 }

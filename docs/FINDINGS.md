@@ -1771,3 +1771,48 @@ creation, 2 after the visitor joined) and the host's own `integer_82` change
 from 0 to 228 after one session in another host's lobby; both are equality or
 range filters in the search, so they are the second suspect if the counter
 turns out not to be the blocker.
+
+## Release verification on the rig (2026-10-25, evening)
+
+The player build `7e19577b` (source `7bcf2d0` plus the fan-out and thread
+changes) ran a three-player Torii Gate formation on the LAN rig: host `d` plus
+visitors `a` and `c`, `max_players=3`, stock search filters, `trace=0`.
+
+- All three reached the mission: `loader=12`, `state=14`, `mode=1`,
+  `own` slot 0/2/1, `waitn=2`.
+- The host logged `game create request: raising max members 2 -> 3 before
+  allocation` and `packet 76/74/17/75 also sent to companion slot 2`.
+- Every client logged `2/2 companion hook(s) installed` and
+  `recruitment opens 2 visitor slot(s); 7/7 site(s) patched`.
+
+The four-player path is unchanged between the build that passed on the rig at
+13:44 (`632684d0`) and this one. The fan-out bound now reads `max_players`
+instead of the literal 4, which selects slots 2 and 3 in both builds, and the
+other changes are the trace throttle, the research-only probes and the hook
+thread exit. The harness covers `max_players=4` separately.
+
+## The admission counter is not consumed per visitor (2026-10-25)
+
+The research build's probe settles a question that the earlier reading got
+wrong. With host `a` holding an open companion lobby:
+
+```
+22:10:09 session: recv id=16 peer=1 allow=2 mode=1 own=0 sel=0xffffffff
+         prof=0 slot_e8=[0,0,0,0]
+```
+
+That is the admission request itself, and the allowance is the full 2, with no
+slot marked as a member yet. Once the visitor was inside the lobby the host
+still read `allow=2` through `rig.py state`. So the counter is not decremented
+per admission in this flow, and the departure path at `0x140d7b234` is not what
+blocked the live rejoin.
+
+Leaving an open lobby through the UI is also not what it looked like. Backing
+out with BackSpace did not cancel; the game moved into the mission
+(`notice` -> `lore`, `loader` 1->2, `state=9`). A companion lobby appears to
+have no cancel once it is in preparation.
+
+That reframes the live report: the third player left ten minutes into a running
+mission and could not get back in, which is the documented "join before the
+preparation countdown ends" limit, not a counter bug. The counter instrumentation
+stays in the research build and the limit is what the release notes say.
