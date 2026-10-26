@@ -115,3 +115,43 @@ lives in that one 128-byte window, which is why the second companion overwrites
 the first. The panel's reader of `root+0x4c` is still unknown, so a cycling
 feature needs that address before it can pick a profile rather than a timer.
 
+## Session root accessors (from the merged dump)
+
+| Address | Effect |
+| --- | --- |
+| `0x140d7adc0` | `return &g_root`, the static session root at `0x141790a70` |
+| `0x140d7add0` | `slot_byte(root, slot) = *(root + slot*0xa8 + 0x108)`; confirms the `0xa8` member stride seen in the join response |
+| `0x140d7c940` | stores its second argument at `root+0x4e8`; the only index-like setter near the profile block, so it is the first candidate for "which companion is shown" |
+| `0x140d7d8a0` | state machine over the block that starts at `root+0x4c`: reads `+0x84` (root`+0xd0`) as a phase, `+0x98` (root`+0xe4`) as a flag, and reports a code in `0..5` |
+| `0x140d7ce70` | called with the root by `0x140d5de80` |
+
+Consumers that take the address of the profile window with `lea 0x4c(%rax)`:
+`0x140d6402d` (feeds `0x140d7d8a0`, then switches on its `0..5` result),
+`0x140d63198` (wrapper for `0x140d7c940`), `0x140d5de84`, `0x140d633dd`,
+`0x140d63459`.
+
+The menu class that owns the panel is `TokoyoCoopPartner@Menu`, vtable
+`0x14129c9e0`, with these class-specific methods ahead of the shared `Menu`
+base ones: `0x140d2fbe0`, `0x140d2fc90`, `0x140d2fca0`, `0x140d2fcb0`,
+`0x140d2fcc0`, `0x140d2fe40`, `0x140d2fe50`, `0x140d2fe80`, `0x140d2ff30`.
+None of them touches `0x4c..0xcc` directly, so the panel reaches the profile
+through the session root rather than owning a copy.
+
+Next step for cycling: confirm at runtime whether `root+0x4e8` selects the
+displayed companion, by writing 1 or 2 while two companions are connected and
+watching which name the panel shows.
+
+The research build now answers both open questions from a normal session: on
+an admission request (raw 16) and on an admission reject (raw 7) it logs
+
+```
+session: recv id=16 peer=1 allow=2 mode=1 own=0 sel=0 prof=1 slot_e8=[2,2,0,0]
+```
+
+where `allow` is `root+0x39c`, `sel` is `root+0x4e8` and `prof` is the
+`root+0xcc` profile-present flag. A host that admits two companions, loses one
+and admits it again will show whether `allow` really stays at zero after the
+departure, which decides between patching the departure store at `0x140d7b234`
+and replacing the admission check with a live slot count.
+
+

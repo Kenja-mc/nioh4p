@@ -2959,6 +2959,33 @@ typedef uintptr_t (*PFN_GameDispatch)(uint8_t *, int);
 static PFN_GameDispatch g_game_dispatch;
 static volatile LONG g_pkt_count[2][128];
 
+/* The admission decision reads root+0x39c (visitors still allowed) and rejects
+ * with raw packet 7, reason 2, when the counter reaches zero. The departure
+ * path at 0x140d7b234 decrements that same counter and clamps it at zero, so a
+ * host cannot readmit a companion until the whole session ends. Log the counter
+ * and the slot table whenever an admission request (16) or a reject (7)
+ * crosses, which is the evidence the rejoin fix needs. */
+static void log_session_state(const char *what, unsigned id, int peer)
+{
+    const uint8_t *root = g_base + GAME_ROOT_RVA;
+    if (!readable(root, 0x4ec)) {
+        LOG("session: %s id=%u (root unreadable)", what, id);
+        return;
+    }
+    char slots[32];
+    int n = 0;
+    for (int s = 0; s < 4; s++) {
+        const uint8_t *rec = root + (size_t)s * 0xa8;
+        if (!readable(rec, 0x10a))
+            break;
+        n += fmt(slots + n, (int)sizeof slots - n, "%s%u", s ? "," : "", rec[0xe8]);
+    }
+    slots[n < (int)sizeof slots ? n : (int)sizeof slots - 1] = 0;
+    LOG("session: %s id=%u peer=%d allow=%u mode=%d own=%u sel=%d prof=%u slot_e8=[%s]",
+        what, id, peer, root[0x39c], *(const int32_t *)(g_base + GAME_COOP_MODE_RVA),
+        root[0x3c8], *(const int32_t *)(root + 0x4e8), root[0xcc], slots);
+}
+
 static int pkt_should_log(int dir, unsigned id)
 {
     LONG n = InterlockedIncrement(&g_pkt_count[dir][id & 127]);
@@ -2968,6 +2995,8 @@ static int pkt_should_log(int dir, unsigned id)
 static uintptr_t det_GameDispatch(uint8_t *record, int sender)
 {
     unsigned id = readable(record, 0x28) ? *(uint16_t *)(record + 0x10) : 0xffff;
+    if (g_cfg.trace && id == 16)          /* admission request */
+        log_session_state("recv", id, sender);
     if (g_cfg.trace && pkt_should_log(1, id)) {
         char head[52];
         p2p_head(head, sizeof head, record ? record + 0x18 : 0, id != 0xffff ? 16 : 0);
@@ -2986,6 +3015,8 @@ static uint8_t det_GameSend(unsigned id, const uint8_t *data, unsigned len, int 
         memcpy(pristine, data, len);
     uint8_t r = g_game_send(id, data, len, target);
 #ifdef NIOH3P_RESEARCH
+    if (g_cfg.trace && id == 7)           /* admission reject, reason in byte 2 */
+        log_session_state("send", id, target);
     if (g_cfg.trace && pkt_should_log(0, id)) {
         char head[52];
         p2p_head(head, sizeof head, data, readable(data, len < 16 ? len : 16) ? len : 0);
