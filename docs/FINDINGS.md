@@ -1862,3 +1862,17 @@ Mission completion on the success path is also still unexercised.
 
 Evidence: `~/nioh3p-test/runs/rel-4p-death/` (`combat-a2.png`, `dead-a.png`,
 `dead-b.png`, `after-death-b.png`, `result-b.png`).
+
+## Windows harness and Defender on the release build (2026-10-25)
+
+`7e19577b` ran from the host share on the Windows 11 VM (`nioh3p-winvm`, the
+same image and settings as before):
+
+| Check | Result |
+|---|---|
+| DLL hash in the guest | `7E19577B…`, matches the build |
+| `testgame.exe` with the fake Steam DLLs and the real EOS SDK | exit 0, 6 PASS, `max_players=3` clamp honoured |
+| Defender real-time and behavior protection | both on, definitions 1.461.144.0 |
+| Custom scan of the folder | 0 detections before, 0 after |
+
+The VM was shut down afterwards (`docker stop -t 120`).

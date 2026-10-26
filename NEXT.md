@@ -18,7 +18,9 @@ Git does not track `build/`, `dist/` or `.local/`.
 - The separate live-test candidate is `build/live-test/nioh3p-live-test.zip`.
   It contains the player DLL, the default three-player ini and test instructions.
   The current candidate is DLL `7e19577b…` (44,544 bytes) in zip
-  `fd9df16c…`, from source `7bcf2d0`. The earlier candidate was DLL
+  `e5a3b4ea…`, from source `b128c76`. It passed the Windows harness and a
+  Defender custom scan (0 detections, definitions 1.461.144.0) on 2026-10-25.
+  The earlier candidates were DLL `7e19577b…` in zip `fd9df16c…` and DLL
   `632684d0…` in zip `ff0a08f0…`.
   `build/live-test/SHA256SUMS` includes both the zip and DLL hashes.
   No upload, installation or release replacement is authorized.
