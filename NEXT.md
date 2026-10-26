@@ -68,15 +68,16 @@ The branch names remain for reference. Nothing is pushed or published.
 
 ## Next actions
 
-1. Use the separate candidate for the first live Steam test with three players.
-   Follow `package/README.md`. Everyone must use the same DLL and game build.
-   Use the Torii Gate search flow, not invites. Join before the countdown ends.
-2. Finish a mission, exercise death and revival with the assist gauge, compare
-   rewards, then form a second group. Repeat with four players only after
-   the three-player test passes. The HUD still names one companion.
-3. Collect `nioh3p.log` from every client and `nioh3p.prev.log` for earlier
-   failures. Make sure that each log shows `preflight: exe=ok` and both companion
-   hooks installed. Record the mission, player count and observed failure.
+1. Three players reached and played a live Steam mission on 2026-10-25
+   (`docs/FINDINGS.md`). Still unproven: mission completion, the result screen,
+   deaths, revives and rewards.
+2. Run the next three-player session on the research build with `trace=1`.
+   One death, one companion leave, and one rejoin attempt answer the open
+   questions: `session:` lines carry `allow`, `sel` and the slot table, and
+   `game tokoyo: profile slot N` shows the profile layout.
+3. Read those lines against `docs/RE_TOKOYO_COOP.md`, "Next targets", then fix
+   the rejoin path (`0x140d7b234`) and the companion selector (`root+0x4e8`).
+   Do not patch either before the probe lines exist.
 4. Investigate direct invites separately. The LAN research trigger takes the id
    from `Steam host lobby id=` in `nioh3p.invite.txt`. It does not prove that a
    real Steam invitation works. Direct invites are not required for this test.
