@@ -8,9 +8,11 @@ co-op session and the data behind it.
 Status: three players reached and played one mission together over Steam with
 real accounts on 2026-10-25, and three or four reach a mission in the isolated
 LAN rig, through the Torii Gate and without an Ochoko Cup. Each player needs
-the mod. Mission completion, the result screen, deaths, revives and rewards are
-still unproven. Use `package/README.md` for the candidate's installation and
-test sequence. The frozen zip in `dist/` does not include this support.
+the mod. On the rig, a visitor's death fails the run for the whole party after
+the revive window and every client reaches the result screen. Completing a
+mission on the success path and reviving a fallen companion are still
+unproven. Use `package/README.md` for the candidate's installation and test
+sequence. The frozen zip in `dist/` does not include this support.
 
 The candidate is published as a pre-release, with its hashes and limits:
 <https://github.com/Kenja-mc/nioh3p/releases/tag/v1.1.0-rc1>.
@@ -392,8 +394,9 @@ Three limits apply to the verified build. The items below name each limit.
 
 * Verified in the LAN rig through both the shrine and Torii Gate paths, with
   the mod on every client. The group did not finish a three- or four-player
-  mission. The party HUD lists one partner name. The first live Steam test
-  must cover completion, deaths, revives and rewards.
+  mission. The party HUD lists one partner name. A death fails the run for
+  everyone once the revive window passes; reviving a fallen companion and
+  finishing a mission are not yet exercised.
 * On the single integrated GPU of the rig, the visitor who joins second can sit
   on the loading screen for ~5 minutes. The other two clients take the GPU.
   Given GPU time, it loads in about 30 s. The host can time that slot out in the
