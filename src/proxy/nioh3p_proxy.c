@@ -2992,11 +2992,30 @@ static int pkt_should_log(int dir, unsigned id)
     return n <= 40 || n % 500 == 0;
 }
 
+/* Raw 77 carries one companion's 128-byte profile and the game keeps only the
+ * last one in root+0x4c, so the second companion erases the first. Keep one
+ * profile per sender slot here; this is the data a cycling panel needs. */
+static uint8_t g_profile[4][0x80];
+static unsigned g_profile_seen;
+
+static void keep_profile(int slot, const uint8_t *payload)
+{
+    if (slot < 0 || slot >= 4)
+        return;
+    memcpy(g_profile[slot], payload, 0x80);
+    g_profile_seen |= 1u << slot;
+    char head[52];
+    p2p_head(head, sizeof head, payload, 16);
+    LOG("game tokoyo: profile slot %d stored (seen=%#x) [%s]", slot, g_profile_seen, head);
+}
+
 static uintptr_t det_GameDispatch(uint8_t *record, int sender)
 {
     unsigned id = readable(record, 0x28) ? *(uint16_t *)(record + 0x10) : 0xffff;
     if (g_cfg.trace && id == 16)          /* admission request */
         log_session_state("recv", id, sender);
+    if (g_cfg.trace && id == 77 && readable(record + 0x18, 0x80))
+        keep_profile(sender, record + 0x18);
     if (g_cfg.trace && pkt_should_log(1, id)) {
         char head[52];
         p2p_head(head, sizeof head, record ? record + 0x18 : 0, id != 0xffff ? 16 : 0);
