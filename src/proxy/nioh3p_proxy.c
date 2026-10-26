@@ -2272,6 +2272,18 @@ static const char *EOS_CALL det_FriendPersonaName(void *self, uint64_t friend_id
 }
 
 /* ---- ISteamNetworking v006: the P2P channel and its session state ---- */
+/* Send and read run every frame. Logged unthrottled they wrote 336 MB in one
+ * hour of normal play (1.8M lines), which no player can send anywhere. The
+ * first 40 per direction and channel are logged, then every 500th, the same
+ * rule the game packet trace uses. */
+static volatile LONG g_p2p_count[2][8];
+
+static int p2p_should_log(int dir, int channel)
+{
+    LONG n = InterlockedIncrement(&g_p2p_count[dir][channel & 7]);
+    return n <= 40 || n % 500 == 0;
+}
+
 /* The game protocol rides on this channel. The first 16 payload bytes carry
  * the framing and the raw packet ID; the rest stays out of the log. */
 static void p2p_head(char *out, size_t cap, const void *data, unsigned size)
@@ -2289,9 +2301,11 @@ static void p2p_head(char *out, size_t cap, const void *data, unsigned size)
 
 static int EOS_CALL det_P2PSend(void *self, uint64_t peer, const void *data, unsigned size, int send_type, int channel)
 {
-    SITE_NOTE("P2PSend");
     int r = ((int EOS_CALL (*)(void *, uint64_t, const void *, unsigned, int, int))g_networking[P_SEND].orig)
           ? ((int EOS_CALL (*)(void *, uint64_t, const void *, unsigned, int, int))g_networking[P_SEND].orig)(self, peer, data, size, send_type, channel) : 0;
+    if (!p2p_should_log(0, channel))
+        return r;
+    SITE_NOTE("P2PSend");
     char head[52];
     p2p_head(head, sizeof head, data, size);
     LOG("Steam p2p: SendP2PPacket(peer=%llu size=%u type=%d chan=%d) -> %d [%s]",
@@ -2309,9 +2323,11 @@ static int EOS_CALL det_P2PAvailable(void *self, unsigned *size, int channel)
 
 static int EOS_CALL det_P2PRead(void *self, void *dest, unsigned cap, unsigned *size, uint64_t *from, int channel)
 {
-    SITE_NOTE("P2PRead");
     int r = ((int EOS_CALL (*)(void *, void *, unsigned, unsigned *, uint64_t *, int))g_networking[P_READ].orig)
           ? ((int EOS_CALL (*)(void *, void *, unsigned, unsigned *, uint64_t *, int))g_networking[P_READ].orig)(self, dest, cap, size, from, channel) : 0;
+    if (!p2p_should_log(1, channel))
+        return r;
+    SITE_NOTE("P2PRead");
     char head[52];
     p2p_head(head, sizeof head, r ? dest : 0, r && size ? (*size < cap ? *size : cap) : 0);
     LOG("Steam p2p: ReadP2PPacket(chan=%d) -> %d size=%u from=%llu [%s]",
