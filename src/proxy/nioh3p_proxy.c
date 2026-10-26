@@ -3043,7 +3043,9 @@ static uint8_t det_GameSend(unsigned id, const uint8_t *data, unsigned len, int 
             g_pkt_count[0][id & 127], head);
     }
 #endif
-    for (int slot = 2; fan && slot < 4; slot++) {
+    /* Slots are 0-based: the host is 0, so max_players=N owns slots 0..N-1. */
+    const int last_slot = (int)g_cfg.max_players;
+    for (int slot = 2; fan && slot < last_slot; slot++) {
         uint8_t copy[0x100];
         memcpy(copy, pristine, len);
         if (id == 17 && len > 6)
