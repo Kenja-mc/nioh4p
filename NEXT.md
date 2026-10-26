@@ -17,10 +17,17 @@ Git does not track `build/`, `dist/` or `.local/`.
   `~/Backups/nioh-savedata-20261021-174429.tar.gz`.
 - The separate live-test candidate is `build/live-test/nioh3p-live-test.zip`.
   It contains the player DLL, the default three-player ini and test instructions.
-  The DLL SHA-256 is
-  `632684d0a17e457abfdad2c18cf827e312f511ed74a0a08ee3a9a7238c188a81`.
+  The current candidate is DLL `7e19577b…` (44,544 bytes) in zip
+  `fd9df16c…`, from source `7bcf2d0`. The earlier candidate was DLL
+  `632684d0…` in zip `ff0a08f0…`.
   `build/live-test/SHA256SUMS` includes both the zip and DLL hashes.
   No upload, installation or release replacement is authorized.
+- The `7e19577b` build passed a three-player Torii Gate formation on the rig on
+  2026-10-25 (host d, visitors a and c, stock filters) and the harness matrix at
+  three and four players. It differs from `632684d0` by the fan-out bound, the
+  trace throttle and the hook thread exit; the four-player path is unchanged.
+  Re-running four players needs slot b's Steam client, because b's own prefix
+  will not start a game without it.
 - Rig slots `lan-{a,b,c,d}` hold this integrated player build with
   `max_players=4`, `trace=0` and stock search filters. The rig is stopped.
   The older DLL copies remain at `lan-{a,b,c,d}/dinput8.dll.saved`
