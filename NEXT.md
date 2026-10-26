@@ -22,12 +22,17 @@ Git does not track `build/`, `dist/` or `.local/`.
   `632684d0…` in zip `ff0a08f0…`.
   `build/live-test/SHA256SUMS` includes both the zip and DLL hashes.
   No upload, installation or release replacement is authorized.
-- The `7e19577b` build passed a three-player Torii Gate formation on the rig on
-  2026-10-25 (host d, visitors a and c, stock filters) and the harness matrix at
-  three and four players. It differs from `632684d0` by the fan-out bound, the
-  trace throttle and the hook thread exit; the four-player path is unchanged.
-  Re-running four players needs slot b's Steam client, because b's own prefix
-  will not start a game without it.
+- The `7e19577b` build passed three- and four-player Torii Gate formation on the
+  rig on 2026-10-25 (three players: host d, visitors a and c; four players:
+  host b, visitors a, c and d; stock filters) and the harness matrix at three
+  and four players. It differs from `632684d0` by the fan-out bound, the trace
+  throttle and the hook thread exit.
+- A visitor death was exercised at four players: the run failed for the whole
+  party about sixty seconds later and all four reached the result screen.
+  Reviving a fallen companion and completing a mission on the success path are
+  still unexercised. Evidence: `~/nioh3p-test/runs/rel-4p-death/`.
+- Slot b's game needs its Steam client running. Its library and ini were
+  restored to the frozen `48415ff0` build afterwards.
 - Rig slots `lan-{a,b,c,d}` hold this integrated player build with
   `max_players=4`, `trace=0` and stock search filters. The rig is stopped.
   The older DLL copies remain at `lan-{a,b,c,d}/dinput8.dll.saved`
@@ -75,16 +80,12 @@ The branch names remain for reference. Nothing is pushed or published.
 
 ## Next actions
 
-1. Three players reached and played a live Steam mission on 2026-10-25
-   (`docs/FINDINGS.md`). Still unproven: mission completion, the result screen,
-   deaths, revives and rewards.
-2. Run the next three-player session on the research build with `trace=1`.
-   One death, one companion leave, and one rejoin attempt answer the open
-   questions: `session:` lines carry `allow`, `sel` and the slot table, and
-   `game tokoyo: profile slot N` shows the profile layout.
-3. Read those lines against `docs/RE_TOKOYO_COOP.md`, "Next targets", then fix
-   the rejoin path (`0x140d7b234`) and the companion selector (`root+0x4e8`).
-   Do not patch either before the probe lines exist.
+1. The result screen and a death are now verified on the rig; mission
+   completion on the success path and reviving a fallen companion are not.
+2. The authenticated Steam re-run is blocked by a cloud-save conflict on
+   account `<accountid-private-2>`; see `.local/tickets/rig-steam-cloud-conflict.md`.
+3. Invite testing needs the research build, which intermittently dies at
+   startup (`docs/FINDINGS.md`). Invites are compiled out of the player build.
 4. Investigate direct invites separately. The LAN research trigger takes the id
    from `Steam host lobby id=` in `nioh3p.invite.txt`. It does not prove that a
    real Steam invitation works. Direct invites are not required for this test.
