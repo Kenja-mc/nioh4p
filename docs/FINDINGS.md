@@ -1831,3 +1831,34 @@ it minutes earlier, and the smoke matrix runs it eight times per pass.
 Consequence: invite-path testing, which needs the research build, is blocked
 until this is understood. Invites are compiled out of the player build, so the
 release is unaffected.
+
+## Four players, a death and the result screen (2026-10-25, late)
+
+Same build `7e19577b`, `max_players=4` in all four inis, stock search filters.
+Host `b` plus visitors `a`, `c`, `d`.
+
+- Entry passed. Slots came out 0/2/3/1 with `allow=3`, `waitn=3`, and the host
+  logged `packet 74/17/75 also sent to companion slot 3`.
+- The party HUD named one companion (`Nioh-LAN-C`) in both the host's and the
+  visitor's view, which is the known cosmetic limit, not a new fault.
+- A visitor (`a`) died in the cave: `0/1526` HP, body on the ground, the blue
+  gauge still shown. Nobody was near enough to revive, and after about sixty
+  seconds the client showed `You and your companion Nioh-LAN-B have parted
+  ways.` Then all four landed on the result screen together:
+
+```
+Yokai Realm with a Companion: Failed
+Companion                      Nioh-LAN-C
+Amrita obtained                0
+Yokai Realm ... Failed  x0.25
+Objective                      Not completed
+Reward                         2 / 0 / 0
+```
+
+So a single death fails the run for the whole party once the revive window
+passes, and the result screen itself works at four players. Reviving a fallen
+companion was not exercised, because that needs a player to walk to the body.
+Mission completion on the success path is also still unexercised.
+
+Evidence: `~/nioh3p-test/runs/rel-4p-death/` (`combat-a2.png`, `dead-a.png`,
+`dead-b.png`, `after-death-b.png`, `result-b.png`).
