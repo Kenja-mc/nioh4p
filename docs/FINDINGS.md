@@ -1832,6 +1832,15 @@ Consequence: invite-path testing, which needs the research build, is blocked
 until this is understood. Invites are compiled out of the player build, so the
 release is unaffected.
 
+A later attempt to reproduce it deliberately did not: the same binary on the
+same slot started normally (game alive after 75 s). Every observed failure
+followed a force-killed predecessor on that slot (`rig.py down` reports a few
+processes that needed SIGKILL), every success followed a clean one. That points
+at the Wine prefix or a half-stopped wineserver rather than at the proxy, but
+it is not proven. `rig.py down` already sends SIGTERM before SIGKILL, so the
+next step is to add a short settle delay between `down` and `up` and repeat the
+boot until a failure appears.
+
 ## Four players, a death and the result screen (2026-10-25, late)
 
 Same build `7e19577b`, `max_players=4` in all four inis, stock search filters.
