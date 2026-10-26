@@ -94,3 +94,24 @@ The mission loader is a script-driven state machine (`0x1408825d0`, called
 from `Mission::UpdatePostSetup`). Phase 1 means the post-setup update has not
 started. A visitor stuck in phase 1 with an idle GPU was waiting in
 `IsWaitCoopPlayer` (rip samples showed the binding on the main thread).
+
+## Handlers resolved from the dispatch tables
+
+`table1` at `0x140d6c2e8` (bytes) and `table2` at `0x140d6c228` (dwords) map
+`raw id - 1` to a handler RVA. The mapping reproduces every address already
+known by hand, `16 -> 0x140d6b3da` and `73 -> 0x140d6c06f` included, so it is
+also how the ids outside the documented set were named from the merged dump:
+
+| Id | Handler | First thing it does |
+| --- | --- | --- |
+| 47 | `0x140d6b926` | returns early while `root+0x3c9` is set; otherwise syncs through `manager+0x730` |
+| 54 | `0x140d6b9bf` | calls `0x140d5e880` with payload bytes 0-2, then sets `manager+0x6d4` |
+| 56 | `0x140d6baf7` | compares payload dword 0 against `manager+0x670` and stores into `manager+0x66c`, `+0x67c` |
+| 57 | `0x140d6bb3e` | reads payload dword 1 |
+| 77 | `0x140d6c0e6` | copies 128 payload bytes to `root+0x4c .. +0xcb` in eight `movups`, then sets `root+0xcc = 1` |
+
+Id 77 is the hook point for showing more than one companion: the whole profile
+lives in that one 128-byte window, which is why the second companion overwrites
+the first. The panel's reader of `root+0x4c` is still unknown, so a cycling
+feature needs that address before it can pick a profile rather than a timer.
+

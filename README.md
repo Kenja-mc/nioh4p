@@ -241,8 +241,10 @@ structs only for these verified ApiVersions (`CreateLobby` 7, `SetMaxMembers`
 2, `SetParameter` 1). It forwards any other value unmodified and logs it as
 `eos: <call> ApiVersion <n> != <expected>; forwarded unmodified`.
 `dump_image=1` (with `redump_after_s`, `dump_every_s`) writes the decrypted
-runtime image. `max_players=0` turns the clamps off. With `trace=1`, expect
-gigabytes of log per hour of online play.
+runtime image. `max_players=0` turns the clamps off. The P2P send and read
+calls, the loudest source by far, log the first 40 per direction and channel
+and then every 500th, the same rule the game packet trace uses: one hour of
+online play wrote 336 MB before that and is a fraction of it now.
 
 ## Working on it without disturbing the desktop
 
