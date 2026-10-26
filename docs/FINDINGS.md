@@ -1713,3 +1713,61 @@ timeout of 600 s is too short for a fourth client's load. Pass
 `--timeout 900` for four-player runs. Mission finish, deaths, revives,
 rewards and a new offering after a visitor leaves are untested at
 four. d's join needed the relief pauses on a and c.
+
+## Live three-player session on real Steam (2026-10-25)
+
+First co-op session over Steam with real accounts, the released player build
+`632684d0`, three Windows clients, Torii Gate search with `Without Conditions`
+and stock filters. Evidence: the host's log and the slot-2 client's log, plus
+the host-side trace of a later session; all in
+`~/nioh3p-test/runs/live-20261025-3p/`.
+
+What the logs show, with times from the host log:
+
+- `…512731` created at 19:18:35, joined by the other two clients at 19:18:38
+  and 19:18:39, and the fan-out ran: `packet 76` 19:18:43, `74` 19:18:59,
+  `17` 19:19:08, `75` 19:19:23, each `also sent to companion slot 2`.
+- The slot-2 client logged `companion slot 2 leaves the shared wait counter to
+  slot 1` at 19:19:22, 19:19:24 and 19:19:28, so the counter fix was doing its
+  job in a live session.
+- `…7847749` ran three mission cycles in one lobby without recreating it:
+  `76/74/17/75` at 19:36:47-19:37:08, 19:41:48-19:44:47 and
+  19:49:52-19:50:14, every one fanning out to slot 2.
+- The host's session survives a companion leaving: the third client left at
+  20:01:13 and the host stayed until 20:04:10, then created `…9894445`.
+
+Still unproven after this session: mission completion, the result screen, death
+and revival, and rewards. The three-client party entered and played, which is
+the claim the README may make; anything past that is not.
+
+## Rejoin after leaving (2026-10-25)
+
+The third client could not get back into a session it had left. Four joins,
+four different lobby ids, never the same one twice:
+
+```
+19:17:30 join …510141   19:18:14 leave
+19:18:38 join …512731   19:30:22 leave
+19:31:16 join …7431299  19:35:50 leave
+19:36:47 join …7847749  20:01:13 leave
+```
+
+Two mechanisms were ruled out from the logs and the trace:
+
+- **The lock filter is not the cause.** The host publishes
+  `ktol_lock_status = ktol_session_unlock` at creation and never changes it,
+  including during two missions (trace, 20:03:54 and 20:07:00 onward).
+- **The slots filter is not in play.** No `AddRequestLobbyListFilterSlotsAvailable`
+  call appears in any of the five logs, so `drop_slots_filter` cannot matter here.
+
+The remaining suspect is the admission counter. The departure path at
+`0x140d7b234` decrements `root+0x39c` and clamps it at zero, so a host that
+loses a companion consumes allowance instead of restoring it. The research
+build now logs that counter and the slot table on raw 16 and raw 7, which is
+the measurement the fix needs.
+
+A host-side trace also showed `integer_79` published as the member count (1 at
+creation, 2 after the visitor joined) and the host's own `integer_82` change
+from 0 to 228 after one session in another host's lobby; both are equality or
+range filters in the search, so they are the second suspect if the counter
+turns out not to be the blocker.

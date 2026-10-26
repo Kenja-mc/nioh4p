@@ -5,11 +5,12 @@ Edition (Steam appid 485510, under Proton), with instrumentation and working
 notes. It is for modders and reverse engineers who want a working three-player
 co-op session and the data behind it.
 
-Status: three- and four-player co-op reach a mission in the isolated LAN rig
-through the Torii Gate without an Ochoko Cup. Each player needs the mod.
-Mission completion, deaths, revives and rewards still need a live Steam test.
-Use `package/README.md` for the candidate's installation and test sequence.
-The frozen zip in `dist/` does not include this support.
+Status: three players reached and played one mission together over Steam with
+real accounts on 2026-10-25, and three or four reach a mission in the isolated
+LAN rig, through the Torii Gate and without an Ochoko Cup. Each player needs
+the mod. Mission completion, the result screen, deaths, revives and rewards are
+still unproven. Use `package/README.md` for the candidate's installation and
+test sequence. The frozen zip in `dist/` does not include this support.
 
 The candidate is published as a pre-release, with its hashes and limits:
 <https://github.com/Kenja-mc/nioh3p/releases/tag/v1.1.0-rc1>.
