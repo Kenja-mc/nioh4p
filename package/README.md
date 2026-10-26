@@ -1,9 +1,12 @@
 # Nioh co-op live-test candidate
 
 This candidate lets three or four players enter one mission through the Torii
-Gate. The local rig reached a mission with both player counts. Mission
-completion, deaths, revives and rewards still need a live Steam test.
-Every player must install the same candidate and use the same Steam game build.
+Gate. The local rig reached a mission with both player counts, and a visitor's
+death was exercised there: the run fails for the whole party once the revive
+window passes, and every client reaches the result screen. Reviving a fallen
+companion, finishing a mission and comparing rewards still need a live Steam
+test. Every player must install the same candidate and use the same Steam game
+build.
 
 ## Install
 
@@ -52,6 +55,8 @@ Record the mission name, player count and any failure with these steps:
 1. Move on each client and make sure that the other clients show that movement.
 2. Defeat an enemy and make sure that all clients agree on its death.
 3. Let one companion fall and revive that companion with the assist gauge.
+   If nobody revives within the window, the run fails for everyone and every
+   client shows the result screen. That is expected, not a fault.
 4. Finish the mission and compare each player's rewards and return screen.
 5. Form another group from the Torii Gate and enter another mission.
 6. Repeat with four players only after the three-player test passes.
