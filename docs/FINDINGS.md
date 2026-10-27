@@ -1835,11 +1835,32 @@ release is unaffected.
 A later attempt to reproduce it deliberately did not: the same binary on the
 same slot started normally (game alive after 75 s). Every observed failure
 followed a force-killed predecessor on that slot (`rig.py down` reports a few
-processes that needed SIGKILL), every success followed a clean one. That points
-at the Wine prefix or a half-stopped wineserver rather than at the proxy, but
-it is not proven. `rig.py down` already sends SIGTERM before SIGKILL, so the
-next step is to add a short settle delay between `down` and `up` and repeat the
-boot until a failure appears.
+processes that needed SIGKILL), every success followed a clean one. That pointed
+at the Wine prefix or a half-stopped wineserver rather than at the proxy.
+
+### Resolved: the Steam client, not the proxy (2026-10-26)
+
+Two boots of the same research DLL on slot `a` separate the cases, and the
+cause is the Steam client, not a restarted prefix. This is the LAN slot `a`
+copy (`lan-a`, `trace=1`, `max_players=3`); the log sits in `lan-a/nioh3p.log`
+because `out_dir` is empty.
+
+| 20:37, no Steam client | 20:44 and 20:45, slot-b client up |
+| --- | --- |
+| `preflight: exe=ok eos=6/6 …` at 20:37:24.692, then nothing: no allowance sites, no companion hooks | `preflight:` then `game visitor allowance: 7/7 site(s) patched` and `game tokoyo: 3/3 companion hook(s) installed` |
+| `rig.py up a` reported `exited after 133 s`; no `nioh.exe` left | `rig.py up --client a` reported ready; `nioh.exe` stayed up |
+
+The proxy is loaded in both runs; the clientless run stops one line after
+`preflight:`, which is the game exiting during Steam initialisation. The reason
+the game needs a client at all is the DRM stub: RIG.md records a cold direct
+launch requesting `steam://run/485510//` and exiting with code 53. Slots `c` and
+`d` reuse slot b's client files, so one running client serves the whole rig.
+
+Consequence: a rig boot needs `tools/rig/rig.py up --client …` (or a client that
+is already up). The earlier "force-killed predecessor" correlation was the
+client state, not the prefix state. `down --settle S` now waits for the slot to
+empty and reports what survived, which is still the right way to start from an
+empty prefix, but it is not what made the difference.
 
 ## Four players, a death and the result screen (2026-10-25, late)
 

@@ -175,3 +175,64 @@ xrefs. Addresses have to come from a live pointer or a packet.
 
 Every one of these needs a client that is actually in a session. That is the
 boundary of what the dump can answer.
+
+## Party HUD: why one companion bar
+
+The mission HUD builds one companion bar per screen. The bar is an instance of
+`CoopPlayerGauge@Menu` (vtable `0x141245d78`), not a list, so a third and fourth
+player have no bar to draw into.
+
+The whole HUD for a Tokoyo mission is built by one function, `0x140afb500`
+(caller `0x140883d1e`). It allocates each element through the menu widget
+factory `[0x14189f400]` (`*0x28(vtable)`, size in `edx`) and then attaches it
+with `*0x58` on the parent. The elements in that builder:
+
+| Element id | Class | Size | Constructor |
+| --- | --- | --- | --- |
+| `0x113` | not identified yet | — | `0x140aedc90` |
+| `0x11a` | `CoopPlayerGauge@Menu` | `0xb8` | `0x140ae7e90` |
+| `0x11b` | `CoopHeaderGauge@Menu` | `0x1a8` | `0x140ae50b0` |
+
+The base `Menu` element constructor `0x140bf30a0` stores the element id at
+`+0x8` and its third argument (the value `3` at every call site above) at
+`+0xc`. The virtual at vtable `+0xa8` (`0x140bf3290`) returns `+0x8`, and the
+gauge's own init passes that value to the sprite factory `0x140ddf270`, so
+**the screen position comes from the element id**. Two gauges created with id
+`0x11a` would draw in exactly the same place.
+
+`CoopPlayerGauge@Menu` fields and methods:
+
+| Offset / vtable slot | Meaning |
+| --- | --- |
+| `+0x60` | draw/animation state machine (`0` idle, `1`..`4` seen) |
+| `+0x68` | the bar widget, created with sprite id `0x27761` |
+| `+0x70` | the second widget, sprite id `0xe5c34` |
+| `+0x8c` | animation sub-state |
+| `+0x98` | the partner character object that the bar follows |
+| `+0xb4` | visible flag |
+| `+0x8` (`0x140ae8190`) | create the two widgets |
+| `+0x18` (`0x140ae89c0`) | per-frame: `(this, arg)`, reads `[+0x98]`, then `[+0x98]+0x240` and the status block at `+0xb0` of that, and calls `0x1407b2d30` for the ratio |
+| `+0x50` (`0x140ae99d0`) | visibility / ready predicate |
+
+So the bar shows whichever character object the owner assigns to `+0x98`.
+Nothing in the gauge reads the session root, and nothing else holds a pointer
+to the gauge through its vtable: the owner reaches it with virtual calls, which
+is why a plain vtable xref search finds only the constructor and destructors.
+
+Two implementation paths follow from that:
+
+1. Native widgets. Create `max_players - 2` extra `CoopPlayerGauge` instances
+   through the same factory, give each its own character object, and give each
+   a distinct screen offset, because the layout data is keyed by element id.
+   The offset has to be applied to the created widget objects after init. This
+   reuses the game's own drawing, but needs the sprite transform API and a
+   free position for each bar.
+2. Own overlay. Read the character objects of the extra companions and draw
+   the bars from the proxy. This skips the menu system entirely and needs
+   remote actor discovery plus a D3D11 present hook.
+
+Both need the same first datum: the live character object behind a companion's
+bar. Next step is a read-only scan of a three-player client for vtable
+`0x141245d78` while in the mission, then reading `[instance+0x98]` and
+`[[instance+0x98]+0x240]` for each companion, and testing whether `root+0x4e8`
+(`sel`) picks which companion the one bar shows.

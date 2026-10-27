@@ -53,7 +53,10 @@ Git does not track `build/`, `dist/` or `.local/`.
 ## Integrated development
 
 `master` contains the `friend-invite` and `four-player` branches.
-The branch names remain for reference. Nothing is pushed or published.
+The branch names remain for reference. No branch is pushed; the only published
+artefact is the GitHub pre-release `v1.1.0-rc1`, built through the scrubbed
+mirror. Its asset is the older candidate (`ff0a08f0…` zip, DLL `632684d0`),
+not the `7e19577b` build the rig tests used.
 
 - Friend invite (direct join): pump byte patch, CCallback vtable hook, join task
   0x140d73380. The open-task singleton at [manager+0xa8] is now created through
@@ -80,23 +83,51 @@ The branch names remain for reference. Nothing is pushed or published.
   Workaround until invites are verified: visitors set the filter at or above
   the host's story progress.
 
+## Requested feature: health and stamina bars for every player
+
+Requested 2026-10-26. Every player should see the health and stamina of every
+other player, as the stock two-player game does for its one companion. Today
+the party HUD draws a single companion bar, so that is a missing feature, not a
+bug.
+
+Reverse-engineering state is in `docs/RE_TOKOYO_COOP.md`, "Party HUD". Short
+version: the mission HUD builder `0x140afb500` creates exactly one
+`CoopPlayerGauge@Menu` (element id `0x11a`), the bar follows the character
+object at `[gauge+0x98]`, and the screen position comes from the element id, so
+a second instance would overlap the first.
+
+First step is read-only and needs one three-player session: scan a client for
+vtable `0x141245d78`, read `[instance+0x98]` for each companion, and test
+whether `root+0x4e8` (`sel`) chooses which companion the single bar shows.
+Then choose between extra native widgets (needs a per-bar screen offset) and an
+own D3D11 overlay (needs remote actor discovery). No code yet.
+
 ## Next actions
 
 1. The result screen and a death are now verified on the rig; mission
    completion on the success path and reviving a fallen companion are not.
+   Reviving is also the second half of the requested feature: a bar that shows
+   a downed companion needs the revive path to work.
 2. The authenticated Steam re-run is blocked by a cloud-save conflict on
    account `<accountid-private-2>`; see `.local/tickets/rig-steam-cloud-conflict.md`.
-3. Invite testing needs the research build, which intermittently dies at
-   startup (`docs/FINDINGS.md`). Invites are compiled out of the player build.
+3. Invite testing needs the research build. Its startup death is resolved:
+   the game exits during Steam initialisation when no Steam client is up on
+   the rig, so boot with `tools/rig/rig.py up --client …` (`docs/FINDINGS.md`,
+   "Resolved: the Steam client, not the proxy"). Invites are compiled out of
+   the player build.
 4. Investigate direct invites separately. The LAN research trigger takes the id
    from `Steam host lobby id=` in `nioh3p.invite.txt`. It does not prove that a
    real Steam invitation works. Direct invites are not required for this test.
-5. Decide whether to replace the frozen release only after the live tests.
-   A public release, upload, fresh VirusTotal submission or push needs approval.
+5. Replace the pre-release asset or leave it. `v1.1.0-rc1` ships `632684d0`,
+   which predates the fan-out bound, the trace throttle and the hook thread
+   exit. The tested build is `7e19577b` (`build/live-test`, zip `e5a3b4ea…`).
+   The release text describes the older build accurately, so the asset and its
+   notes are consistent; they are just behind. Uploading a replacement, editing
+   the release or pushing needs approval.
 6. Keep the existing vendor false-positive drafts in `docs/FP_REPORTS.md`.
    Results for the frozen DLL do not establish results for this candidate.
 7. If the game fails to start, remove the candidate's `dinput8.dll`.
-8. For the local rig, run `tools/rig/rig.py up b a c`, then
+8. For the local rig, run `tools/rig/rig.py up --client b a c`, then
    `EXPLABS_KEY_FILE=~/.omp/agent/provider-keys/experiential-labs python3
    tools/rig/coop.py run --host b --visitors a c`. Add `d` for four players.
 9. Review and commit only the Nioh harvest section in
