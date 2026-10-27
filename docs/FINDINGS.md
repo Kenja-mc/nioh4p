@@ -1963,3 +1963,87 @@ ini from `be5cc94` and the README from `c189667`. The zip bytes differ from
 the original (`50bc324f…`); no hash of the original zip was ever recorded, so
 member-level identity is the best possible. The staging copy went to the trash
 with `trash-put`.
+
+## Third HUD row: first live trial (2026-10-26, night)
+
+Build `9d394e24` (player), four players, host `b` plus visitors `a`, `c`, `d`.
+The vtable-thunk third row (id `0x73`, private vtable `0x1412729c0` copy with
+seven block-swapping thunks, proxy block `C`) built cleanly on every client:
+`element slot 0x73 is free`, the seven `thunk at slot` lines, `init done,
+block C carries 4/4 sprites`, `registered in element slot 0x73`. No crash: all
+four clients stayed in the mission to the end. This confirms the creation
+sequence (menu factory, ctor `0x140c1e230`, init slot `0x08`, register
+`0x140bfacc0`) and the block-swap machinery under live fire.
+
+Two problems, both visible in the logs:
+
+1. The frame slot (`0x50`) is called exactly once per element, at build time -
+   `the game drives the frame slot on the game thread` logged once and never
+   again. Registration in the element registry alone does not put a row into
+   the per-frame update iteration, so the worker's placement flag was never
+   consumed and the row was never placed or shown. Whatever drives rows 1/2
+   every frame is still unidentified (menu attach path is the suspect).
+2. The game's companion assigner re-parks characters into the native rows: about
+   five seconds after `companion slot 3 character ... bound to block C`, a
+   native row took the same character and the bind never recovered, so the
+   acceptance test in the proxy is stricter than the assigner's.
+
+An earlier build crashed all four games at mission entry when the worker thread
+called the anchor helpers (`0x140c58930`/`0x140dda790`) directly; placement now
+runs only on the game thread from the frame thunk.
+
+## Third HUD row: piggyback trials (2026-10-26, late)
+
+Trial 2 (`c9ec01e6`) died within one second of the row3 build on every client:
+`game-*.out` shows the gamescope child shutting down in the same second as the
+build log lines. Trial 3 (`afbe0929`, instrumented) separated the stages:
+
+- The piggyback works: with the class vtable's update slot patched, the log
+  shows `the native update slot (0x18) runs per frame` on every client. The
+  frame slot (`0x50`) is still a one-shot call at build time, so the update
+  slot is the per-frame driver.
+- The block argument the game passes in `r8` is `0x140bfb5a0`, a .text address
+  near the base ctor - not block A or B, so the update's third-argument
+  semantics are still unresolved.
+- The element gets created in the companion PREP screen as well (the prep gauge
+  also builds rows `0x74`/`0x75`), and after the build the worker went silent -
+  consistent with `hud_row_wanted()` (the Tokoyo byte) flipping off outside the
+  mission.
+- All four clients then died at mission entry, when the mission HUD rebuilds
+  and the globally patched update slot drives the stale prep-era element
+  through `hud_row3_drive`, which had no Tokoyo gate or freshness check.
+
+A party-slot-only companion pick found no candidate in the prep screen; the
+walk of the static companion set at `0x18a0590` ran guarded and found nothing
+there either.
+
+## Third HUD row: the row renders (2026-10-27, early)
+
+Trial 7 (`7525af6d`): with placement disabled, the full chain ran on host `b`
+and visitor `c` - `registered ... gauge generation 1`, companion bound from the
+party slots, `drive: bound update returned`, `per-frame drive confirmed`, row
+shown with state word `0x1010001` - and both clients stayed alive in the
+mission. The host frame shows the third row's blue HP bar at the top screen
+edge (factory default position; the layout anchor call is disabled), with the
+two native rows below showing the other two visitors
+(`runs/hud-probe-1026/row3-trial7-b-hud.png`). The bound class update
+therefore survives with a proxy-filled block C.
+
+Visitors `a` and `d` died inside that same first bound update (last line
+`drive: running the bound update (...)`), while `b`/`c` survived it - the
+crash is data- or timing-dependent, not structural. Trial 6 had already
+pinned the earlier placement crash to the game's layout-table reader
+(`0x140c58930` -> `0x140dd6ce0`, which dereferences `[obj+0xd8]` unguarded);
+the write/read chain has since been mapped end to end (sprite-id keyed
+`obj -> [+0xd8] -> [+0x428] name table -> per-sprite node list ->
+handle+0x30/0x34/0x38 = vec3`), so placement can be reimplemented with plain
+guarded reads and stores, no game calls.
+
+Also fixed along the way: the update slot's third argument is dead register
+content (the update derives its block from the element id; `r8` only matters
+for the assigner's internal call), the companion acceptance test had the
+`+0x430` polarity inverted, `hud_row_wanted()` gating was refactored around a
+logged Tokoyo transition, creation is mission-only (loader `0xC`), and a gauge
+generation counter now separates prep-era elements from mission elements
+after the trial-4 lesson (a prep-created element must never be driven by
+mission-entry frames).
