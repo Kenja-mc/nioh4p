@@ -219,6 +219,28 @@ own HP, Ki and assist gauge, and then exactly one companion row labelled
 `Nioh-LAN-C`, the last admitted companion. There is no second row and no
 second name anywhere on the frame.
 
+The row data behind those two elements is static storage, not per-session
+allocation. `0x14009afa0` constructs two state objects of `0x78` bytes at
+`0x141b46a90` and `0x141b46b08` (constructor `0x140c1e210`, static-init helper
+`0x1410f59f0`). The `MultiPlayerGauge` constructor `0x140c1e230` binds them by
+element id: `0x74` takes the first, `0x75` the second, and every other id falls
+back to the first.
+
+In the mission, the first object mirrors the shown companion's HP: `+0x8` and
+`+0x10` read `0x5f6` = 1526, which is the visitors' maximum HP, while the host
+has 1626. Writing 2000/500 into those fields is overwritten within seconds, so
+they are an output of the HUD, not an input. The second object stays empty: its
+`+0x8`/`+0x10` hold `-1` and stay there after a write.
+
+Filling either object with synthetic values changes nothing on screen. The
+visible companion row is not drawn from those fields, and no second row appears
+(`runs/hud-probe-1026/baseline-rowA.png` and `rowB-filled.png` in `$RIG`).
+
+The two live `MultiPlayerGauge` instances differ in only three places: the id at
+`+0x8` (`0x74` / `0x75`), the animation group at `+0x60`, and the dword at
+`+0x28` (`0x01010001` for `0x74`, `0x01010000` for `0x75`). That dword is the
+next candidate for the draw gate, ahead of any element creation.
+
 Two further measured facts:
 
 - `root+0x4e8` (`sel`) reads `0xffffffff` in the mission on all three clients,
