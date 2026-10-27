@@ -2048,14 +2048,12 @@ generation counter now separates prep-era elements from mission elements
 after the trial-4 lesson (a prep-created element must never be driven by
 mission-entry frames).
 
-## Third HUD row: positioned, gated, stable (2026-10-27, night)
+## Third HUD row: experimental placement and gating (2026-10-27, night)
 
-Trials 8-10 (`1100b399`, `dd9291df`): with the `hud_row3` ini key (default 0),
-four-player sessions ran the full chain on every client and all four stayed
-alive in the mission across three consecutive runs. The third row renders
-completely - portrait, live HP `1651 / 1651`, Ki `104 / 104`, the companion's
-own name - driven per frame by piggybacking on the native rows' update slot,
-with the block A<->C swap keeping row 1 intact.
+Trials 8-10 (`1100b399`, `dd9291df`): with `hud_row3` enabled, all four
+clients reached the mission in three runs. Screenshots show names and a gauge;
+they do not prove that gauge belongs to the third companion, that its values
+change with that companion's HP/Ki, or that row 1 remains correct.
 
 The group mystery resolved empirically: the ids the assigner passes to the
 game's anchor helper are not indices into the sprite's group-name table (37
@@ -2072,24 +2070,20 @@ a recurrence now names its instruction.
 
 ## Third HUD row: three name rows on screen (2026-10-27, night)
 
-Trial 11 (`76d49c95`): the host frame shows three companion name rows - the
-game lays out `Nioh-LAN-A`, `Nioh-LAN-C` and `Nioh-LAN-D` itself once the
-third element is registered - and the third row's complete gauge renders
-(portrait, live HP `1651 / 1651`, Ki `104 / 104`). The anchor write works:
+Trial 11 (`76d49c95`): the host frame shows three names and a gauge showing
+HP `1651 / 1651` and Ki `104 / 104`. Its owner and live behavior are not
+established; it may be the local player's gauge. Logs show an anchor write:
 the root sprite (`registry[0]`, not the row sprites) holds the named anchors
 (`player_01_pos` for `0x5f`, `player_02_pos` for `0x60`, 97 entries), the
 write target is the third row's own group-0 entry, and the UI consumes it only
 when the dirty bit `[entry+0xec] |= 0x10` is set - the write helper
 `0x1405478f0` sets that bit; without it the value is ignored.
 
-Remaining cosmetic split: the game positions the NAME rows from its own list
-logic, while our anchor write moves only the third row's gauge block
-(portrait, bars, numbers), which currently sits above the name stack instead
-of beside the `Nioh-LAN-D` row. Next session: read the name-row layout the
-game computes for the third row (or find the name sprite the update writes via
-`0x140dd6700`) and align the gauge anchor to it.
+The gauge appears above the name stack rather than aligned with a name.
+First identify which player it represents and test changing HP/Ki on each
+client; only then determine whether and how a third companion gauge is placed.
 
-Trial log highlights (all four clients, stable to mission end in trials 8-11):
+Trial log highlights (all four clients reached mission in trials 8-11):
 `piggyback installed on the native row slots 0x18/0x50`, `bound update
 returned`, `per-frame drive confirmed`, `wrote entry ... + dirty flag`. The
 bound-update crash from trial 7 never recurred across trials 8-11; the

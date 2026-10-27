@@ -11,13 +11,14 @@ Git does not track `build/`, `dist/` or `.local/`.
   `48415ff045d11e34cb8e76ca9fc17afa2c8965b3d4f1c447ad96e01c646223a7` (player
   build, 38,400 bytes). This frozen release predates Torii Gate support.
   Do not replace it with `tools/package.sh` without approval.
-  Restored 2026-10-26 after an accidental `tools/package.sh` run overwrote it:
-  the members are content-identical (DLL from the home-a rig library, ini from
-  `be5cc94`, README from `c189667`), but the zip bytes differ from the original
-  (`50bc324f…`); no hash of the original zip was recorded.
+  After an accidental overwrite, reconstructed from a rig DLL and historical
+  ini and README versions; the original archive and member hashes were not
+  recorded, so content identity is unverified. Reconstructed zip: `50bc324f…`.
 - The real Steam folder
-  (`~/.local/share/Steam/steamapps/common/Nioh`) has the same DLL and the player
-  ini installed. A save backup from before that install is at
+  (`~/.local/share/Steam/steamapps/common/Nioh`) currently has DLL SHA-256
+  `7e19577beec646310644bd7de5974598fe9bbf634f00c91d8e9ab8a346d6175c`.
+  Confirm its ini and intended installation before changing either.
+  A save backup from before the install is at
   `~/Backups/nioh-savedata-20261021-174429.tar.gz`.
 - The separate live-test candidate is `build/live-test/nioh3p-live-test.zip`.
   It contains the player DLL, the default three-player ini and test instructions.
@@ -62,10 +63,10 @@ Git does not track `build/`, `dist/` or `.local/`.
 ## Integrated development
 
 `master` contains the `friend-invite` and `four-player` branches.
-The branch names remain for reference. No branch is pushed; the only published
-artefact is the GitHub pre-release `v1.1.0-rc1`, built through the scrubbed
-mirror. Its asset is the older candidate (`ff0a08f0…` zip, DLL `632684d0`),
-not the `7e19577b` build the rig tests used.
+The branch names remain for reference. This private repository has no remote.
+Both `v1.1.0-rc1` and `v1.1.0-rc2` are public prereleases; rc2's asset is
+`0ef866bf…`, but its tag points to public commit `d412a368…`. Verify that
+source corresponds to the asset before relying on the release source.
 
 - Friend invite (direct join): pump byte patch, CCallback vtable hook, join task
   0x140d73380. The open-task singleton at [manager+0xa8] is now created through
@@ -104,23 +105,16 @@ not the `7e19577b` build the rig tests used.
   companion from the party-slot array, anchors from the HUD root sprite
   (`registry[0]`, groups `0x5f`/`0x60` = `player_01_pos`/`player_02_pos`),
   write ours with the dirty bit `[entry+0xec] |= 0x10`.
-- Verified with four players on the rig (trials 8-11): all four clients in
-  mission, every client shows three name rows (`A`, `C`, `D`), the third row's
-  gauge renders with live HP/Ki (`1651/1651`, `104/104`). Evidence:
-  `runs/hud-probe-1026/row3-trial11-b.png` in `$RIG`; the whole trial series
-  is in `docs/FINDINGS.md`.
-- Open, cosmetic: the third row's gauge block sits ABOVE the name stack
-  instead of beside its name row - the game lays the NAME rows out itself, so
-  the gauge anchor needs to be aligned to the name-row position (read the
-  layout the game computes for the third row, or find the name sprite the
-  update writes via `0x140dd6700`).
-- Open, rare: a bound-update crash hit 2 of 4 clients once (trial 7) and never
-  recurred in trials 8-11. A vectored exception handler now logs
-  `exception 0x... at exe+0x...` under `hud_row3=1`, so a recurrence names its
-  instruction.
-- Untested: a second mission/rejoin in one session with `hud_row3=1`
-  (generation rebuild path), Windows harness and Defender pass on any post-rc2
-  build.
+- Trials 8-11 reached the mission on four rig clients; screenshots show three
+  names and a gauge, but do not establish that the gauge belongs to the third
+  companion or tracks changing HP/Ki. The gauge may be the local player's.
+  Evidence: `$HOME/nioh3p-test/runs/hud-probe-1026/row3-trial11-{a,b,c,d}.png`.
+- Verify distinct companion identities and live damage updates on every client,
+  gauge/name alignment, rejoin and element lifetime. Review the global A/C
+  block swap, render/worker concurrency and the exception handler for safety.
+- Trial 7 crashed two clients during bound update; no recurrence in trials 8-11
+  does not establish a fix. Windows harness and Defender remain untested for
+  post-rc2 builds. Keep the experimental feature disabled by default.
 
 ## Next actions
 
@@ -130,8 +124,9 @@ not the `7e19577b` build the rig tests used.
    down or revive anyone: the coop driver stops once everyone is in, and it has
    no combat or revive table. Doing that needs in-mission input, either a new
    driver table or a manual session.
-2. The authenticated Steam re-run is blocked by a cloud-save conflict on
-   account `<accountid-private-2>`; see `.local/tickets/rig-steam-cloud-conflict.md`.
+2. The owner chose the cloud side for account `<accountid-private-2>` and local files were
+   moved to trash. An authenticated download and conflict resolution have not
+   been verified; see `.local/tickets/rig-steam-cloud-conflict.md`.
 3. Invite testing needs the research build. Its startup death is resolved:
    the game exits during Steam initialisation when no Steam client is up on
    the rig, so boot with `tools/rig/rig.py up --client …` (`docs/FINDINGS.md`,
@@ -140,9 +135,9 @@ not the `7e19577b` build the rig tests used.
 4. Investigate direct invites separately. The LAN research trigger takes the id
    from `Steam host lobby id=` in `nioh3p.invite.txt`. It does not prove that a
    real Steam invitation works. Direct invites are not required for this test.
-5. Done 2026-10-26: `v1.1.0-rc2` replaces the pre-release and ships the tested
-   build `750785b5` (`build/live-test`, zip `0ef866bf…`). Repeating the Windows
-   VM harness and Defender pass on this build is still open.
+5. Verify rc2's public tag/source correspondence and release claims against its
+   asset before any release correction; repeat Windows harness and Defender on
+   the shipped build.
 6. Keep the existing vendor false-positive drafts in `docs/FP_REPORTS.md`.
    Results for the frozen DLL do not establish results for this candidate.
 7. If the game fails to start, remove the candidate's `dinput8.dll`.
