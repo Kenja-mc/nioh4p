@@ -83,24 +83,20 @@ not the `7e19577b` build the rig tests used.
   Workaround until invites are verified: visitors set the filter at or above
   the host's story progress.
 
-## Requested feature: health and stamina bars for every player
+## Party HUD: a row per companion
 
-Requested 2026-10-26. Agreed scope the same day: stock parity (HP plus the
-revive state, not Ki), always visible in a mission, and measure before choosing
-an implementation.
+Requested 2026-10-26. Scope agreed the same day: stock parity (HP plus the
+revive state, not Ki), always visible in a mission.
 
-Measured in a three-player rig run on 2026-10-26 (host `b`, visitors `a` and
-`c`, research `fd6e7c07`; frames and details in `docs/RE_TOKOYO_COOP.md`,
-"Party HUD"). The host frame shows own HP, Ki and assist gauge, then exactly one
-companion row. The second companion has no row. The mission HUD creates no
-`CoopPlayerGauge` at all: it has one `PlayerGauge`, one `TokoyoCoopGauge` and
-two `MultiPlayerGauge` rows on every client, and those two rows are hard-wired
-to two fixed global pointer blocks, not to member slots.
+Done and verified on the rig with three players in the player build `99076046`:
+the second companion row, which the game builds and keeps hidden, is now shown.
+The proxy hooks the `MultiPlayerGauge` constructor `0x140c1e230` and sets two
+bits in the row state word (`+0x28`) while Tokoyo mode is on. Every client shows
+two rows with the correct names. Details: `docs/RE_TOKOYO_COOP.md`, "Party HUD".
 
-Next step is offline: check the UI layout resources in the `K300` archives
-(`tools/lnk.py`) for a free element id next to `0x74`/`0x75`. A free id makes
-the native path cheap. Without one, the choice is forced sprite placement or an
-own D3D11 overlay. No code yet.
+Open: the HUD has exactly two rows, so at four players one companion still has
+no row. That needs a third element (creation plus layout), which is the harder
+half of the original problem. Reviving a fallen companion is untouched.
 
 ## Next actions
 

@@ -297,3 +297,24 @@ comes from the element id.
 The next step is the layout question in option 1, because it is offline and it
 decides whether the faithful path is cheap or expensive. `docs/RIG.md` records
 how to run a probe; `scan.exe` and the run above are the measurement tools.
+
+## The proxy now shows the second companion row (2026-10-26)
+
+Neither creation nor the layout data was needed. The hidden row only lacks two
+bits in its state word. The proxy hooks the `MultiPlayerGauge` constructor
+`0x140c1e230` (19 prologue bytes, relocated because the trampoline runs one
+return address deeper), and for every row that is not element `0x74` it
+registers the object. A worker re-applies `state |= 0x01010001` every 500 ms
+while Tokoyo mode is on (`[manager+0x660]`), because the game rewrites the word
+while the HUD settles. Guard: `max_players >= 3`, so a stock two-player session
+and other modes keep their layout.
+
+Verified on the rig, player build `99076046`, three players: the host logged
+`game hud: companion row id=0x75 built` and every client showed two companion
+rows with the right names — host `b` saw `Nioh-LAN-C` and `Nioh-LAN-A`, visitor
+`a` saw `C` and `B`, visitor `c` saw `A` and `B`
+(`runs/hud-probe-1026/hud-two-rows-b.png` in `$RIG`).
+
+Limit: the HUD has exactly two rows, so at four players one companion still has
+no row. Raising that needs a third element, which brings back the creation and
+layout questions above.

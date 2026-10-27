@@ -333,8 +333,8 @@ The LAN rig verified two ways to bring more than two players into one mission:
 In the Torii Gate mode every player needs the mod. The host's copy sends the
 mission choice to every companion, and each later companion's copy keeps the
 mission start in step. The released player package (`dist/nioh3p-player.zip`)
-predates the Torii Gate support. The party HUD and the result screen still name
-one companion. A Himorogi Fragment used by any player ends the mission for all
+predates the Torii Gate support. Builds from 2026-10-26 show one HP row per
+companion, two rows in total; the result screen still names one companion. A Himorogi Fragment used by any player ends the mission for all
 of them, as it does for two. Other co-op modes are untested.
 
 ## Verified so far
@@ -394,9 +394,10 @@ Three limits apply to the verified build. The items below name each limit.
 
 * Verified in the LAN rig through both the shrine and Torii Gate paths, with
   the mod on every client. The group did not finish a three- or four-player
-  mission. The party HUD lists one partner name. A death fails the run for
-  everyone once the revive window passes; reviving a fallen companion and
-  finishing a mission are not yet exercised.
+  mission. The party HUD shows a row per companion, two rows in total, so a
+  fourth player has none; the result screen names one companion. A death fails
+  the run for everyone once the revive window passes; reviving a fallen
+  companion and finishing a mission are not yet exercised.
 * On the single integrated GPU of the rig, the visitor who joins second can sit
   on the loading screen for ~5 minutes. The other two clients take the GPU.
   Given GPU time, it loads in about 30 s. The host can time that slot out in the

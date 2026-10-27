@@ -38,9 +38,9 @@ Keep the search filters at their shipped values.
 9. Make sure that every player reaches the same mission and sees the others.
 
 No Ochoko Cup is used. Join before the preparation countdown ends. Joining
-after mission start is not supported by this test procedure. The HUD names
-only one companion, even when more players are present. Make sure that the
-companion name belongs to your group. Without Conditions is not a private lobby.
+after mission start is not supported by this test procedure. The HUD shows one
+row per companion with that companion's own name, and it has two rows, so a
+fourth player has none. Make sure that the names belong to your group. Without Conditions is not a private lobby.
 
 Do not use Steam invites for the first test. The direct-invite path is
 experimental. If a player remains at "Waiting for mission to be chosen",

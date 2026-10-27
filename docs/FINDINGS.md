@@ -1862,6 +1862,26 @@ client state, not the prefix state. `down --settle S` now waits for the slot to
 empty and reports what survived, which is still the right way to start from an
 empty prefix, but it is not what made the difference.
 
+## Party HUD: both companion rows (2026-10-26)
+
+Three players in a Torii Gate mission on the rig, host `b` plus visitors `a`
+and `c`. The mission HUD builds two `MultiPlayerGauge@Menu` rows, element ids
+`0x74` and `0x75`, on every client, and draws only the first. Both rows carry a
+live copy of a companion's HP and each row shows its own companion's name.
+
+Poking the hidden row's state word at `+0x28` from `0x01000000` to
+`0x01010001` made the second row appear with the other companion's name and bar
+(`runs/hud-probe-1026/rowB-gate.png`). Filling the row state blocks at
+`0x141b46a90` / `0x141b46b08` did nothing on its own; those are outputs, and the
+first one is rewritten from the shown companion within seconds.
+
+The proxy now hooks the row constructor `0x140c1e230`, registers rows whose id
+is not `0x74`, and keeps the two bits set while Tokoyo mode is on. Verified with
+the player build `99076046` (`build/dinput8.dll`, 46,592 bytes): the host logged
+`game hud: companion row id=0x75 built`, and all three clients showed two rows
+with the right names (`runs/hud-probe-1026/hud-two-rows-b.png`). Limit: two
+rows exist, so at four players one companion still has none.
+
 ## Four players, a death and the result screen (2026-10-25, late)
 
 Same build `7e19577b`, `max_players=4` in all four inis, stock search filters.

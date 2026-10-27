@@ -3094,7 +3094,100 @@ static unsigned relocate_wait_flag(uint8_t *out)
     return sizeof head + 8 + sizeof tail;
 }
 
+/* ------------------------------------------- party HUD: the second row -- */
+
+/* The mission HUD builds two MultiPlayerGauge rows, element ids 0x74 and 0x75.
+ * Only the first is drawn. Both carry a live copy of a companion's HP, and the
+ * row shows that companion's own name, so the hidden row is a complete second
+ * companion row. Its state word at +0x28 holds 0x01000000 while hidden and
+ * 0x01010001 when drawn. Setting the two missing bits makes the row appear and
+ * it stays up. Limits: the HUD has two rows in total, so a fourth player still
+ * has none, and this only runs when max_players >= 3.
+ * Evidence: docs/RE_TOKOYO_COOP.md, "Party HUD". */
+#define HUD_ROW_CTOR_RVA   0xc1e230u
+#define HUD_ROW_ID_OFF     0x8u
+#define HUD_ROW_FLAGS_OFF  0x28u
+#define HUD_ROW_SHOWN      0x01010001u
+#define HUD_ROWS_MAX       4
+
+static void *(*g_hud_row_ctor)(void *self, int id, int index);
+static void *g_hud_rows[HUD_ROWS_MAX];
+static volatile LONG g_hud_row_count;
+static volatile LONG g_hud_row_worker_started;
+
+/* 48 89 4c 24 08   mov %rcx,0x8(%rsp)
+ * 53               push %rbx
+ * 48 83 ec 30      sub $0x30,%rsp
+ * 48 c7 44 24 20 fe ff ff ff   movq $-2,0x20(%rsp)
+ * The trampoline runs one return address deeper, so both stack displacements
+ * move by 8. */
+static unsigned relocate_hud_row(uint8_t *out)
+{
+    static const uint8_t code[] = {
+        0x48, 0x89, 0x4c, 0x24, 0x10, 0x53, 0x48, 0x83, 0xec, 0x30,
+        0x48, 0xc7, 0x44, 0x24, 0x28, 0xfe, 0xff, 0xff, 0xff,
+    };
+    memcpy(out, code, sizeof code);
+    return sizeof code;
+}
+
+static void hud_row_show(void *row)
+{
+    uint8_t *const flags = (uint8_t *)row + HUD_ROW_FLAGS_OFF;
+    if (!readable(flags, 4))
+        return;
+    const uint32_t now = *(const uint32_t *)flags;
+    if ((now & HUD_ROW_SHOWN) == HUD_ROW_SHOWN)
+        return;
+    *(volatile uint32_t *)flags = now | HUD_ROW_SHOWN;
+}
+
+/* Only a companion session gets the second row; another mode that happens to
+ * build this gauge class keeps its own layout. */
+static int hud_row_wanted(void)
+{
+    uint8_t *const *manager = (uint8_t *const *)(g_base + GAME_MANAGER_RVA);
+    return g_cfg.max_players >= 3 && readable(manager, 8) && *manager &&
+           readable(*manager + 0x660, 1) && *(*manager + 0x660);
+}
+
+/* The game builds the HUD once per mission but rewrites the state word while
+ * it settles, so keep the rows shown for as long as they exist. */
+static DWORD WINAPI hud_row_worker(LPVOID unused)
+{
+    (void)unused;
+    for (int tick = 0; tick < 1200; tick++) {
+        if (hud_row_wanted()) {
+            const LONG n = g_hud_row_count;
+            for (LONG i = 0; i < n; i++)
+                hud_row_show(g_hud_rows[i]);
+        }
+        Sleep(500);
+    }
+    return 0;
+}
+
+static void *det_HudRow(void *self, int id, int index)
+{
+    void *const row = g_hud_row_ctor(self, id, index);
+    if (g_cfg.max_players >= 3 && id != 0x74 && row && g_hud_row_count < HUD_ROWS_MAX) {
+        const LONG slot = InterlockedIncrement(&g_hud_row_count) - 1;
+        if (slot < HUD_ROWS_MAX) {
+            g_hud_rows[slot] = row;
+            LOG("game hud: companion row id=%#x built", id);
+            if (hud_row_wanted())
+                hud_row_show(row);
+        }
+        if (InterlockedCompareExchange(&g_hud_row_worker_started, 1, 0) == 0)
+            CreateThread(NULL, 0, hud_row_worker, NULL, 0, NULL);
+    }
+    return row;
+}
+
 static InlineHook g_inline_hooks[] = {
+    {HUD_ROW_CTOR_RVA, 19, "hud row", (void *)det_HudRow, (void **)&g_hud_row_ctor,
+     {0x48, 0x89, 0x4c, 0x24, 0x08, 0x53, 0x48, 0x83, 0xec, 0x30,
+      0x48, 0xc7, 0x44, 0x24, 0x20, 0xfe, 0xff, 0xff, 0xff}, relocate_hud_row},
     {0xd6a560, 21, "game send", (void *)det_GameSend, (void **)&g_game_send,
      {0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
       0x48, 0x8d, 0xac, 0x24, 0x58, 0xfe, 0xff, 0xff}, NULL},
