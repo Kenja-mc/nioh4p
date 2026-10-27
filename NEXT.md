@@ -11,19 +11,28 @@ Git does not track `build/`, `dist/` or `.local/`.
   `48415ff045d11e34cb8e76ca9fc17afa2c8965b3d4f1c447ad96e01c646223a7` (player
   build, 38,400 bytes). This frozen release predates Torii Gate support.
   Do not replace it with `tools/package.sh` without approval.
+  Restored 2026-10-26 after an accidental `tools/package.sh` run overwrote it:
+  the members are content-identical (DLL from the home-a rig library, ini from
+  `be5cc94`, README from `c189667`), but the zip bytes differ from the original
+  (`50bc324f…`); no hash of the original zip was recorded.
 - The real Steam folder
   (`~/.local/share/Steam/steamapps/common/Nioh`) has the same DLL and the player
   ini installed. A save backup from before that install is at
   `~/Backups/nioh-savedata-20261021-174429.tar.gz`.
 - The separate live-test candidate is `build/live-test/nioh3p-live-test.zip`.
   It contains the player DLL, the default three-player ini and test instructions.
-  The current candidate is DLL `7e19577b…` (44,544 bytes) in zip
-  `e5a3b4ea…`, from source `b128c76`. It passed the Windows harness and a
-  Defender custom scan (0 detections, definitions 1.461.144.0) on 2026-10-25.
-  The earlier candidates were DLL `7e19577b…` in zip `fd9df16c…` and DLL
-  `632684d0…` in zip `ff0a08f0…`.
+  The current candidate is DLL `750785b5…` (46,592 bytes) in zip `0ef866bf…`,
+  from source `8622d20`. It passed the six-run smoke matrix at three and four
+  players and a four-player Torii Gate formation with three visitors on the rig
+  on 2026-10-26, and it is published as pre-release `v1.1.0-rc2`. The Windows
+  harness and Defender pass listed for `7e19577b` has not been repeated on this
+  build yet. The earlier candidates were DLL `7e19577b…` in zip `e5a3b4ea…`,
+  DLL `7e19577b…` in zip `fd9df16c…` and DLL `632684d0…` in zip `ff0a08f0…`.
   `build/live-test/SHA256SUMS` includes both the zip and DLL hashes.
-  No upload, installation or release replacement is authorized.
+  `build.sh` is not reproducible: the same source built `99076046` (the
+  three-player HUD evidence) and `750785b5` (everything else); the deploy for
+  the four-player run raced the repack, so the rig verified the shipped bytes.
+  Publishing a release needs approval each time.
 - The `7e19577b` build passed three- and four-player Torii Gate formation on the
   rig on 2026-10-25 (three players: host d, visitors a and c; four players:
   host b, visitors a, c and d; stock filters) and the harness matrix at three
@@ -116,12 +125,9 @@ half of the original problem. Reviving a fallen companion is untouched.
 4. Investigate direct invites separately. The LAN research trigger takes the id
    from `Steam host lobby id=` in `nioh3p.invite.txt`. It does not prove that a
    real Steam invitation works. Direct invites are not required for this test.
-5. Replace the pre-release asset or leave it. `v1.1.0-rc1` ships `632684d0`,
-   which predates the fan-out bound, the trace throttle and the hook thread
-   exit. The tested build is `7e19577b` (`build/live-test`, zip `e5a3b4ea…`).
-   The release text describes the older build accurately, so the asset and its
-   notes are consistent; they are just behind. Uploading a replacement, editing
-   the release or pushing needs approval.
+5. Done 2026-10-26: `v1.1.0-rc2` replaces the pre-release and ships the tested
+   build `750785b5` (`build/live-test`, zip `0ef866bf…`). Repeating the Windows
+   VM harness and Defender pass on this build is still open.
 6. Keep the existing vendor false-positive drafts in `docs/FP_REPORTS.md`.
    Results for the frozen DLL do not establish results for this candidate.
 7. If the game fails to start, remove the candidate's `dinput8.dll`.

@@ -1926,3 +1926,40 @@ same image and settings as before):
 | Custom scan of the folder | 0 detections before, 0 after |
 
 The VM was shut down afterwards (`docker stop -t 120`).
+
+## rc2: four players on the HUD build, smoke matrix, publish (2026-10-26, late)
+
+Four-player Torii Gate formation on the candidate build, host `b` plus visitors
+`a`, `c` and `d`, every slot at `max_players=4`: the host logged
+`game visitor allowance: recruitment opens 3 visitor slot(s); 7/7 site(s)
+patched; setter cap raised` and `game create request: raising max members
+2 -> 4 before allocation`, and the driver verified all three visitors in the
+host mission (`shots/coop-20261026-223123.jsonl`). Host state showed `own=0..3`
+with `allow=3` on every slot. The party HUD still has exactly two rows: the
+host frame shows `Nioh-LAN-D` and `Nioh-LAN-C`, and the third companion has no
+row (`runs/hud-probe-1026/hud-4p-two-rows-b.png`), which matches the two-row
+limit measured in the probe.
+
+`build.sh` is not reproducible: the same source produced `99076046` (the
+afternoon three-player HUD evidence) and `750785b5`. The four-player deploy
+raced the candidate repack, so the rig verified exactly the shipped bytes.
+
+The six-run smoke matrix passed on `750785b5` (exit 0 each; artifacts under
+`~/.cache/nioh3p/rc2-*`): player proxy and research proxy at `max_players` 3
+and 4, plus the ownership run at both counts. EOS and Steam raises logged
+`2 -> 3` and `2 -> 4` as configured.
+
+Published `v1.1.0-rc2` on GitHub with `build/live-test/nioh3p-live-test.zip`
+(zip `0ef866bf…`, DLL `750785b5…`). The `build/live-test` folder now holds this
+candidate, including `SHA256SUMS`.
+
+## The frozen dist zip was overwritten and restored (2026-10-26)
+
+`tools/package.sh` was run without checking `NEXT.md`, and it overwrote the
+frozen `dist/nioh3p-player.zip` (`48415ff0…` DLL) with the candidate build.
+`dist/` is gitignored, so git had no copy. Restored from surviving members:
+the DLL came from the home-a rig Steam library (hash matches `48415ff0…`), the
+ini from `be5cc94` and the README from `c189667`. The zip bytes differ from
+the original (`50bc324f…`); no hash of the original zip was ever recorded, so
+member-level identity is the best possible. The staging copy went to the trash
+with `trash-put`.
