@@ -320,6 +320,7 @@ STATE_FIELDS = (
     ("role", 4, "*0x1418715e0+0x5b0"),       # 0 host, 1 visitor
     ("mode", 4, "0x14191de34"),              # 1 companion session, 0 shrine visitor
     ("state", 4, "0x141790e30"),             # session root +0x3c0
+    ("sel", 4, "0x141790f58"),               # session root +0x4e8, shown companion
     ("own", 1, "0x141790e38"),               # own member slot (root +0x3c8)
     ("allow", 2, "0x141790e0c"),             # visitor allowances (root +0x39c/+0x39d)
     ("wait", 1, "*0x14189f408+0x15837c"),    # IsWaitCoopPlayer counters

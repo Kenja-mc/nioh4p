@@ -178,14 +178,61 @@ boundary of what the dump can answer.
 
 ## Party HUD: why one companion bar
 
-The mission HUD builds one companion bar per screen. The bar is an instance of
-`CoopPlayerGauge@Menu` (vtable `0x141245d78`), not a list, so a third and fourth
-player have no bar to draw into.
+Measured on 2026-10-26, three players in a Torii Gate mission (host `b` plus
+visitors `a` and `c`, research build `fd6e7c07`, `trace=1`). The probe finds
+live menu elements by scanning for their vtable with `scan.exe`, which is a
+read-only qword search over the readable memory of `nioh.exe`.
 
-The whole HUD for a Tokoyo mission is built by one function, `0x140afb500`
-(caller `0x140883d1e`). It allocates each element through the menu widget
-factory `[0x14189f400]` (`*0x28(vtable)`, size in `edx`) and then attaches it
-with `*0x58` on the parent. The elements in that builder:
+| Class | Vtable | Instances per client | Element id (`+0x8`) |
+| --- | --- | --- | --- |
+| `PlayerGauge@Menu` | `0x141277e28` | 1 | `0` (own bars) |
+| `TokoyoCoopGauge@Menu` | `0x14129b3f8` | 1 | `0x96` |
+| `MultiPlayerGauge@Menu` | `0x1412729c0` | 2 | `0x74` and `0x75` |
+| `CoopPlayerGauge@Menu` | `0x141245d78` | 0 | — |
+| `CoopHeaderGauge@Menu` | `0x1412457b8` | 0 | — |
+
+So the Tokoyo mission HUD is not the `CoopPlayerGauge` path at all. That class
+belongs to the shrine-visitor HUD, which is built by `0x140afb500` (below). A
+client in a companion mission never creates it, so patching it cannot add
+companion bars.
+
+The two `MultiPlayerGauge` rows are a fixed pair, not one row per player: the
+host with two companions, and each visitor with a host plus one companion, all
+show exactly two. Each instance carries its own animation group at `+0x60`
+and shares the sprite handles at `+0x18`/`+0x20`. The update method
+`0x140c1f500` switches on the element id: `0x74` reads the global pointer block
+at `0x141b46ad8`, `0x75` reads the block at `0x141b46b50`, and each block points
+at four animation groups `0xa0` apart. Those two blocks are hard-wired, which
+means the row-to-data binding is not a loop over member slots.
+
+Live field values on the host, `PlayerGauge` instance `0x6df680c0`:
+
+| Offset | Value | Meaning |
+| --- | --- | --- |
+| `+0x60` | `0x6e374f80` | animation group pointer |
+| `+0x68` | `0x65a` = 1626 | HP maximum, matches the on-screen `1626/1626` |
+| `+0x70` | `0x65a` = 1626 | HP current |
+| `+0x78` | float `104.0` | Ki maximum, matches the on-screen `104/104` |
+
+The rendered host frame (`runs/hud-probe-1026/state-b.png` in `$RIG`) shows the
+own HP, Ki and assist gauge, and then exactly one companion row labelled
+`Nioh-LAN-C`, the last admitted companion. There is no second row and no
+second name anywhere on the frame.
+
+Two further measured facts:
+
+- `root+0x4e8` (`sel`) reads `0xffffffff` in the mission on all three clients,
+  so it is not the in-mission selector. The `sel=0` in the admission log comes
+  from the join packet path, before the mission starts.
+- Scanning for a vtable is a usable measurement: `scan.exe` found the one
+  `.data` slot that holds a known global pointer, and found each instance
+  exactly once per client.
+
+### What the shrine-visitor HUD does (for reference)
+
+That HUD *is* built by one function, `0x140afb500` (caller `0x140883d1e`). It
+allocates each element through the menu widget factory `[0x14189f400]`
+(`*0x28(vtable)`, size in `edx`) and attaches it with `*0x58` on the parent:
 
 | Element id | Class | Size | Constructor |
 | --- | --- | --- | --- |
@@ -196,43 +243,35 @@ with `*0x58` on the parent. The elements in that builder:
 The base `Menu` element constructor `0x140bf30a0` stores the element id at
 `+0x8` and its third argument (the value `3` at every call site above) at
 `+0xc`. The virtual at vtable `+0xa8` (`0x140bf3290`) returns `+0x8`, and the
-gauge's own init passes that value to the sprite factory `0x140ddf270`, so
-**the screen position comes from the element id**. Two gauges created with id
-`0x11a` would draw in exactly the same place.
+gauge init passes that to the sprite factory `0x140ddf270`, so the position
+comes from the element id.
 
-`CoopPlayerGauge@Menu` fields and methods:
-
-| Offset / vtable slot | Meaning |
+| `CoopPlayerGauge` offset / slot | Meaning |
 | --- | --- |
 | `+0x60` | draw/animation state machine (`0` idle, `1`..`4` seen) |
-| `+0x68` | the bar widget, created with sprite id `0x27761` |
-| `+0x70` | the second widget, sprite id `0xe5c34` |
+| `+0x68` | bar widget, sprite id `0x27761` |
+| `+0x70` | second widget, sprite id `0xe5c34` |
 | `+0x8c` | animation sub-state |
-| `+0x98` | the partner character object that the bar follows |
+| `+0x98` | the partner character object the bar follows |
 | `+0xb4` | visible flag |
 | `+0x8` (`0x140ae8190`) | create the two widgets |
-| `+0x18` (`0x140ae89c0`) | per-frame: `(this, arg)`, reads `[+0x98]`, then `[+0x98]+0x240` and the status block at `+0xb0` of that, and calls `0x1407b2d30` for the ratio |
+| `+0x18` (`0x140ae89c0`) | per frame, `(this, arg)`: reads `[+0x98]`, then `[+0x98]+0x240` and that object's `+0xb0`, and calls `0x1407b2d30` for the ratio |
 | `+0x50` (`0x140ae99d0`) | visibility / ready predicate |
 
-So the bar shows whichever character object the owner assigns to `+0x98`.
-Nothing in the gauge reads the session root, and nothing else holds a pointer
-to the gauge through its vtable: the owner reaches it with virtual calls, which
-is why a plain vtable xref search finds only the constructor and destructors.
+### Options for the extra rows
 
-Two implementation paths follow from that:
+1. Native, reuse a free layout id. Add `MultiPlayerGauge` instances with ids
+   the layout data already positions, if such ids exist next to `0x74`/`0x75`.
+   This needs a look at the UI layout resources in the `K300` archives, which
+   `tools/lnk.py` can read. Without a free id, extra instances overlap the
+   existing rows because position is keyed by id.
+2. Native, create and place. Create instances with the same id and move their
+   sprite objects after init. Needs the sprite transform API; survives only as
+   long as the game does not re-run layout.
+3. Own overlay. Read each companion's HP and draw the bars from the proxy
+   through a D3D11 present hook. Independent of the menu system, but it needs
+   remote character discovery and its own drawing code.
 
-1. Native widgets. Create `max_players - 2` extra `CoopPlayerGauge` instances
-   through the same factory, give each its own character object, and give each
-   a distinct screen offset, because the layout data is keyed by element id.
-   The offset has to be applied to the created widget objects after init. This
-   reuses the game's own drawing, but needs the sprite transform API and a
-   free position for each bar.
-2. Own overlay. Read the character objects of the extra companions and draw
-   the bars from the proxy. This skips the menu system entirely and needs
-   remote actor discovery plus a D3D11 present hook.
-
-Both need the same first datum: the live character object behind a companion's
-bar. Next step is a read-only scan of a three-player client for vtable
-`0x141245d78` while in the mission, then reading `[instance+0x98]` and
-`[[instance+0x98]+0x240]` for each companion, and testing whether `root+0x4e8`
-(`sel`) picks which companion the one bar shows.
+The next step is the layout question in option 1, because it is offline and it
+decides whether the faithful path is cheap or expensive. `docs/RIG.md` records
+how to run a probe; `scan.exe` and the run above are the measurement tools.

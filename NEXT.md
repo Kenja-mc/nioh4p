@@ -85,29 +85,31 @@ not the `7e19577b` build the rig tests used.
 
 ## Requested feature: health and stamina bars for every player
 
-Requested 2026-10-26. Every player should see the health and stamina of every
-other player, as the stock two-player game does for its one companion. Today
-the party HUD draws a single companion bar, so that is a missing feature, not a
-bug.
+Requested 2026-10-26. Agreed scope the same day: stock parity (HP plus the
+revive state, not Ki), always visible in a mission, and measure before choosing
+an implementation.
 
-Reverse-engineering state is in `docs/RE_TOKOYO_COOP.md`, "Party HUD". Short
-version: the mission HUD builder `0x140afb500` creates exactly one
-`CoopPlayerGauge@Menu` (element id `0x11a`), the bar follows the character
-object at `[gauge+0x98]`, and the screen position comes from the element id, so
-a second instance would overlap the first.
+Measured in a three-player rig run on 2026-10-26 (host `b`, visitors `a` and
+`c`, research `fd6e7c07`; frames and details in `docs/RE_TOKOYO_COOP.md`,
+"Party HUD"). The host frame shows own HP, Ki and assist gauge, then exactly one
+companion row. The second companion has no row. The mission HUD creates no
+`CoopPlayerGauge` at all: it has one `PlayerGauge`, one `TokoyoCoopGauge` and
+two `MultiPlayerGauge` rows on every client, and those two rows are hard-wired
+to two fixed global pointer blocks, not to member slots.
 
-First step is read-only and needs one three-player session: scan a client for
-vtable `0x141245d78`, read `[instance+0x98]` for each companion, and test
-whether `root+0x4e8` (`sel`) chooses which companion the single bar shows.
-Then choose between extra native widgets (needs a per-bar screen offset) and an
-own D3D11 overlay (needs remote actor discovery). No code yet.
+Next step is offline: check the UI layout resources in the `K300` archives
+(`tools/lnk.py`) for a free element id next to `0x74`/`0x75`. A free id makes
+the native path cheap. Without one, the choice is forced sprite placement or an
+own D3D11 overlay. No code yet.
 
 ## Next actions
 
 1. The result screen and a death are now verified on the rig; mission
    completion on the success path and reviving a fallen companion are not.
-   Reviving is also the second half of the requested feature: a bar that shows
-   a downed companion needs the revive path to work.
+   The 2026-10-26 session reached a mission and probed the HUD but could not
+   down or revive anyone: the coop driver stops once everyone is in, and it has
+   no combat or revive table. Doing that needs in-mission input, either a new
+   driver table or a manual session.
 2. The authenticated Steam re-run is blocked by a cloud-save conflict on
    account `<accountid-private-2>`; see `.local/tickets/rig-steam-cloud-conflict.md`.
 3. Invite testing needs the research build. Its startup death is resolved:
