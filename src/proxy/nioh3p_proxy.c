@@ -3228,12 +3228,22 @@ static int hud_row_wanted(void)
 #define HUD_ROW3_SLOTS_RVA   0x18a0490u /* static party slots, stride 0x18 */
 #define HUD_ROW3_SLOT_STRIDE 0x18u
 #define HUD_ROW3_SLOT_MAX    4
-/* The transform we read/write is group 0 of each container sprite: the chain
- * trace showed that 0x5f/0x60 are not indices into the sprite's group-name
- * table (it has 37 entries) but group 0 resolves to the name
- * "Null_player_gauge_ALL_pos" — the gauge's whole-row position — for every
- * sprite. */
+/* Where the row positions really come from (assigner 0x140c218ae..0x140c21919):
+ *   root_elem   = *(void**)[0x14189f400]        ; registry[0], the HUD root element
+ *   root_sprite = *(void**)(root_elem + 0x60)   ; its container sprite
+ *   anchor(row) = root_sprite, group 0x5f for id 0x74 / 0x60 for id 0x75
+ *   destination = *(void**)(row_elem + 0x60), group 0
+ * So 0x5f/0x60 are indices in the ROOT sprite's name table (>= 96 entries), not
+ * in a row sprite's table (37 entries) — which is why our row-sprite walk
+ * refused them. Group 0 of a row's own container is the "…_ALL_pos" node the
+ * game writes: 0x140dda850 -> 0x1405478f0 stores x/y/z at [entry+0xd0]+0x30/
+ * 0x34/0x38 and ORs 0x10 into [entry+0xec] (dirty flag; without it the stored
+ * value is never picked up — that was trial 10's inert write). */
+#define HUD_ROW3_GROUP_ROW1  0x5f
+#define HUD_ROW3_GROUP_ROW2  0x60
 #define HUD_ROW3_GROUP_POS   0
+#define HUD_ROW3_ENTRY_FLAGS 0xecu
+#define HUD_ROW3_ENTRY_DIRTY 0x10u
 
 /* The per-frame driver is not the element registry: rows 1/2 are updated by a
  * caller reached through heap (script) objects, so there is no static call site
@@ -3943,7 +3953,8 @@ typedef struct {
  *           to the string pool that starts right after the offset array, not to
  *           the table base. Using table+off reads the offset array itself and
  *           the name match can never succeed — that was trial 8's silence. */
-static void *hud_row3_transform_tr(const void *sprite, int group, hud_row3_trace *tr)
+static void *hud_row3_transform_tr(const void *sprite, int group, hud_row3_trace *tr,
+                                   void **entry_out)
 {
     if (!sprite || !readable(sprite, 8)) {
         if (tr) tr->fail = "sprite";
@@ -4041,6 +4052,8 @@ static void *hud_row3_transform_tr(const void *sprite, int group, hud_row3_trace
                         if (tr) tr->fail = "handle ([node+0xd0])";
                         return NULL;
                     }
+                    if (entry_out)
+                        *entry_out = (void *)node;
                     return (void *)handle;
                 }
             }
@@ -4049,11 +4062,6 @@ static void *hud_row3_transform_tr(const void *sprite, int group, hud_row3_trace
     }
     if (tr) tr->fail = "name match in the container list";
     return NULL;
-}
-
-static void *hud_row3_transform(const void *sprite, int group)
-{
-    return hud_row3_transform_tr(sprite, group, NULL);
 }
 
 /* One log line per walked chain, used for the first three placement attempts. */
@@ -4093,8 +4101,26 @@ static int hud_row3_vec_sane(const float v[3])
     return 1;
 }
 
-static int hud_row3_vec_at(void *handle, float out[3])
+/* The HUD root element (registry[0]) and its container sprite: the assigner
+ * reads the 0x5f/0x60 anchors from that sprite, not from a row's sprite. */
+static void *hud_row3_root_sprite(void)
 {
+    const void *const *const holder = (const void *const *)(g_base + HUD_ROW3_ELEMS_RVA);
+    if (!readable(holder, 8) || !*holder)
+        return NULL;
+    const uint8_t *const root = *(const uint8_t *const *)*holder;
+    if (!root || !readable(root + HUD_ROW3_CONTAINER_OFF, 8))
+        return NULL;
+    void *const sprite = *(void **)(root + HUD_ROW3_CONTAINER_OFF);
+    return readable(sprite, 8) ? sprite : NULL;
+}
+
+/* Read one anchor vector (raw, pre-UI-scale: 0x140dd8d50 divides by the scale
+ * factors at the very end, and the write path multiplies them back, so raw
+ * values from the same space are directly comparable and writable). */
+static int hud_row3_anchor(void *sprite, int group, float out[3], void **entry_out)
+{
+    void *const handle = hud_row3_transform_tr(sprite, group, NULL, entry_out);
     if (!handle || !readable((uint8_t *)handle + 0x30, 0xc))
         return 0;
     out[0] = *(const float *)((const uint8_t *)handle + 0x30);
@@ -4103,91 +4129,111 @@ static int hud_row3_vec_at(void *handle, float out[3])
     return 1;
 }
 
-static int hud_row3_set_vec_at(void *handle, const float v[3])
+/* Store the position the way 0x1405478f0 does: the three floats at
+ * [entry+0xd0]+0x30/0x34/0x38 plus the 0x10 bit in [entry+0xec], which is what
+ * makes the UI pick the new transform up. */
+static int hud_row3_store_pos(void *entry, const float v[3])
 {
-    if (!handle || !readable((uint8_t *)handle + 0x30, 0xc))
+    if (!entry || !readable((uint8_t *)entry + 0xd0, 8) ||
+        !readable((uint8_t *)entry + HUD_ROW3_ENTRY_FLAGS, 4))
         return 0;
-    *(float *)((uint8_t *)handle + 0x30) = v[0];
-    *(float *)((uint8_t *)handle + 0x34) = v[1];
-    *(float *)((uint8_t *)handle + 0x38) = v[2];
+    uint8_t *const handle = *(uint8_t *const *)((uint8_t *)entry + 0xd0);
+    if (!handle || !readable(handle + 0x30, 0xc))
+        return 0;
+    *(float *)(handle + 0x30) = v[0];
+    *(float *)(handle + 0x34) = v[1];
+    *(float *)(handle + 0x38) = v[2];
+    *(uint32_t *)((uint8_t *)entry + HUD_ROW3_ENTRY_FLAGS) |= HUD_ROW3_ENTRY_DIRTY;
     return 1;
 }
 
-/* One row-pitch below row 2, recomputed from the native rows' own transforms
- * (group 0 = the "…_ALL_pos" whole-row position of each container sprite).
- * Written only when the value changes (or every 30th call), which keeps the
- * per-frame cost at three float stores in the steady state. */
+/* One row-pitch below row 2 on screen. Source and destination are the pair the
+ * game's own assigner uses (see the comment above HUD_ROW3_GROUP_ROW1): the
+ * 0x5f/0x60 anchors of the ROOT element's container sprite give rows 1/2, the
+ * result goes into group 0 of OUR container, plus the 0x10 dirty bit that makes
+ * the UI consume it. Written only when the value changes (or every 30th call). */
 static void hud_row3_place(void *row3, void *row1, void *row2)
 {
+    (void)row1;
+    (void)row2;
     static float last[3];
     static int have_last, since_write, logged;
-    if (!readable(row1, HUD_ROW3_CONTAINER_OFF + 8) ||
-        !readable(row2, HUD_ROW3_CONTAINER_OFF + 8) ||
-        !readable(row3, HUD_ROW3_CONTAINER_OFF + 8))
+    if (!readable(row3, HUD_ROW3_CONTAINER_OFF + 8))
         return;
-    void *const sprite1 = *(void **)((uint8_t *)row1 + HUD_ROW3_CONTAINER_OFF);
-    void *const sprite2 = *(void **)((uint8_t *)row2 + HUD_ROW3_CONTAINER_OFF);
     void *const sprite3 = *(void **)((uint8_t *)row3 + HUD_ROW3_CONTAINER_OFF);
+    void *const root = hud_row3_root_sprite();
     float v1[3], v2[3], v3[3];
-    /* First three attempts: walk all three chains and log every link, so a
+    /* First three attempts: walk the used chains and log every link, so a
      * broken step names itself (three lines, then silence). */
     static int probes;
     if (probes < 3) {
         hud_row3_trace t;
         probes++;
+        if (root) {
+            memset(&t, 0, sizeof t);
+            hud_row3_transform_tr(root, HUD_ROW3_GROUP_ROW1, &t, NULL);
+            hud_row3_trace_line("row1", root, HUD_ROW3_GROUP_ROW1, &t);
+            memset(&t, 0, sizeof t);
+            hud_row3_transform_tr(root, HUD_ROW3_GROUP_ROW2, &t, NULL);
+            hud_row3_trace_line("row2", root, HUD_ROW3_GROUP_ROW2, &t);
+        } else {
+            LOG("hud row3: chain row1/row2: no root sprite (registry[0] %p)",
+                (void *)hud_row3_elements());
+        }
         memset(&t, 0, sizeof t);
-        hud_row3_transform_tr(sprite1, HUD_ROW3_GROUP_POS, &t);
-        hud_row3_trace_line("row1", sprite1, HUD_ROW3_GROUP_POS, &t);
-        memset(&t, 0, sizeof t);
-        hud_row3_transform_tr(sprite2, HUD_ROW3_GROUP_POS, &t);
-        hud_row3_trace_line("row2", sprite2, HUD_ROW3_GROUP_POS, &t);
-        memset(&t, 0, sizeof t);
-        hud_row3_transform_tr(sprite3, HUD_ROW3_GROUP_POS, &t);
+        hud_row3_transform_tr(sprite3, HUD_ROW3_GROUP_POS, &t, NULL);
         hud_row3_trace_line("row3", sprite3, HUD_ROW3_GROUP_POS, &t);
     }
-    void *const h1 = hud_row3_transform(sprite1, HUD_ROW3_GROUP_POS);
-    void *const h2 = hud_row3_transform(sprite2, HUD_ROW3_GROUP_POS);
-    void *const h3 = hud_row3_transform(sprite3, HUD_ROW3_GROUP_POS);
-    if (!h1 || !h2 || !h3) {
+    if (!root) {
         if (!logged) {
             logged = 1;
-            LOG("hud row3: place: transforms not resolvable (row1 %p row2 %p "
-                "row3 %p), row keeps its default position", h1, h2, h3);
+            LOG("hud row3: place: no root sprite, row keeps its default position");
         }
         return;
     }
-    /* If two rows resolve to the same transform node, writing ours would move
-     * a native row as well: refuse instead of corrupting the layout. */
-    if (h1 == h2 || h1 == h3 || h2 == h3) {
-        if (!logged) {
-            logged = 1;
-            LOG("hud row3: place: transforms are shared (row1 %p row2 %p row3 %p); "
-                "refusing to write — it would move a native row", h1, h2, h3);
-        }
-        return;
-    }
-    if (!hud_row3_vec_at(h1, v1) || !hud_row3_vec_at(h2, v2) ||
+    void *entry1 = NULL, *entry2 = NULL;
+    if (!hud_row3_anchor(root, HUD_ROW3_GROUP_ROW1, v1, &entry1) ||
+        !hud_row3_anchor(root, HUD_ROW3_GROUP_ROW2, v2, &entry2) ||
         !hud_row3_vec_sane(v1) || !hud_row3_vec_sane(v2)) {
         if (!logged) {
             logged = 1;
-            LOG("hud row3: place: row transforms insane (row1 %p row2 %p), "
-                "row keeps its default position", h1, h2);
+            LOG("hud row3: place: root anchors not readable (row1 %d,%d row2 %d,%d)",
+                (int)(v1[0] * 1000.0f), (int)(v1[1] * 1000.0f),
+                (int)(v2[0] * 1000.0f), (int)(v2[1] * 1000.0f));
         }
         return;
     }
     for (int i = 0; i < 3; i++)
         v3[i] = v2[i] + (v2[i] - v1[i]);
+    /* Our own entry must be a different node than the root anchors'. */
+    void *entry3 = NULL;
+    if (!hud_row3_transform_tr(sprite3, HUD_ROW3_GROUP_POS, NULL, &entry3) || !entry3) {
+        if (!logged) {
+            logged = 1;
+            LOG("hud row3: place: our transform entry not resolvable (sprite %p)",
+                sprite3);
+        }
+        return;
+    }
+    /* Never write through a node the anchors themselves live in. */
+    if (entry3 == entry1 || entry3 == entry2) {
+        if (!logged) {
+            logged = 1;
+            LOG("hud row3: place: our entry %p is a shared anchor node "
+                "(0x5f %p, 0x60 %p); refusing to write", entry3, entry1, entry2);
+        }
+        return;
+    }
     int changed = !have_last;
     for (int i = 0; i < 3 && !changed; i++)
         if (v3[i] > last[i] + 0.001f || v3[i] < last[i] - 0.001f)
             changed = 1;
     if (!changed && ++since_write < 30)
         return;
-    if (!hud_row3_set_vec_at(h3, v3)) {
+    if (!hud_row3_store_pos(entry3, v3)) {
         if (!logged) {
             logged = 1;
-            LOG("hud row3: place: our transform not writable (row3 %p), "
-                "not placing", h3);
+            LOG("hud row3: place: our entry not writable (entry %p)", entry3);
         }
         return;
     }
@@ -4197,11 +4243,11 @@ static void hud_row3_place(void *row3, void *row1, void *row2)
         last[i] = v3[i];
     if (!logged) {
         logged = 1;
-        LOG("hud row3: position row1=(%d,%d) row2=(%d,%d) row3=(%d,%d) (x1000); "
-            "direct write to sprite %p (transforms %p %p %p)",
+        LOG("hud row3: position root 0x5f=(%d,%d) 0x60=(%d,%d) row3=(%d,%d) "
+            "(x1000); wrote entry %p sprite %p + dirty flag",
             (int)(v1[0] * 1000.0f), (int)(v1[1] * 1000.0f),
             (int)(v2[0] * 1000.0f), (int)(v2[1] * 1000.0f),
-            (int)(v3[0] * 1000.0f), (int)(v3[1] * 1000.0f), sprite3, h1, h2, h3);
+            (int)(v3[0] * 1000.0f), (int)(v3[1] * 1000.0f), entry3, sprite3);
     }
 }
 

@@ -2069,3 +2069,28 @@ Stability note: the earlier bound-update crash (two of four clients, trial 7)
 did not recur in trials 8-10; a vectored exception handler logs
 `exception 0x... at exe+0x...` for any in-image fault while `hud_row3=1`, so
 a recurrence now names its instruction.
+
+## Third HUD row: three name rows on screen (2026-10-27, night)
+
+Trial 11 (`76d49c95`): the host frame shows three companion name rows - the
+game lays out `Nioh-LAN-A`, `Nioh-LAN-C` and `Nioh-LAN-D` itself once the
+third element is registered - and the third row's complete gauge renders
+(portrait, live HP `1651 / 1651`, Ki `104 / 104`). The anchor write works:
+the root sprite (`registry[0]`, not the row sprites) holds the named anchors
+(`player_01_pos` for `0x5f`, `player_02_pos` for `0x60`, 97 entries), the
+write target is the third row's own group-0 entry, and the UI consumes it only
+when the dirty bit `[entry+0xec] |= 0x10` is set - the write helper
+`0x1405478f0` sets that bit; without it the value is ignored.
+
+Remaining cosmetic split: the game positions the NAME rows from its own list
+logic, while our anchor write moves only the third row's gauge block
+(portrait, bars, numbers), which currently sits above the name stack instead
+of beside the `Nioh-LAN-D` row. Next session: read the name-row layout the
+game computes for the third row (or find the name sprite the update writes via
+`0x140dd6700`) and align the gauge anchor to it.
+
+Trial log highlights (all four clients, stable to mission end in trials 8-11):
+`piggyback installed on the native row slots 0x18/0x50`, `bound update
+returned`, `per-frame drive confirmed`, `wrote entry ... + dirty flag`. The
+bound-update crash from trial 7 never recurred across trials 8-11; the
+vectored exception handler stays armed under `hud_row3=1`.

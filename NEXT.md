@@ -92,20 +92,35 @@ not the `7e19577b` build the rig tests used.
   Workaround until invites are verified: visitors set the filter at or above
   the host's story progress.
 
-## Party HUD: a row per companion
+## Party HUD: rows for every companion
 
-Requested 2026-10-26. Scope agreed the same day: stock parity (HP plus the
-revive state, not Ki), always visible in a mission.
-
-Done and verified on the rig with three players in the player build `99076046`:
-the second companion row, which the game builds and keeps hidden, is now shown.
-The proxy hooks the `MultiPlayerGauge` constructor `0x140c1e230` and sets two
-bits in the row state word (`+0x28`) while Tokoyo mode is on. Every client shows
-two rows with the correct names. Details: `docs/RE_TOKOYO_COOP.md`, "Party HUD".
-
-Open: the HUD has exactly two rows, so at four players one companion still has
-no row. That needs a third element (creation plus layout), which is the harder
-half of the original problem. Reviving a fallen companion is untouched.
+- Shipped in rc2: the second companion row (the game builds it hidden; the
+  proxy unhides it). Verified with three players.
+- Built overnight, default OFF behind the new `hud_row3=1` ini key: a third
+  row for four players. Mechanism (all in `src/proxy/nioh3p_proxy.c`, no game
+  bytes patched): create element id `0x73` through the game's own factory/ctor/
+  init/register path, private vtable copy with seven block-swapping thunks
+  (A<->C), piggyback on the native rows' update slot for per-frame drive,
+  companion from the party-slot array, anchors from the HUD root sprite
+  (`registry[0]`, groups `0x5f`/`0x60` = `player_01_pos`/`player_02_pos`),
+  write ours with the dirty bit `[entry+0xec] |= 0x10`.
+- Verified with four players on the rig (trials 8-11): all four clients in
+  mission, every client shows three name rows (`A`, `C`, `D`), the third row's
+  gauge renders with live HP/Ki (`1651/1651`, `104/104`). Evidence:
+  `runs/hud-probe-1026/row3-trial11-b.png` in `$RIG`; the whole trial series
+  is in `docs/FINDINGS.md`.
+- Open, cosmetic: the third row's gauge block sits ABOVE the name stack
+  instead of beside its name row - the game lays the NAME rows out itself, so
+  the gauge anchor needs to be aligned to the name-row position (read the
+  layout the game computes for the third row, or find the name sprite the
+  update writes via `0x140dd6700`).
+- Open, rare: a bound-update crash hit 2 of 4 clients once (trial 7) and never
+  recurred in trials 8-11. A vectored exception handler now logs
+  `exception 0x... at exe+0x...` under `hud_row3=1`, so a recurrence names its
+  instruction.
+- Untested: a second mission/rejoin in one session with `hud_row3=1`
+  (generation rebuild path), Windows harness and Defender pass on any post-rc2
+  build.
 
 ## Next actions
 
