@@ -2047,3 +2047,25 @@ logged Tokoyo transition, creation is mission-only (loader `0xC`), and a gauge
 generation counter now separates prep-era elements from mission elements
 after the trial-4 lesson (a prep-created element must never be driven by
 mission-entry frames).
+
+## Third HUD row: positioned, gated, stable (2026-10-27, night)
+
+Trials 8-10 (`1100b399`, `dd9291df`): with the `hud_row3` ini key (default 0),
+four-player sessions ran the full chain on every client and all four stayed
+alive in the mission across three consecutive runs. The third row renders
+completely - portrait, live HP `1651 / 1651`, Ki `104 / 104`, the companion's
+own name - driven per frame by piggybacking on the native rows' update slot,
+with the block A<->C swap keeping row 1 intact.
+
+The group mystery resolved empirically: the ids the assigner passes to the
+game's anchor helper are not indices into the sprite's group-name table (37
+entries; group 0 is `"Null_player_gauge_ALL_pos"`). Reading group 0 for all
+three rows resolves and writes cleanly, but the rendered row ignores that
+handle - the natives' true anchor source for `0x5f`/`0x60` is still being
+traced through `0x140dd8d50`, so the row currently renders at the layout
+fallback position above row 1 instead of one pitch below row 2.
+
+Stability note: the earlier bound-update crash (two of four clients, trial 7)
+did not recur in trials 8-10; a vectored exception handler logs
+`exception 0x... at exe+0x...` for any in-image fault while `hud_row3=1`, so
+a recurrence now names its instruction.
