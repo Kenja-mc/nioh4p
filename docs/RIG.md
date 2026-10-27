@@ -35,6 +35,8 @@ tools/rig/rig.py collect NAME     # copy every slot's logs, launch output and th
 tools/rig/rig.py down             # stop all games (--client also stops the slot b Steam client)
 ```
 
+`down --settle S` also waits until the slot has no process left, so the next `up` starts from an empty prefix. It reports anything that outlived the wait.
+
 `down` sends SIGTERM to `nioh.exe` first, then to the rest of the slot's Wine and compositor processes, then SIGKILL to what is left. It decides ownership by the `HOME` in `/proc/<pid>/environ`, so the user's own Steam can never match.
 
 The lower-level commands below remain for the Steam-library slots and for input:
@@ -57,7 +59,7 @@ Start the client before `run.sh … game`. The raw Steam binary forwards a reque
 In each rig client's Nioh Properties, select Proton Experimental. Set Launch Options to the command below, and adjust the repository path if necessary.
 
 ```sh
-NIOH3P_HEADLESS=1 NIOH3P_SCOPE=0 NIOH3P_GPU=RAPHAEL_MENDOCINO NIOH3P_VK_DEVICE=1002:13c0 /home/<user>/Projects/nioh3p/tools/quiet-launch.sh %command%
+NIOH3P_HEADLESS=1 NIOH3P_SCOPE=0 NIOH3P_GPU=RAPHAEL_MENDOCINO NIOH3P_VK_DEVICE=1002:13c0 /home/<user>/Projects/gaming/nioh-mp-mod/tools/quiet-launch.sh %command%
 ```
 
 The wrapper clears inherited display and WSI overrides before it starts gamescope. The isolated runtime has no systemd user bus, hence `NIOH3P_SCOPE=0`. This value disables the CPU and RAM scope limits of the wrapper. Keep Steam Cloud disabled in the test roots. For a diagnostic run, prepend `PROTON_LOG=1`. The log is in that slot's HOME.
@@ -226,7 +228,7 @@ This rig ran three-player co-op: host B plus visitors A and C in one mission. Ea
 - Player/research split (build `48415ff0…`, player DLL 38,400 bytes, write window RWX then RX): B, A and C in one mission again. Both visitors joined (JoinLobby 23:35 and 23:39), the metadata guard installed at the second join, and each log stayed under 5 KB. Shots: `shots/split-3p.png`, `shots/split-*-move.png`.
 - `tools/rig/coop.py run --host b --visitors a c` took all three cold-booted slots into one mission with no manual input. It took 6 min 17 s and 72 Mercury Decide decisions (B 25, A 26, C 21 with A relieved). Trace: `shots/coop-20261021-194424.jsonl`. Host view: `shots/drv-final-b-3p.png`.
 - If a visitor accidentally starts a solo mission from the map, leave it with Items, Himorogi Fragment, Use. That forfeits Amrita gained in the mission. On the world map, `BackSpace` jumps the cursor to Starting Point.
-- Read-only rig probes live in `$RIG/tools-tmp` (freestanding Win64). Run each with `proton runinprefix` from the HOME and prefix environment of the target slot. `admission-poll3.exe` is a 10 ms poller for session root, slots, allowance and loader phase. `peek.exe SIZE [*]ADDR[+OFF]`, `rip-sample.exe` and `memdump.exe` are the other probes. Diagnostic writers: `poke.exe`, `budget-set.exe` and `codepatch.exe`. `budget-set.exe` sets the host allowance to 2 and is used to reopen recruitment between rejoin tests. `codepatch.exe` refuses to write unless the expected bytes match.
+- Read-only rig probes live in `$RIG/tools-tmp` (freestanding Win64). Run each with `proton runinprefix` from the HOME and prefix environment of the target slot. `admission-poll3.exe` is a 10 ms poller for session root, slots, allowance and loader phase. `peek.exe SIZE [*]ADDR[+OFF]`, `scan.exe QWORD [MAXHITS]` (8-byte-aligned qword search over the readable memory of `nioh.exe`, for finding live objects such as a vtable instance), `rip-sample.exe` and `memdump.exe` are the other probes. Diagnostic writers: `poke.exe`, `budget-set.exe` and `codepatch.exe`. `budget-set.exe` sets the host allowance to 2 and is used to reopen recruitment between rejoin tests. `codepatch.exe` refuses to write unless the expected bytes match.
 - Do not attach a Win32 debugger to an in-mission client: `DebugActiveProcess` made A exit silently. The old breakpoint and watchpoint probes stay only as reference sources.
 - Shutdown this session: all three games quit through their native dialog (exit 0). Steam showed Invisible (`shots/steam-b-invisible-stop5.png`) and shut down normally. Xvfb `:10` stopped, and a final scan found no live process with a rig HOME. The 4.7 GB research-era `logs-*/nioh3p.log` files went to trash.
 

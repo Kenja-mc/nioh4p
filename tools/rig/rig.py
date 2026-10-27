@@ -85,6 +85,10 @@ def client_pids():
     return [pid for pid, owner, _, game in rig_processes() if owner == "b" and not game]
 
 
+def slot_pids(slot):
+    return [pid for pid, owner, _, _ in rig_processes() if owner == slot]
+
+
 def _signal_all(pids, sig):
     for pid in pids:
         try:
@@ -209,11 +213,32 @@ def cmd_up(args):
     return status
 
 
+def _settle(label, pick, seconds):
+    """Keep the slot quiet after a stop, so the next boot starts from nothing.
+
+    A leftover wineserver is the documented precondition of the research
+    build's intermittent startup exit (docs/FINDINGS.md), so wait for the slot
+    to empty and report whatever survived the wait.
+    """
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline and pick():
+        time.sleep(0.5)
+    while time.monotonic() < deadline:
+        time.sleep(0.25)
+    left = pick()
+    if left:
+        print(f"rig: {label}: {len(left)} process(es) still running after "
+              f"{seconds:.0f} s: " + ", ".join(sorted({_comm(pid) for pid in left})))
+
+
 def cmd_down(args):
-    for slot in args.slots or SLOTS:
-        _stop(f"slot {slot}", lambda slot=slot: game_pids(slot))
     if args.client:
         _stop("slot b Steam client", client_pids)
+    for slot in args.slots or SLOTS:
+        _stop(f"slot {slot}", lambda slot=slot: game_pids(slot))
+        _settle(f"slot {slot}", lambda slot=slot: slot_pids(slot), args.settle)
+    if args.client:
+        _settle("slot b Steam client", client_pids, args.settle)
     return 0
 
 
@@ -347,6 +372,8 @@ def main():
     down = sub.add_parser("down")
     down.add_argument("slots", nargs="*", choices=SLOTS)
     down.add_argument("--client", action="store_true", help="also stop the Steam client")
+    down.add_argument("--settle", type=float, default=5.0,
+                      help="seconds to wait until the slot is empty before returning")
     deploy = sub.add_parser("deploy")
     deploy.add_argument("build", choices=sorted(BUILDS))
     deploy.add_argument("slots", nargs="+", choices=SLOTS)

@@ -3,7 +3,7 @@
 #
 # Set once in Steam -> Nioh -> Properties -> Launch Options:
 #
-#     /home/<user>/Projects/nioh3p/tools/quiet-launch.sh %command%
+#     /home/<user>/Projects/gaming/nioh-mp-mod/tools/quiet-launch.sh %command%
 #
 # then:
 #   * normal play (default): exactly the invocation your launch options already
