@@ -2134,11 +2134,11 @@ address was `0x1c8`, which indicates a null object. The host later logged an
 access violation at `0x765ba0` and exited. The host and one visitor
 screenshots showed two companion rows, not three.
 
-### Static analysis of both faults (not yet proven by a fixed build)
+### Fault mechanisms and current rewrite
 
-Everything below comes from the merged image and the saved logs
-(`runs/cloud-four-hud-fault/`). It names the mechanism. It does not prove that
-the rewritten third row fixes it: that needs the live run listed at the end.
+The merged image and saved fault logs (`runs/cloud-four-hud-fault/`) identify
+the following risks. The live evidence below tests the rewrite; it does not
+establish every character-lifetime or mission-transition case.
 
 - **Visitor fault, `0x532647` access `0x1c8`.** `0x140532620` is the tail of
   the sprite API's group lookup: `0x140dd6130(sprite, group)` ends in
@@ -2181,14 +2181,28 @@ the rewritten third row fixes it: that needs the live run listed at the end.
   `g_hud_rows` list are gone). A node that disagrees with its character's list
   is left untouched and disables the row.
 
-Live evidence still needed: a four-player mission with `hud_row3=1` on a build
-with this change, checking (1) the log lines `all five sprites resolved after N
-frames` and `bound companion ... natively`, (2) that the third name differs
-from the two native names and its HP follows damage and healing on every
-client (the periodic `row3 char ... hp` line), (3) no `disagrees with its
-character's list` or `not the supported build` line, and (4) mission exit and
-a second mission without a fault. The rewrite of the update is the least
-verified part: compare row 3's bar and name behaviour with rows 1 and 2.
+The first stable-node candidate (`cd77f3b5`) loaded four LAN players but showed
+only one companion row. Native block B stayed at state 0 with a null character.
+Its hidden element never received the callback that was supposed to show it,
+and C correctly waited for both native rows to own characters. Row 1 now makes
+the current registry's second row visible on the game thread; no worker or
+cached element pointer is needed.
+
+Player build `14dc110a` then loaded all four LAN players. Each client's actual
+frame shows three distinct companion names and health bars
+(`shots/stable-hud-visibility-{host,a,c,d}.png`). Both native blocks reached
+state 2. The host took lethal fall damage twice, with native HP changing from
+1651 to 0 and back to 1651 through native recovery. Visitor a's extra row,
+labelled `Nioh-LAN-B`, emptied and refilled with that health change
+(`shots/stable-hud-host-descent-a.png`,
+`shots/stable-hud-extra-row-recovery-a.png`). After the second recovery all four
+clients reported the same native assist value, 30084 / 300000. All four games
+remained alive, with no logged in-image exception, unsupported-byte signature,
+or weak-reference disagreement. Logs are in `runs/stable-hud-native-recovery/`.
+
+Still needed: partial damage and healing on each companion, Ki behavior, a
+completed mission exit and second mission, and character departure/rebinding.
+The fall-recovery observation is not proof of combat rescue or shrine respawn.
 
 The experimental row remains off by default. Do not infer that the normal
 configuration has the same fault from this test.

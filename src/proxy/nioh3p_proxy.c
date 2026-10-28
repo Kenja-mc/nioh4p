@@ -4778,10 +4778,13 @@ static void hud_row3_drive(void *arg, void *r8)
  * else the class does to it. */
 static void hud_row_keep_shown(void *self)
 {
-    if (g_cfg.max_players >= 3 && hud_row3_native(self) &&
-        *(const uint32_t *)((const uint8_t *)self + HUD_ROW_ID_OFF) == 0x75 &&
-        hud_row_wanted())
-        hud_row_show(self);
+    if (g_cfg.max_players < 3 || !hud_row3_native(self) || !hud_row_wanted())
+        return;
+    /* Hidden rows do not receive update calls. Row 1 must make the current
+     * registry's row 2 eligible before the game reaches it in the same loop. */
+    void *const second = hud_row3_elem_at(hud_row3_elements(), 0x75);
+    if (hud_row3_native(second))
+        hud_row_show(second);
 }
 
 static int piggy_update(void *self, void *arg, void *block)
