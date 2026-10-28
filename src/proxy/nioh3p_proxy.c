@@ -3265,6 +3265,8 @@ static int hud_row_wanted(void)
 #define HUD_ROW3_SETTLE      60         /* frames with both rows resolved before the build */
 #define HUD_ROW3_VTABLE_RVA  0x12729c0u
 #define HUD_ROW3_VTABLE_SIZE 0x4f0u     /* measured extent, not the slot count */
+#define HUD_ROOT_VTABLE_RVA  0x1277e28u
+#define HUD_ROOT_VTABLE_SPAN 0xe0u      /* through visibility slot 0xd8 */
 #define HUD_ROW3_BLOCK_A_RVA 0x1b46a90u
 #define HUD_ROW3_BLOCK_B_RVA 0x1b46b08u
 #define HUD_ROW3_BLOCK_SIZE  0x78u
@@ -3362,8 +3364,8 @@ static int g_hud_row3_wait_frames = -1;    /* frames spent waiting for sprites *
 static DWORD g_hud_row3_last_assign;       /* ms of the last companion search */
 static int g_hud_row3_have_pos;            /* the position we last wrote is still in place */
 static volatile LONG g_hud_row3_frame_fired;
-/* Piggyback on the native rows' per-frame slots. */
-static void *g_hud_row3_native_orig[2];    /* 0 = update (0x18), 1 = frame (0x50) */
+/* Native row updates and the main HUD's visibility callbacks. */
+static void *g_hud_row3_native_orig[4];    /* row update/frame, root b8/d8 */
 static volatile LONG g_hud_row3_native_ok; /* slots patched, originals known */
 static volatile LONG g_hud_row3_seen_update;
 static volatile LONG g_hud_row3_seen_frame;
@@ -3404,6 +3406,9 @@ static int hud_row3_native(void *elem);
 static void hud_row3_place(void *row3, void *row1, void *row2);
 static int piggy_update(void *self, void *arg, void *block);
 static int piggy_frame(void *self);
+static int piggy_b8(void *self, uint8_t on);
+static int piggy_d8(void *self, uint8_t on);
+static void hud_row3_follow_hide(void *self, uint8_t on);
 
 /* ---- reference nodes ----------------------------------------------------
  * block+0x30 is not a pointer, it is a weak reference node {char, prev, next}.
@@ -3645,6 +3650,23 @@ static int hud_row3_visibility(void *row, uint8_t on, int second)
     if (s58) set(s58, 0);
     if (s60) set(s60, 0);
     return ((int (*)(void *, uint8_t))(g_base + (second ? 0xbf3dd0 : 0xbf3af0)))(row, on);
+}
+
+static int hud_row3_gameplay(void *row)
+{
+    void *const root = hud_row3_elem_at(hud_row3_elements(), 0);
+    if (hud_row_wanted() && hud_row3_mission() &&
+        root && readable(root, 0x68) &&
+        *(void **)root == g_base + HUD_ROOT_VTABLE_RVA &&
+        (*(const uint32_t *)((const uint8_t *)root + HUD_ROW_FLAGS_OFF) &
+         HUD_ROW_SHOWN) == HUD_ROW_SHOWN)
+        return 1;
+    /* The result screen can keep the registered element alive after the
+     * native HUD disappears. Hide its sprites before disabling its updates. */
+    hud_row3_visibility(row, 0, 0);
+    hud_row3_visibility(row, 0, 1);
+    hud_row_hide(row);
+    return 0;
 }
 
 /* Frame, 0xc210c0: once the container and the two bar sprites resolve, put the
@@ -3906,8 +3928,10 @@ static int hud_row3_unready(void *row3);
 static int thunk_update(void *self, void *arg, void *block)
 {
     (void)block;
-    if (!g_hud_row3_active || self != g_hud_row3_elem || hud_row3_self_stale(self) ||
-        !arg || *(const uint32_t *)(g_hud_row3_block + HUD_ROW3_STATE_OFF) == 0 ||
+    if (!g_hud_row3_active || self != g_hud_row3_elem || hud_row3_self_stale(self))
+        return 0;
+    if (!hud_row3_gameplay(self) || !arg ||
+        *(const uint32_t *)(g_hud_row3_block + HUD_ROW3_STATE_OFF) == 0 ||
         hud_row3_unready(self) >= 0)
         return 0;
     /* When the class hides a row it zeroes the +0x20 field of the static block
@@ -3925,7 +3949,8 @@ static int thunk_update(void *self, void *arg, void *block)
 
 static int thunk_frame(void *self)
 {
-    if (!g_hud_row3_active || self != g_hud_row3_elem || hud_row3_self_stale(self))
+    if (!g_hud_row3_active || self != g_hud_row3_elem || hud_row3_self_stale(self) ||
+        !hud_row3_gameplay(self))
         return 0;
     const int r = hud_row3_frame_native(self);
     /* The game itself calls the registered element's frame slot on the game
@@ -4610,10 +4635,17 @@ static void hud_row3_drop(void **registry, const char *why)
 static void hud_row3_drive(void *arg, void *r8)
 {
     if (!g_cfg.hud_row3 || g_cfg.max_players < 4 || g_hud_row3_failed ||
-        !g_hud_row3_native_ok || !arg)
+        !g_hud_row3_native_ok)
         return;
-    if (!hud_row_wanted() || !hud_row3_mission())
-        return;                     /* prep/lobby or mode off */
+    if (!hud_row_wanted() || !hud_row3_mission()) {
+        if (g_hud_row3_active && g_hud_row3_elem &&
+            !hud_row3_self_stale(g_hud_row3_elem) &&
+            hud_row3_elem_at(hud_row3_elements(), HUD_ROW3_ID) == g_hud_row3_elem)
+            hud_row3_gameplay(g_hud_row3_elem);
+        return;
+    }
+    if (!arg)
+        return;
     const DWORD now = GetTickCount();
     if (now == g_hud_row3_last_drive)
         return;                     /* this frame's tick already ran */
@@ -4627,6 +4659,15 @@ static void hud_row3_drive(void *arg, void *r8)
     void *const row2 = hud_row3_elem_at(registry, 0x75);
     if (!hud_row3_native(row1) || !hud_row3_native(row2)) {
         g_hud_row3_settle = 0;
+        return;
+    }
+    void *const root = hud_row3_elem_at(registry, 0);
+    if (!root || !readable(root, 0x68) ||
+        *(void **)root != g_base + HUD_ROOT_VTABLE_RVA)
+        return;
+    if ((*(const uint32_t *)((const uint8_t *)root + HUD_ROW_FLAGS_OFF) &
+         HUD_ROW_SHOWN) != HUD_ROW_SHOWN) {
+        hud_row3_follow_hide(root, 0);
         return;
     }
     void *const found = hud_row3_elem_at(registry, HUD_ROW3_ID);
@@ -4763,6 +4804,11 @@ static void hud_row3_drive(void *arg, void *r8)
         }
     }
     hud_row3_place(row3, row1, row2);
+    if ((*(const uint32_t *)((const uint8_t *)row3 + HUD_ROW_FLAGS_OFF) &
+         HUD_ROW_SHOWN) != HUD_ROW_SHOWN) {
+        hud_row3_visibility(row3, 1, 0);
+        hud_row3_visibility(row3, 1, 1);
+    }
     hud_row_show(row3);
     if (!InterlockedExchange(&g_hud_row3_driven, 1))
         LOG("hud row3: per-frame drive confirmed through a native row, "
@@ -4808,53 +4854,95 @@ static int piggy_frame(void *self)
     return r;
 }
 
-/* Install the piggyback. Writes only the class vtable's own two slots in
- * .rdata; the originals are the game's method addresses, so a table that was
- * already patched is refused rather than chained. */
+/* Rows 1/2 belong to the main HUD's layout, but C owns a separate layout.
+ * Follow the main HUD, not the row flags: those stay on in native menus. */
+static void hud_row3_follow_hide(void *self, uint8_t on)
+{
+    if (on || !g_cfg.hud_row3 || !g_hud_row3_active || !g_hud_row3_elem ||
+        !self || !readable(self, 0x68) ||
+        *(void **)self != g_base + HUD_ROOT_VTABLE_RVA ||
+        hud_row3_self_stale(g_hud_row3_elem))
+        return;
+    void **const registry = hud_row3_elements();
+    if (hud_row3_elem_at(registry, 0) != self ||
+        hud_row3_elem_at(registry, HUD_ROW3_ID) != g_hud_row3_elem)
+        return;
+    hud_row3_visibility(g_hud_row3_elem, 0, 0);
+    hud_row3_visibility(g_hud_row3_elem, 0, 1);
+    hud_row_hide(g_hud_row3_elem);
+}
+
+static int piggy_b8(void *self, uint8_t on)
+{
+    const int r = ((int (*)(void *, uint8_t))g_hud_row3_native_orig[2])(self, on);
+    hud_row3_follow_hide(self, on);
+    return r;
+}
+
+static int piggy_d8(void *self, uint8_t on)
+{
+    const int r = ((int (*)(void *, uint8_t))g_hud_row3_native_orig[3])(self, on);
+    hud_row3_follow_hide(self, on);
+    return r;
+}
+
+/* Install row update hooks and, for C, the main HUD's visibility hooks.
+ * Refuse unknown methods and make both tables writable before any patch. */
 static int hud_row3_native_hook(void)
 {
-    if (g_hud_row3_native_ok) {
-        /* A protector or a rebuild could restore the table; re-check cheaply. */
-        void **const vt = (void **)(g_base + HUD_ROW3_VTABLE_RVA);
-        if (!readable(vt, HUD_ROW3_VTABLE_SIZE) ||
-            vt[0x18 / 8] != (void *)piggy_update ||
-            vt[0x50 / 8] != (void *)piggy_frame) {
-            LOG("hud row3: piggyback was reverted, reinstalling");
-            InterlockedExchange(&g_hud_row3_native_ok, 0);
-        } else {
-            return 1;
-        }
-    }
     void **const vt = (void **)(g_base + HUD_ROW3_VTABLE_RVA);
-    if (!readable(vt, HUD_ROW3_VTABLE_SIZE))
+    void **const root_vt = (void **)(g_base + HUD_ROOT_VTABLE_RVA);
+    const int follow_root = g_cfg.hud_row3 && g_cfg.max_players >= 4;
+    const int count = follow_root ? 4 : 2;
+    if (!readable(vt, HUD_ROW3_VTABLE_SIZE) ||
+        (follow_root && !readable(root_vt, HUD_ROOT_VTABLE_SPAN)))
         return 0;
-    void *const want[2] = {g_base + HUD_ROW3_NATIVE_UPDATE_RVA,
-                           g_base + HUD_ROW3_NATIVE_FRAME_RVA};
-    const int slot[2] = {0x18 / 8, 0x50 / 8};
-    for (int i = 0; i < 2; i++) {
-        if (vt[slot[i]] != want[i]) {
+    void **const table[4] = {vt, vt, root_vt, root_vt};
+    void *const want[4] = {g_base + HUD_ROW3_NATIVE_UPDATE_RVA,
+                           g_base + HUD_ROW3_NATIVE_FRAME_RVA,
+                           g_base + 0xc58fc0u, g_base + 0xc59840u};
+    void *const detour[4] = {(void *)piggy_update, (void *)piggy_frame,
+                             (void *)piggy_b8, (void *)piggy_d8};
+    const int slot[4] = {0x18 / 8, 0x50 / 8, 0xb8 / 8, 0xd8 / 8};
+    if (g_hud_row3_native_ok) {
+        int intact = 1;
+        for (int i = 0; i < count; i++)
+            if (table[i][slot[i]] != detour[i])
+                intact = 0;
+        if (intact)
+            return 1;
+        LOG("hud row3: piggyback was reverted, reinstalling");
+        InterlockedExchange(&g_hud_row3_native_ok, 0);
+    }
+    for (int i = 0; i < count; i++) {
+        if (table[i][slot[i]] != want[i]) {
             LOG("hud row3: piggyback refused: slot %#x holds %p, expected %p",
-                slot[i] * 8, vt[slot[i]], want[i]);
+                slot[i] * 8, table[i][slot[i]], want[i]);
             return 0;
         }
     }
-    DWORD old;
+    DWORD old, root_old = 0;
     if (!VirtualProtect(vt, HUD_ROW3_VTABLE_SIZE, PAGE_READWRITE, &old)) {
-        LOG("hud row3: piggyback refused: cannot write the class vtable (err %lu)",
-            GetLastError());
+        LOG("hud row3: cannot write the row vtable (err %lu)", GetLastError());
         return 0;
     }
-    g_hud_row3_native_orig[0] = want[0];
-    g_hud_row3_native_orig[1] = want[1];
-    vt[slot[0]] = (void *)piggy_update;
-    vt[slot[1]] = (void *)piggy_frame;
+    if (follow_root &&
+        !VirtualProtect(root_vt, HUD_ROOT_VTABLE_SPAN, PAGE_READWRITE, &root_old)) {
+        const DWORD err = GetLastError();
+        VirtualProtect(vt, HUD_ROW3_VTABLE_SIZE, old, &old);
+        LOG("hud row3: cannot write the HUD vtable (err %lu)", err);
+        return 0;
+    }
+    for (int i = 0; i < count; i++)
+        g_hud_row3_native_orig[i] = want[i];
+    for (int i = 0; i < count; i++)
+        table[i][slot[i]] = detour[i];
+    if (follow_root)
+        VirtualProtect(root_vt, HUD_ROOT_VTABLE_SPAN, root_old, &root_old);
     VirtualProtect(vt, HUD_ROW3_VTABLE_SIZE, old, &old);
     FlushInstructionCache(GetCurrentProcess(), NULL, 0);
-    /* Logged before the flag is published, so a piggy thunk's first-call line
-     * can never precede this one in the log (the trial-3 ordering made it look
-     * like the install never happened). */
-    LOG("hud row3: piggyback installed on the native row slots 0x18 (update %#x) "
-        "and 0x50 (frame %#x)", HUD_ROW3_NATIVE_UPDATE_RVA, HUD_ROW3_NATIVE_FRAME_RVA);
+    LOG("hud row3: piggyback installed on row update/frame; HUD visibility %s",
+        follow_root ? "followed" : "unchanged");
     InterlockedExchange(&g_hud_row3_native_ok, 1);
     return 1;
 }

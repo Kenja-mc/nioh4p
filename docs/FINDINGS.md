@@ -2200,6 +2200,44 @@ clients reported the same native assist value, 30084 / 300000. All four games
 remained alive, with no logged in-image exception, unsupported-byte signature,
 or weak-reference disagreement. Logs are in `runs/stable-hud-native-recovery/`.
 
+A third lethal fall emptied the assist gauge and opened the failed-mission
+screen on all four clients. Visitor a still showed the extra companion name
+and empty health bar over that screen
+(`shots/stable-hud-failed-mission-a.png`). The host's result screen was clear.
+Both the mission flag at manager `+0x5d0` and Tokoyo flag at `+0x660` were zero.
+The update gate returned without hiding the extra row's sprites.
+
+Candidate `5a962dea` explicitly hides the extra sprites outside gameplay and
+shows them again when gameplay resumes. It passed all six harness runs:
+player and research proxy modes, plus EOS ownership, at three and four players.
+The live repeat rejected this candidate. All four clients loaded
+`A Request from Ginchiyo` and showed three companion rows
+(`shots/hud-exit-fix-mission-{a,b,c,d}.png`). Enemy attacks reduced the host's
+HP from 1651 to 1281 and then to zero. Visitor a's extra row followed those
+changes (`shots/hud-exit-fix-enemy-damage-a.png`,
+`shots/hud-exit-fix-elixir-a.png`). Native self-revival through `BackSpace`
+restored 1651 HP and refilled that row
+(`shots/hud-exit-fix-self-revive-{b,a}.png`).
+Later deaths emptied the assist gauge and returned all four clients to the
+failure menu. The extra row still covered that menu on both the host and
+visitor a (`shots/hud-exit-fix-failure-final-{b,a}.png`).
+Checking the mode inside update callbacks does not cover this transition.
+
+Candidate `53bef6ef` followed the companion rows' visibility callbacks.
+It passed the six harness runs and entered `Isle of Demons` with four players.
+The extra row still appeared over the native pause menu
+(`shots/hud53-native-pause-visibility.png`).
+All three row elements retained flags `0x01010001` while the menu was open.
+The main HUD element, registry slot 0, changed to `0x01000001`.
+Its container sprite's visibility byte `+0x31` changed from 1 to 0.
+Closing the menu restored that byte to 1.
+
+The main HUD has vtable RVA `0x1277e28`. Its methods `0xc58fc0` and
+`0xc59840` propagate visibility to its layout. The extra row owns a separate
+layout, so it must follow those methods rather than the companion rows.
+The current source hooks those two methods and checks the main HUD's flags
+before updating or showing the extra row. This change still needs live proof.
+
 Still needed: partial damage and healing on each companion, Ki behavior, a
 completed mission exit and second mission, and character departure/rebinding.
 The fall-recovery observation is not proof of combat rescue or shrine respawn.
