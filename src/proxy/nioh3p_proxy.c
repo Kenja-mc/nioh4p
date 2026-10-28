@@ -4028,15 +4028,6 @@ static void *hud_row3_elem_at(void **registry, int id)
     return registry[id];
 }
 
-/* Our element, still ours: private vtable and the id we created it with. */
-static int hud_row3_ours(void *elem)
-{
-    if (!elem || !g_hud_row3_vtable || !readable(elem, 0x68))
-        return 0;
-    return *(void **)elem == g_hud_row3_vtable &&
-           *(const uint32_t *)((const uint8_t *)elem + HUD_ROW_ID_OFF) == HUD_ROW3_ID;
-}
-
 /* A native row: the class vtable, not our copy, and one of the two ids. */
 static int hud_row3_native(void *elem)
 {
