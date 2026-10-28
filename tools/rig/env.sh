@@ -11,8 +11,8 @@ XVFB_DISPLAY="${XVFB_DISPLAY:-:9}"
 IGPU_ID="${IGPU_ID:-1002:13c0}"          # Radeon 610M iGPU; dGPU is 1002:7550
 SRC_STEAM="${SRC_STEAM:-$HOME/.local/share/Steam}"
 SRC_LIB="$SRC_STEAM/steamapps"
-ACCOUNT_A="${ACCOUNT_A:-<account-name-private-1>}"       # slot a account
-ACCOUNT_B="${ACCOUNT_B:-<account-name-private-2>}"        # slot b account
+ACCOUNT_A="${ACCOUNT_A:-}"             # slot a account, supplied locally
+ACCOUNT_B="${ACCOUNT_B:-}"             # slot b account, supplied locally
 export RIG XVFB_DISPLAY IGPU_ID SRC_STEAM SRC_LIB ACCOUNT_A ACCOUNT_B
 
 slot_root() { printf '%s/home-%s/.local/share/Steam' "$RIG" "$1"; }

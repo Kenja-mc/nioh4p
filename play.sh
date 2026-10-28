@@ -76,11 +76,21 @@ PY
 }
 
 show_launch_options() {
-    local found=0 f account option
+    local found=0 failed=0 f account option options
     [ -d "$USERDATA" ] || { echo "launch options: no Steam userdata at $USERDATA"; return; }
     for f in "$USERDATA"/*/config/localconfig.vdf; do
         [ -f "$f" ] || continue
         account=$(basename "$(dirname "$(dirname "$f")")")
+        # Capture before looping: a failing launch_options (no python3, an
+        # unreadable localconfig.vdf) used to feed the process substitution
+        # nothing and still print the clean "none set" answer, which is the one
+        # answer this tool must not invent - a leftover test wrapper stays
+        # invisible that way.
+        if ! options=$(launch_options "$f"); then
+            echo "!! launch options ($account): cannot read $f (python3 missing or file unreadable)" >&2
+            failed=1
+            continue
+        fi
         while IFS= read -r option; do
             [ -n "$option" ] || continue
             found=1
@@ -90,9 +100,13 @@ show_launch_options() {
                 echo "  ^ this is a test wrapper; clear it in Steam > Nioh > Properties > Launch Options"
                 ;;
             esac
-        done < <(launch_options "$f")
+        done <<< "$options"
     done
-    [ "$found" = 1 ] || echo "launch options: none for appid $APPID (Steam's default)"
+    if [ "$found" = 0 ] && [ "$failed" = 0 ]; then
+        echo "launch options: none for appid $APPID (Steam's default)"
+    elif [ "$found" = 0 ]; then
+        echo "launch options: unknown for appid $APPID (see the error above)"
+    fi
 }
 
 show_state() {
@@ -137,6 +151,12 @@ stock)
     fi
     # The three install files go through install.sh, which owns that list.
     ./install.sh uninstall
+    # Re-check the destination after the removal. install.sh re-checks that the
+    # DLL is ours immediately before deleting it, but a replacement that lands
+    # in between must not be reported below as "stock".
+    if [ -e "$GAME/dinput8.dll" ] && ! is_ours "$GAME/dinput8.dll"; then
+        die "$GAME/dinput8.dll appeared during the removal and is not the nioh3p proxy. Leaving it alone."
+    fi
     shopt -s nullglob
     for f in "$GAME"/nioh3p.ini.bak* "$GAME"/nioh3p.log "$GAME"/nioh3p.prev.log \
         "$GAME"/nioh3p.invite.txt "$GAME"/nioh3p.invite.used.txt "$GAME"/.dinput8.dll.new; do

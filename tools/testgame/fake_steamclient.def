@@ -11,5 +11,4 @@ EXPORTS
     nioh3p_sc_list_calls
     nioh3p_sc_invite_calls
     nioh3p_sc_memberdata_calls
-    nioh3p_sc_calls
-    nioh3p_sc_reset
+    nioh3p_sc_members_calls

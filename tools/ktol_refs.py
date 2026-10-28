@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Offline xref finder for the ktol_* lobby-data keys in the runtime image dump.
 
-The on-disk nioh.exe has an encrypted import directory and encrypted .text; the
-merged runtime dump does not.  File offset == RVA in the dump, image base is
-0x140000000, so VA = 0x140000000 + offset.  This tool is read-only.
+Only .text is encrypted at rest in the on-disk nioh.exe - its headers, .pdata,
+.rdata and .data are readable (the import descriptors at IMPORT are byte-
+identical to the dump's, measured at exe file offset 0x17608e0 == dump RVA
+0x1761ee0).  In the runtime dump file offset == RVA, image base is 0x140000000,
+so VA = 0x140000000 + offset.  This tool is read-only.
 
 Methods, all verified against docs/RE_KTOL_KEYS.md:
   * key strings        : byte scan of the whole image (offset == RVA)
@@ -11,9 +13,9 @@ Methods, all verified against docs/RE_KTOL_KEYS.md:
   * data xrefs         : 8-byte little-endian values equal to the string VA
   * enclosing function : the .pdata RUNTIME_FUNCTION table (72,232 entries,
                          begin/end RVAs) is intact in the dump
-  * import names       : the IMAGE_IMPORT_DESCRIPTOR array in .rdata is intact
-                         (only the IAT is patched with resolved addresses), so
-                         an `call *disp(%reg)` site can be named
+  * import names       : the IMAGE_IMPORT_DESCRIPTOR array at IMPORT is intact
+                         (only the IAT slots hold load-time addresses), so the
+                         target of a `call *disp(%rip)` site can be named
   * call graph         : direct `call rel32` targets in .text
 
 Usage:
@@ -36,16 +38,31 @@ DUMP = os.environ.get(
 BASE = 0x140000000
 TEXT = (0x1000, 0x1199498)          # .text RVA range (from the on-disk PE header)
 PDATA = (0x2ee1000, 0xd39e0)        # .pdata (valid in the dump)
+IMPORT = (0x1761ee0, 0x1a4)         # import directory (on-disk PE header, data
+                                    # directory 1): 20 descriptors + terminator
+
+
+_BUF = None
 
 
 def load():
-    with open(DUMP, "rb") as f:
-        return f.read()
+    """The image dump, read once per process (50 MB, several callers per run)."""
+    global _BUF
+    if _BUF is None:
+        with open(DUMP, "rb") as f:
+            _BUF = f.read()
+    return _BUF
 
 
 def cstr(d, o, limit=120):
+    """NUL-terminated bytes at `o`, never more than `limit` bytes.
+
+    The old body applied `limit` only when there was no NUL at all, so a caller
+    bounding a fixed-size field could get an unbounded run instead
+    (cstr(d, 0x245cb, 64) returned 809 bytes).
+    """
     e = d.find(b"\x00", o)
-    return d[o:e if e >= 0 else o + limit]
+    return d[o:min(e, o + limit) if e >= 0 else o + limit]
 
 
 def functions(d):
@@ -71,47 +88,33 @@ class FuncMap:
 
     def name(self, rva):
         f = self.of(rva)
-        return f"{f[0]:#x}-{f[1]:#x}" if f else "?"
+        return f"{f[0]:#x}-{f[1]:#x}" if f else "no containing function"
 
 
 def imports(d):
-    """{IAT slot RVA -> import name} from the import descriptors in .rdata."""
+    """{IAT slot RVA -> import name} from the IMAGE_IMPORT_DESCRIPTOR array.
+
+    The descriptors, their OriginalFirstThunk name arrays and the DLL-name strings
+    are intact in the dump, so the array is walked from its real location.  The
+    previous version looked for the bytes of "KERNEL32.dll" and scanned the 0x1000
+    bytes before that string for a descriptor holding the string's VA in its Name
+    field: KERNEL32 is descriptor 8, at 0x1761f80, further than 0x1000 back from
+    the string at 0x1763ff8, so the scan found no start and the map was always
+    empty even though 391 IAT slots exist.
+    """
     out = {}
-    anchor = d.find(b"KERNEL32.dll")
-    if anchor < 0:
-        return out
-    # find the descriptor whose Name field points at that string
-    start = None
-    for q in range(max(0, anchor - 0x1000), anchor):
-        if q + 16 <= len(d) and struct.unpack_from("<I", d, q + 12)[0] == anchor:
-            start = q - 12
-            break
-    if start is None:
-        return out
-    mods = []
-    o = start
-    while True:                                   # walk to the first descriptor
-        name = struct.unpack_from("<I", d, o + 12)[0]
-        if struct.unpack_from("<I", d, o + 4)[0] == 0 and name == 0:
-            o -= 20
-            continue
-        if not (0 <= name < len(d)) or b".dll" not in cstr(d, name, 64).lower():
-            o -= 20
-            continue
-        break
-    o += 20
-    while True:
+    rva, size = IMPORT
+    for k in range(size // 20):
+        o = rva + k * 20                   # offset == RVA in this image
         oft, _ts, _fc, name, ft = struct.unpack_from("<IIIII", d, o)
-        if name == 0 and ft == 0:
-            break
-        if not (0 <= name < len(d)) or b".dll" not in cstr(d, name, 64).lower():
-            break
-        mods.append((cstr(d, name).decode("latin1"), oft, ft))
-        o += 20
-    for _m, oft, ft in mods:
+        if not (oft or name or ft):
+            break                          # null terminator
+        if b".dll" not in cstr(d, name, 64).lower():
+            break                          # not a descriptor array
+        t = oft or ft                     # bound imports have no OriginalFirstThunk
         i = 0
         while True:
-            v = struct.unpack_from("<Q", d, oft + i * 8)[0]
+            v = struct.unpack_from("<Q", d, t + i * 8)[0]
             if v == 0:
                 break
             nm = f"#{v & 0xffff}" if v >> 63 else cstr(d, v + 2).decode("latin1")
@@ -140,7 +143,10 @@ def lea_xrefs(d):
     for m in re.finditer(rb"[\x48\x4c\x49\x4d]\x8d[\x05\x0d\x15\x1d\x25\x2d\x35\x3d]", buf):
         p = m.start()
         disp = struct.unpack_from("<i", buf, p + 3)[0]
-        out.append((lo + p, lo + p + 7 + disp, (m.group()[2] >> 3) & 7))
+        # ModRM.reg is 3 bits and REX.R (bit 2 of the prefix byte) is the 4th, so
+        # without it r8-r15 print as r0-r7 (6,450 of 108,364 lea sites here).
+        reg = ((m.group()[2] >> 3) & 7) | (8 if m.group()[0] & 4 else 0)
+        out.append((lo + p, lo + p + 7 + disp, reg))
     return out
 
 
@@ -194,7 +200,6 @@ def cmd_xrefs(args):
     fmap = FuncMap(functions(d))
     want = set(args) if args else set(keys())
     leas = lea_xrefs(d)
-    iat = imports(d)
     for k in sorted(want):
         offs = keys().get(k, [])
         print(f"== {k}")
@@ -210,12 +215,25 @@ def cmd_xrefs(args):
                 print("      (none -- see ptrs for data references)")
 
 
+def addr(a):
+    """VA for an address argument: both documented forms (0x5fb560, 0x1405fb560)."""
+    va = int(a, 16)
+    return va if va >= BASE else BASE + va
+
+
 def cmd_callers(args):
+    if not args:
+        sys.stderr.write("usage: tools/ktol_refs.py callers 0x<VA|RVA> [0x...]\n")
+        return 2
+    try:
+        addrs = [addr(a) for a in args]
+    except ValueError:
+        sys.stderr.write("callers: addresses are hexadecimal, e.g. 0x5fb560\n")
+        return 2
     d = load()
     fmap = FuncMap(functions(d))
     cm = callmap(d)
-    for a in args:
-        va = int(a, 16)
+    for va in addrs:
         cs = sorted(set(cm.get(va, [])))
         print(f"{va:#x} in {fmap.name(va - BASE)}: {len(cs)} direct caller(s)")
         for c in cs:
@@ -223,19 +241,41 @@ def cmd_callers(args):
 
 
 def cmd_dis(args):
-    va = int(args[0], 16)
-    size = int(args[1], 16) if len(args) > 1 else 0x60
-    iat = imports(load())
+    if not args:
+        sys.stderr.write("usage: tools/ktol_refs.py dis 0x<VA|RVA> [0x<size>]\n")
+        return 2
+    try:
+        va = addr(args[0])
+        size = int(args[1], 16) if len(args) > 1 else 0x60
+    except ValueError:
+        sys.stderr.write("dis: addresses are hexadecimal, e.g. 0x1405fb680 0x40\n")
+        return 2
+    d = load()
+    if not (0 <= va - BASE < len(d)):
+        sys.stderr.write(f"dis: {va:#x} is outside the image "
+                         f"({BASE:#x}-{BASE + len(d):#x})\n")
+        return 2
+    iat = imports(d)
     ks = {BASE + o: k for k, offs in keys().items() for o in offs}   # keyed by VA
-    out = subprocess.run(
+    p = subprocess.run(
         ["nice", "-n", "10", "objdump", "-D", "-b", "binary", "-m", "i386:x86-64",
          f"--adjust-vma={BASE:#x}", DUMP,
          f"--start-address={va:#x}", f"--stop-address={va + size:#x}"],
-        capture_output=True, text=True).stdout
-    for line in out.splitlines():
+        capture_output=True, text=True)
+    if p.returncode:
+        sys.stderr.write(f"dis: objdump failed on {DUMP} (exit {p.returncode}): "
+                         f"{p.stderr.strip() or 'no diagnostic'}\n")
+        return 2
+    out = []
+    for line in p.stdout.splitlines():
         m = re.match(r"\s*([0-9a-f]+):\s+((?:[0-9a-f]{2} )+)\s+(\S.*)$", line)
-        if not m:
-            continue
+        if m:
+            out.append(m)
+    if not out:
+        sys.stderr.write(f"dis: objdump decoded nothing at {va:#x}+{size:#x}: "
+                         "not 'no instructions', an empty window\n")
+        return 2
+    for m in out:
         a = int(m.group(1), 16)
         note = ""
         mm = re.search(r"# (0x[0-9a-f]+)", m.group(3))
@@ -260,7 +300,7 @@ def main(argv):
         print(__doc__)
         return 2
     try:
-        CMDS[argv[1]](argv[2:])
+        return CMDS[argv[1]](argv[2:]) or 0
     except BrokenPipeError:                      # `| head` etc.
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
     return 0

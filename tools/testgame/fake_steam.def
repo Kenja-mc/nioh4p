@@ -24,6 +24,7 @@ EXPORTS
     SteamAPI_ISteamMatchmaking_SetLobbyData
     SteamAPI_ISteamMatchmaking_AddRequestLobbyListFilterSlotsAvailable
     nioh3p_test_slots_calls
+    nioh3p_test_members_calls
     nioh3p_test_last_value
     SteamAPI_ISteamMatchmaking_GetLobbyMemberByIndex
     SteamAPI_ISteamFriends_GetFriendByIndex

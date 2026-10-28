@@ -172,11 +172,20 @@ static char *strcat_a(char *d, const char *s)
 
 static int atoi_a(const char *s)
 {
-    int v = 0, neg = 0;
+    /* Wide accumulator with saturation. A wrapped value is not merely
+     * unspecified: callers range-check the result (max_players accepts only 0
+     * and 2..4), so "99999999999" folding into 2..4 silently changed the
+     * player count. Anything that does not fit an int now saturates instead. */
+    int neg = 0;
+    unsigned long long v = 0;
     while (*s == ' ' || *s == '\t') s++;
     if (*s == '-') { neg = 1; s++; }
-    while (*s >= '0' && *s <= '9') v = v * 10 + (*s++ - '0');
-    return neg ? -v : v;
+    for (; *s >= '0' && *s <= '9'; s++)
+        if (v <= 4294967295ull)
+            v = v * 10 + (unsigned)(*s - '0');
+    if (neg)
+        return v >= 2147483648ull ? -2147483647 - 1 : -(int)v;
+    return v > 2147483647ull ? 2147483647 : (int)v;
 }
 
 /* log2 without libm (entropy diagnostics only, research build) */
@@ -305,7 +314,10 @@ static int vfmt(char *dst, int cap, const char *f, va_list ap)
         for (int i = 0; i < len && n < cap - 1; i++)
             dst[n++] = tmp[i];
     }
-    dst[n < cap ? n : cap - 1] = 0;
+    /* cap <= 0 must not write at all: cap - 1 would be dst[-1], and the
+     * callers that pass cap - n do reach a negative cap. */
+    if (cap > 0)
+        dst[n < cap ? n : cap - 1] = 0;
     return n;
 }
 
@@ -1422,7 +1434,19 @@ static void sites_load(void)
 static const char *site_at(void *ret, char *buf, int cap)
 {
     sites_load();
-    unsigned rva = (unsigned)((uintptr_t)ret - (uintptr_t)GetModuleHandleA(NULL));
+    uintptr_t const addr = (uintptr_t)ret;
+    /* The Steam MatchMaking vtable hooks are entered from steam_api64.dll, not
+     * from the exe: measuring those return addresses against the exe base
+     * wrapped them into a meaningless exe+0x… (the sites table only knows exe
+     * RVAs). Attribute the address to the module that contains it. */
+    HMODULE const steam = GetModuleHandleA("steam_api64.dll");
+    MEMORY_BASIC_INFORMATION mbi;
+    if (steam && VirtualQuery(ret, &mbi, sizeof mbi) &&
+        mbi.AllocationBase == (void *)steam) {
+        fmt(buf, cap, "steam_api64+0x%x", (unsigned)(addr - (uintptr_t)steam));
+        return buf;
+    }
+    unsigned rva = (unsigned)(addr - (uintptr_t)GetModuleHandleA(NULL));
     unsigned best = 0;
     const char *name = 0;
     for (int i = 0; i < g_sites_n; i++) {
@@ -1894,8 +1918,11 @@ static uint64_t *EOS_CALL det_SteamGetLobbyOwner(void *self, uint64_t *out, uint
 {
     SITE_NOTE("SteamGetLobbyOwner");
     PFN_SteamGetLobbyOwner o = (PFN_SteamGetLobbyOwner)g_steam[12].orig;
-    uint64_t *result = o(self, out, lobby);
-    LOG("Steam GetLobbyOwner -> %llu", (unsigned long long)*result);
+    /* Same rule as det_SteamCreateLobby: without a forward pointer or a
+     * patched slot there is nothing to forward to, and the SteamID has to be
+     * zeroed by the caller, not read out of a NULL return. */
+    uint64_t *result = (o && g_steam[12].slot) ? o(self, out, lobby) : 0;
+    LOG("Steam GetLobbyOwner -> %llu", result ? (unsigned long long)*result : 0);
     return result;
 }
 
@@ -1903,8 +1930,9 @@ static uint64_t *EOS_CALL det_SteamGetLobbyMemberByIndex(void *self, uint64_t *o
 {
     SITE_NOTE("SteamGetLobbyMemberByIndex");
     PFN_SteamGetLobbyMemberByIndex o = (PFN_SteamGetLobbyMemberByIndex)g_steam[13].orig;
-    uint64_t *result = o(self, out, lobby, index);
-    LOG("Steam GetLobbyMemberByIndex[%d] -> %llu", index, (unsigned long long)*result);
+    uint64_t *result = (o && g_steam[13].slot) ? o(self, out, lobby, index) : 0;
+    LOG("Steam GetLobbyMemberByIndex[%d] -> %llu", index,
+        result ? (unsigned long long)*result : 0);
     return result;
 }
 #endif
@@ -2191,9 +2219,11 @@ static void EOS_CALL det_SteamAddCompatibleFilter(void *self, uint64_t lobby)
 
 static uint64_t *EOS_CALL det_SteamGetLobbyByIndex(void *self, uint64_t *out, int index)
 {
-    uint64_t *r = ((uint64_t *EOS_CALL (*)(void *, uint64_t *, int))g_steam[25].orig)(self, out, index);
+    uint64_t *r = (g_steam[25].orig && g_steam[25].slot)
+                ? ((uint64_t *EOS_CALL (*)(void *, uint64_t *, int))g_steam[25].orig)(self, out, index)
+                : 0;
     SITE_NOTE("GetLobbyByIndex");
-    LOG("Steam GetLobbyByIndex(%d) -> lobby %llu", index, (unsigned long long)*r);
+    LOG("Steam GetLobbyByIndex(%d) -> lobby %llu", index, r ? (unsigned long long)*r : 0);
     return r;
 }
 
@@ -2210,9 +2240,12 @@ static int EOS_CALL det_FriendCount(void *self, int flags)
 static uint64_t *EOS_CALL det_FriendByIndex(void *self, uint64_t *out, int index, int flags)
 {
     SITE_NOTE("FriendByIndex");
-    uint64_t *r = ((uint64_t *EOS_CALL (*)(void *, uint64_t *, int, int))g_friends[FR_BYINDEX].orig)
-                 (self, out, index, flags);
-    LOG("Steam friends: GetFriendByIndex(%d, flags=0x%x) -> %llu", index, flags, (unsigned long long)*r);
+    uint64_t *r = (g_friends[FR_BYINDEX].orig && g_friends[FR_BYINDEX].slot)
+                ? ((uint64_t *EOS_CALL (*)(void *, uint64_t *, int, int))g_friends[FR_BYINDEX].orig)
+                  (self, out, index, flags)
+                : 0;
+    LOG("Steam friends: GetFriendByIndex(%d, flags=0x%x) -> %llu", index, flags,
+        r ? (unsigned long long)*r : 0);
     return r;
 }
 
@@ -2840,6 +2873,9 @@ static void install_game_visitor_allowance(void)
         return;
     uint8_t allowance = (uint8_t)(g_cfg.max_players > 4 ? 3 : g_cfg.max_players - 1);
     const unsigned n = sizeof g_allowance_sites / sizeof g_allowance_sites[0];
+    /* A new allowance site must fail the build, not overflow this bitmap. */
+    _Static_assert(sizeof g_allowance_sites / sizeof g_allowance_sites[0] <= 8,
+                   "installed[] must cover every allowance site");
     uint8_t installed[8] = {0};
     unsigned done = 0;
     int cap_done = 0;
@@ -3397,6 +3433,20 @@ static int hud_row3_self_stale(void *self)
 {
     return self == g_hud_row3_elem && g_hud_row3_gen != hud_row3_generation();
 }
+/* Every failure path after the block swap has to drop the active flag: with it
+ * left at 1 the drive and the frame thunks keep treating block C as live while
+ * no element is registered, and the next attempt builds on top of a stale C.
+ * The element is not released: the proxy knows no deleter for the menu's
+ * children, and inventing a vtable call into game code is worse than at most
+ * one leaked 0x68-byte element per attempt (capped at three). */
+static void hud_row3_abandon(void)
+{
+    InterlockedExchange(&g_hud_row3_active, 0);
+    g_hud_row3_elem = NULL;
+    g_hud_row3_gen = -1;
+    g_hud_row3_char = NULL;
+    g_hud_row3_char_slot = -1;
+}
 
 static void *thunk_dtor(void *self, unsigned flags)
 {
@@ -3659,6 +3709,7 @@ static void *hud_row3_build(void **registry)
     const int st = hud_row3_enter();        /* A carries C from here on */
     if (st < 0) {
         LOG("hud row3: cannot swap block A for block C, not creating");
+        hud_row3_abandon();
         return NULL;
     }
     g_hud_row_ctor(elem, HUD_ROW3_ID, 0);   /* resets and binds "A" == C */
@@ -3671,6 +3722,7 @@ static void *hud_row3_build(void **registry)
         hud_row3_leave();
     if (!inited) {
         LOG("hud row3: init reported failure, element left unregistered");
+        hud_row3_abandon();
         return NULL;
     }
     LOG("hud row3: init done, block C carries %d/4 sprites (+0x48..+0x60)",
@@ -3687,8 +3739,7 @@ static void *hud_row3_build(void **registry)
     if (!registered) {
         LOG("hud row3: registration refused (slot %#x busy?), not showing",
             HUD_ROW3_ID);
-        g_hud_row3_elem = NULL;
-        g_hud_row3_gen = -1;
+        hud_row3_abandon();
         return NULL;
     }
     LOG("hud row3: registered in element slot %#x, gauge generation %d",
@@ -4678,6 +4729,12 @@ static DWORD WINAPI hud_row_worker(LPVOID unused)
         hud_row3_tick();
         Sleep(500);
     }
+    /* Clear the latch so a later HUD build starts a fresh watch: the game
+     * rebuilds the rows on every mission, and the latched flag used to leave
+     * the second and later HUDs with neither a restoration watch nor a row-3
+     * drive. */
+    LOG("hud row: restoration watch ended, a later HUD build starts a new one");
+    InterlockedExchange(&g_hud_row_worker_started, 0);
     return 0;
 }
 
@@ -4752,14 +4809,18 @@ static int inline_install(InlineHook *h)
         return -1;
     }
     FlushInstructionCache(GetCurrentProcess(), tramp, 64);
-    *h->orig = tramp;
     uint8_t patch[24];
     memset(patch, 0x90, h->n);
     abs_jmp(patch, h->detour);
+    /* Take the site writable before publishing the trampoline: when the
+     * protection change fails the hook is retried, so *orig must not point at
+     * a trampoline for a site that never jumps, and it must not leak. */
     if (!VirtualProtect(site, h->n, PAGE_EXECUTE_READWRITE, &old)) {
         LOG("game tokoyo: cannot write %s (err %lu)", h->name, GetLastError());
+        VirtualFree(tramp, 0, MEM_RELEASE);
         return -1;
     }
+    *h->orig = tramp;
     memcpy(site, patch, h->n);
     FlushInstructionCache(GetCurrentProcess(), site, h->n);
     if (!VirtualProtect(site, h->n, PAGE_EXECUTE_READ, &old))
@@ -4771,27 +4832,34 @@ static int inline_install(InlineHook *h)
 static DWORD WINAPI tokoyo_hooks_worker(LPVOID unused)
 {
     (void)unused;
-    const unsigned n = sizeof g_inline_hooks / sizeof g_inline_hooks[0];
+    /* Sized from the table: a new companion hook must fail to compile rather
+     * than overflow these. */
+    enum { HOOKS_MAX = (int)(sizeof g_inline_hooks / sizeof g_inline_hooks[0]) };
+    enum { HOOK_TRIES = 4 };
+    const unsigned n = (unsigned)HOOKS_MAX;
     unsigned ok = 0;
-    int state[4] = {0};
-    /* Stop as soon as every hook is settled, installed or permanently failed.
-     * A failed site never recovers, so polling for the full ten minutes only
-     * keeps a thread alive for nothing. */
+    int state[HOOKS_MAX] = {0};     /* 0 pending, 1 installed, -1 failed */
+    int tries[HOOKS_MAX] = {0};     /* failed attempts so far */
+    /* Stop once nothing can change any more: "bytes are not plaintext yet" (0)
+     * keeps polling for the whole window, because VMProtect decrypts lazily,
+     * while a failed install (-1) used to count as settled and so gave up on
+     * the first allocation or protection hiccup. */
     for (int waited = 0; waited < 600000; waited += 50) {
-        unsigned settled = 0;
-        for (unsigned i = 0; i < n; i++) {
-            if (state[i]) {
-                settled++;
+        unsigned pending = 0;
+        for (int i = 0; i < HOOKS_MAX; i++) {
+            if (state[i] > 0 || (state[i] < 0 && tries[i] >= HOOK_TRIES))
                 continue;
-            }
             state[i] = inline_install(&g_inline_hooks[i]);
-            if (state[i]) {
-                settled++;
-                if (state[i] > 0)
-                    ok++;
+            if (state[i] > 0) {
+                ok++;
+            } else if (state[i] < 0 && ++tries[i] >= HOOK_TRIES) {
+                LOG("game tokoyo: %s hook failed %d time(s), giving up",
+                    g_inline_hooks[i].name, tries[i]);
+            } else {
+                pending++;
             }
         }
-        if (settled == n)
+        if (!pending)
             break;
         Sleep(50);
     }
@@ -4829,7 +4897,7 @@ static void game_invite_join(uint64_t lobby)
         0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x40,
     };
     static const uint8_t factory_prologue[] = {
-        0x57, 0x48, 0x83, 0xec, 0x40, 0x48, 0xc7, 0x44, 0x24,
+        0x40, 0x57, 0x48, 0x83, 0xec, 0x40, 0x48, 0xc7, 0x44, 0x24,
     };
     uint8_t *join = g_base + 0xd73380;
     if (!readable(join, sizeof join_prologue) ||

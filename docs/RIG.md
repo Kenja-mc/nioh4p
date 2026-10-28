@@ -41,6 +41,17 @@ tools/rig/rig.py down             # stop all games (--client also stops the slot
 
 The lower-level commands below remain for the Steam-library slots and for input:
 
+Before running setup, provide the two Steam login names locally as `ACCOUNT_A`
+and `ACCOUNT_B` environment variables. Setup resolves each account's userdata
+from the cloned `loginusers.vdf`; it does not store names or IDs in the source.
+Setup disables `AllowAutoLogin` on each cloned login record to retain the
+account picker; it leaves `RememberPassword` and `MostRecent` unchanged. Older
+setup runs may already have cleared those fields; this change does not restore
+them or credentials. Picker appearance and stored-login behavior after this
+change have not been verified with Steam.
+The login helper assumes slot a's tile is on the left and slot b's on the right.
+Confirm the picker layout locally before using it.
+
 ```sh
 tools/rig/setup.sh            # build/refresh the clones (idempotent, fast)
 tools/rig/login.sh a          # start slot a's client and pick its account tile
@@ -59,7 +70,7 @@ Start the client before `run.sh … game`. The raw Steam binary forwards a reque
 In each rig client's Nioh Properties, select Proton Experimental. Set Launch Options to the command below, and adjust the repository path if necessary.
 
 ```sh
-NIOH3P_HEADLESS=1 NIOH3P_SCOPE=0 NIOH3P_GPU=RAPHAEL_MENDOCINO NIOH3P_VK_DEVICE=1002:13c0 /home/<user>/Projects/gaming/nioh-mp-mod/tools/quiet-launch.sh %command%
+NIOH3P_HEADLESS=1 NIOH3P_SCOPE=0 NIOH3P_GPU=RAPHAEL_MENDOCINO NIOH3P_VK_DEVICE=1002:13c0 /path/to/nioh-mp-mod/tools/quiet-launch.sh %command%
 ```
 
 The wrapper clears inherited display and WSI overrides before it starts gamescope. The isolated runtime has no systemd user bus, hence `NIOH3P_SCOPE=0`. This value disables the CPU and RAM scope limits of the wrapper. Keep Steam Cloud disabled in the test roots. For a diagnostic run, prepend `PROTON_LOG=1`. The log is in that slot's HOME.
@@ -118,6 +129,11 @@ python3 tools/rig/coop.py host b --dry-run --backend luna  # perceive + print ac
 
 `decide` captures one frame. It prints the perception and the action that the guard or table selects as JSON. It exits 0 without sending anything.
 
+The exit code separates the two outcomes: 0 after a driven run, 1 when a slot
+failed or its thread died, 3 when the slot reported `DRY-RUN` (nothing was sent,
+`--dry-run`). A dry run prints `coop: slot <slot>: DRY-RUN: <action>` instead of
+`OK`, so a caller is never told that a run happened when none did.
+
 Safety rules:
 
 - On the title menu, the driver sends `Return` only when `highlight` is `continue` with confidence ≥ 0.9. `new_game` gets `Down` and `load_or_system` gets `Up`. Anything else, including `uncertain`, waits 1.5 s. This rule keeps a run from starting a new game.
@@ -141,7 +157,7 @@ The table below gives each test and the evidence that it passed. Each row stands
 | what | evidence |
 |---|---|
 | iGPU Vulkan under headless X | `MESA_VK_DEVICE_SELECT=1002:13c0! vulkaninfo` → RADV `RAPHAEL_MENDOCINO`, Vulkan 1.4, Mesa 26.2.5; `vkcube` renders |
-| second Steam client in its own root | `.steampid`/`.steampath` created inside `$RIG/home-a`; logs `Logged On … U:1:<accountid-private-1>` |
+| second Steam client in its own root | `.steampid`/`.steampath` created inside `$RIG/home-a`; the connection log recorded a successful login |
 | clone adopted without download | client log: `Loaded 7 apps`, `AppID 485510 state changed : Fully Installed`, `scheduler finished … No Error` |
 | mod loads in the rig | `logs-a/nioh3p.log`: `EOS_Lobby_CreateLobby hooked through the import table (14119b1e0 …)`, callbacks for `CCallback<CSessionP2pSteam, LobbyDataUpdate_t>` |
 | Nioh renders on the iGPU | gamescope selected RADV `RAPHAEL_MENDOCINO`; compositor screenshot `shots/a-nioh-composited.png` shows the opening movie, and `shots/a-startup-confirmed.png` shows interactive brightness setup |
@@ -162,12 +178,12 @@ The table below lists faults that each cost a debugging session. Each row gives 
 | no video settings, first run on a fresh prefix | `config.xml` is written by the launcher, and `nioh.exe` reads it | `setup.sh` seeds a 720p windowed low-detail one |
 | `Proton: Error while copying … amdxcffx64.dll` | Proton 11.0's own tool prefix fails to build from a clone | pin `proton_experimental` and drop the broken tool clones |
 | Steam UI window never maps (black display) | hand-editing `config/config.vdf` with a bad regex | restore it from the original (`cp --reflink=auto`; COW protects the source) |
-| client loses window when the rig client is killed | the account picker re-appears on every start | `AutoLoginUser` + `MostRecent` pins in `setup.sh` |
+| account picker or remembered login missing | client state or saved credentials may differ from the cloned records | inspect the cloned client state locally; setup does not restore credentials or guarantee the picker |
 
 ## Boundaries
 
 - Authenticated Steam tests require distinct licensed Steam accounts. The LAN experiment instead uses separate local emulator identities and prefixes. That does not demonstrate three authenticated Steam accounts playing online. The owned game executable is unchanged, and no DRM-bypass patch is applied.
-- Every authenticated Steam account that the rig uses must be Invisible. Make sure that the label shows in its private-display Friends window before you use the account. `-silent` only hides the client and does not set presence. The active cloned client (`home-b`, display `:10`, account <account-name-private-3>) showed Invisible in `shots/steam-b-invisible-verified.png`.
+- Every authenticated Steam account that the rig uses must be Invisible. Make sure that the label shows in its private-display Friends window before you use the account. `-silent` only hides the client and does not set presence. The active cloned client showed Invisible in the recorded screenshot.
 - Removals inside the rig go through `trash` or `trash-put`, never `rm`.
 
 ## Direct LAN launch status (2026-10-20)
@@ -178,9 +194,14 @@ Both LAN clients joined Wreathed in Flame and rendered the characters of each ot
 
 Slot c uses its own `HOME`, runtime directory, `compat-c/pfx`, save account and LAN identity. It reuses the cloned Proton and client installation of slot b. Prepare `home-c/.steam/sdk64` and `sdk32` as symlinks to the `linux64` and `linux32` directories of that installation. Without them, Proton's `steam.exe` reports `steamclient_init unable to load native steamclient library` and asserts `!status`. Setting `STEAM_COMPAT_CLIENT_INSTALL_PATH` alone did not supply them.
 
-The third LAN identity is SteamID `76561198023713187` (`Nioh-LAN-C`), with a distinct Epic emulator ID ending in `03`. Its save account directory is `63447459`. The save transfer used the original [Nioh Savedata Decryption Tool v1.3](https://github.com/pawREP/Nioh-Savedata-Decryption-Tool/releases/tag/1.3). The command was `-i source/SAVEDATA.BIN -sid 63447459 -o SAVEDATA.BIN`, for both the system and character save. Run the tool with the destination save folder as its working directory. The tool discards directory components from `-o`. Do not disable checksum checks and do not change source saves.
-
-The fourth LAN identity is SteamID `76561198023713188` (`Nioh-LAN-D`), with a distinct Epic emulator ID ending in `04` (epicid `00000000000000000000000000000004`, productuserid `79165699f5c687119e1e19e0e2fc59b9`). Its save account directory is `63447460`. The same tool converted slot c's `63447459` saves for slot d. Run it as `-i <c file> -sid 63447460 -o SAVEDATA.BIN`. Use the destination save folder as the working directory. The tool writes the output and then waits on stdin. Give it Enter or stop it once the file exists. While the tool runs, Proton also starts its Xalia helper process next to the game.
+The third and fourth LAN slots use distinct emulator identities and save
+accounts. The save transfer used the original [Nioh Savedata Decryption Tool
+v1.3](https://github.com/pawREP/Nioh-Savedata-Decryption-Tool/releases/tag/1.3).
+For both system and character saves, run
+`-i source/SAVEDATA.BIN -sid "$DESTINATION_ACCOUNT_ID" -o SAVEDATA.BIN`
+with the destination save folder as the working directory. The tool discards directory components from `-o`,
+writes its output, and waits on stdin; give it Enter or stop it once the file
+exists. Do not disable checksum checks or change source saves.
 
 The navigation harness discovers displays and compositor sockets from the environment of each live `nioh.exe`. Use `nioh_nav.py -s <slot> shot name.png`; the harness lists a, b, c and d. Actual keyboard controls: BackSpace returns to the previous menu. Escape opens the equipment and system overlay. At a shrine, hold E for about 1.5 seconds to pray rather than tapping it.
 

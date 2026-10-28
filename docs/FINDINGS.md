@@ -619,8 +619,8 @@ tools/lnk.py scan  <archive>     # payload signatures and entropy per entry
 tools/lnk.py dump  <archive> <n> # extract one entry
 python3 tools/symtab.py stats    # symbol names from the readable sections
 python3 tools/symtab.py find CSessionP2p
-python3 tools/analyze.py         # IAT/EOS reference map from the on-disk exe
-python3 tools/rtti.py            # RTTI -> vtables -> methods (needs an image dump)
+python3 tools/analyze.py [dump]  # IAT/EOS reference map from a runtime dump
+python3 tools/rtti.py <dump>     # RTTI -> vtables -> methods (needs an image dump)
 tools/sites.py                   # classmap -> nioh3p.sites.txt (call-site names for the proxy)
 tools/sites.py --probe 0x5ef800  # what name would a caller at this RVA get?
 python3 tools/logtriage.py       # grouped timeline of a proxy log
@@ -960,8 +960,7 @@ visit. The live trace records:
 - `19:15:17.429`: `CreateLobby(type=2, maxMembers=2)` clamped to 3.
 - `19:15:17.512`: successful `LobbyCreated_t` (`EResult=1`), lobby
   `0x018600001e4b44dd`.
-- Published owner `Nioh-LAN-A`, SteamID `<steamid-private-1>`, and unlocked
-  session metadata.
+- Published owner `Nioh-LAN-A` and unlocked session metadata.
 
 The game stayed at “Searching for a companion…” while it owned that lobby.
 This proves that the emulator-compatible hooks work in the game, and that the
@@ -983,7 +982,7 @@ Gate → Random Encounters → Become a Visitor → Without Conditions → Searc
   `shots/a-two-player-visitor.png`.
 - Moving A backward changed A's position in B's view, captured in
   `shots/b-visitor-movement-observed.png`. P2P packets were exchanged between
-  distinct identities `<steamid-private-1>` (A) and `<steamid-private-2>` (B).
+  distinct emulator identities for A and B.
 
 This is a gameplay join and movement-sync result, not merely emulator peer
 discovery or a lobby callback. The third participant is not yet verified.
@@ -1045,8 +1044,7 @@ Bounded Win32 debugger probes on C then established more than a lobby callback:
 - `CPacketJoinResponse::Execute` at `0x14060B090` received status 1, local index
   2, owner index 0, ten metadata attributes and three member records.
 - The records at response `+0x438`, stride `0xa8`, held distinct B/A/C IDs
-  `<steamid-private-2>`, `<steamid-private-1>`, `76561198023713187` and their correct
-  `Nioh-LAN-B/A/C` names. Response `+0x2c` counts metadata descriptors, and
+  and their correct `Nioh-LAN-B/A/C` emulator names. Response `+0x2c` counts metadata descriptors, and
   `+0x430` counts members. `+0x4cc` is a field within the first member, not
   the start of the member array.
 - At `0x14060B38C`, the executor wrote latch value 1 to
@@ -1479,14 +1477,21 @@ Build hardening was added in response (2026-10-21, behavior unchanged). The DLL
 now has a `.rsrc` section built from `src/proxy/nioh3p.rc`. It holds a
 `VERSIONINFO` block (ProductName `nioh3p`, FileDescription "DirectInput 8 proxy
 (Nioh three-player co-op mod)", OriginalFilename `dinput8.dll`, version
-1.0.0.0). It also holds an embedded application manifest (`RT_MANIFEST` id 1:
-`asInvoker`, Windows 10/11 `supportedOS`, per-monitor DPI). A resource-less,
-version-less unsigned DLL is a standard Evo-gen trigger. Code patches now
-follow W^X. The metadata guard and the five visitor-allowance immediate writes
-use `PAGE_READWRITE` for the store, then `FlushInstructionCache`, then an
-explicit `PAGE_EXECUTE_READ`. No `VirtualProtect` call requests
-`PAGE_EXECUTE_READWRITE` any more, and the constant survives only in read-only
-`VirtualQuery` bitmask tests. The PE optional-header checksum, previously 0, is
+1.0.0.0). It also holds an embedded application manifest under `RT_MANIFEST`
+id 2 (`ISOLATIONAWARE_MANIFEST_RESOURCE_ID`, `src/proxy/nioh3p.rc`): a DLL
+manifest is honoured only at that id, while id 1
+(`CREATEPROCESS_MANIFEST_RESOURCE_ID`) is the executable's own manifest id, so
+the earlier builds shipped an id-1 resource the loader ignored. The manifest
+itself is unchanged: `asInvoker`, Windows 10/11 `supportedOS`, per-monitor DPI.
+A resource-less, version-less unsigned DLL is a standard Evo-gen trigger.
+Data-pointer patches (IAT and vtable slots) are written through a
+`PAGE_READWRITE` window. Code-site writes keep the page executable for the
+whole window - `PAGE_EXECUTE_READWRITE` for the store, `FlushInstructionCache`,
+then `PAGE_EXECUTE_READ` again - because other game threads can execute
+anywhere in that 4 KB page and a non-executable mapping would fault. That
+applies to the metadata guard's `cmpxchg16b`, the visitor-allowance immediates
+and the setter cap in `install_game_visitor_allowance`, and the `inline_install`
+trampoline patch. The PE optional-header checksum, previously 0, is
 recomputed by `tools/pechecksum.py` after the link. The log is opened with
 `FILE_SHARE_READ`, so another process cannot rewrite it. The proxy logs
 `build: resource manifest present` at startup as proof that the manifest
@@ -1687,12 +1692,9 @@ walked, the visitor shots `4p-hostmove-a.png`, `4p-hostmove-c.png` and
 
 ### Slot d identity and its save conversion
 
-Slot d runs as SteamID `76561198023713188`, name `Nioh-LAN-D`, with an
-Epic emulator id ending in 04 (epicid
-`00000000000000000000000000000004`, productuserid
-`79165699f5c687119e1e19e0e2fc59b9`) and save account `63447460`. The Nioh
-Savedata Decryption Tool v1.3 converted slot c's `63447459` saves for
-slot d. Run it as `-i <c file> -sid 63447460 -o SAVEDATA.BIN`. Use the
+Slot d uses a distinct emulator identity and save account. The Nioh Savedata
+Decryption Tool v1.3 converted slot c's saves for slot d. Run it as
+`-i <c file> -sid <destination-account-id> -o SAVEDATA.BIN`. Use the
 destination save folder as the working directory. The tool writes the output
 and then waits on stdin. Give it Enter or stop it once the file exists.
 While the tool runs, Proton also starts its Xalia helper process next to
@@ -1940,9 +1942,12 @@ host frame shows `Nioh-LAN-D` and `Nioh-LAN-C`, and the third companion has no
 row (`runs/hud-probe-1026/hud-4p-two-rows-b.png`), which matches the two-row
 limit measured in the probe.
 
-`build.sh` is not reproducible: the same source produced `99076046` (the
-afternoon three-player HUD evidence) and `750785b5`. The four-player deploy
-raced the candidate repack, so the rig verified exactly the shipped bytes.
+The recorded same-source builds produced `99076046` (the afternoon
+three-player HUD evidence) and `750785b5`. The cause of the hash difference is
+not established: the earlier DLL was not located for byte comparison. The
+shipped DLL has a PE reproducible-build marker; that marker alone does not
+prove the build is reproducible. The four-player deploy raced the candidate
+repack, so the rig verified exactly the shipped bytes.
 
 The six-run smoke matrix passed on `750785b5` (exit 0 each; artifacts under
 `~/.cache/nioh3p/rc2-*`): player proxy and research proxy at `max_players` 3
@@ -1952,6 +1957,25 @@ and 4, plus the ownership run at both counts. EOS and Steam raises logged
 Published `v1.1.0-rc2` on GitHub with `build/live-test/nioh3p-live-test.zip`
 (zip `0ef866bf…`, DLL `750785b5…`). The `build/live-test` folder now holds this
 candidate, including `SHA256SUMS`.
+
+The [public rc2 tag](https://github.com/Kenja-mc/nioh4p/releases/tag/v1.1.0-rc2)
+points to commit `0287498caa2ca4eefba698f8c2a32f1a39213b62`, whose commit
+message identifies the older `632684d0` candidate. Its proxy source blob is
+`e8486627855ba51162d091e6aa95355fec870e1b`, not the proxy blob
+`790a4a7804de2d684a33967772eb5e13780a92de` at recorded candidate source
+`8622d20` (the same blob is present at local commit `7843025`). Thus the
+tagged source does not correspond to the HUD candidate. GitHub's release API
+reports zip digest `0ef866bf…`, matching the local zip; its `dinput8.dll` member
+hashes to `750785b5…`. The asset itself was not independently downloaded.
+
+The README inside that zip asks for `game tokoyo: 2/2 companion hook(s)
+installed`, whereas the recorded player source has three inline hooks and
+reports `3/3` when all install. The public release page says `3/3`, but claims
+both companion rows show on every client: the three-client evidence above is
+for `99076046`, while the four-client `750785b5` evidence above establishes
+the host's two named rows, not every client's rows or live HP. These release
+claims and the source/tag mismatch need correction with explicit publication
+approval; do not replace the frozen asset as part of this investigation.
 
 ## The frozen dist zip was overwritten and restored (2026-10-26)
 
@@ -2088,3 +2112,34 @@ Trial log highlights (all four clients reached mission in trials 8-11):
 returned`, `per-frame drive confirmed`, `wrote entry ... + dirty flag`. The
 bound-update crash from trial 7 never recurred across trials 8-11; the
 vectored exception handler stays armed under `hud_row3=1`.
+
+## Synthetic invite factory guard
+
+The synthetic invite test first dropped the request at the open-task factory
+guard. The decrypted executable starts that factory with `40 57 48 83 ec 40`,
+but the guard omitted the first byte. The guard now checks the complete
+prologue.
+
+A second LAN test created the open-task object and posted the join request.
+The test stopped before it observed a `JoinLobby` call. The result does not
+establish a completed join or a working Steam invitation.
+
+## Four-player experimental HUD fault
+
+Four LAN players entered a mission with `hud_row3=1` and saves converted from
+one cloud backup. Two visitors logged access violations at executable offset
+`0x532647` while the third-row bound update ran. Both visitors then exited.
+At that instruction, the game dereferences an object plus `0x1c8`; the access
+address was `0x1c8`, which indicates a null object. The host later logged an
+access violation at `0x765ba0` and exited. The host and one visitor
+screenshots showed two companion rows, not three.
+
+The fault log does not prove why the game accessed invalid memory. The
+experimental row remains off by default. Do not infer that the normal
+configuration has the same fault from this test.
+
+With `hud_row3=0`, a repeat LAN run used the same converted save source.
+All four players entered a mission. The host saw a visitor move, and all four
+game processes were still running after the movement check. The host showed
+two companion health rows. The run did not test damage, revival, mission
+completion, or four distinct Steam accounts.

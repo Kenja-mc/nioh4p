@@ -5,7 +5,7 @@ usage (DISPLAY is taken from the environment, so `rig_env`-style export works):
     xkey.py key <keysym> [<keysym> ...]   e.g. xkey.py key Return Down space
     xkey.py type <text>                   letters, digits and space
     xkey.py move <x> <y>
-    xkey.py click <button>                button 1 = left
+    xkey.py click <button>                button 1..3, 1 = left
     xkey.py sleep <seconds>
 
 Keysyms are X11 names ("Return", "Tab", "Escape", "F1", "Down", "a", "Z", "1").
@@ -52,6 +52,21 @@ def tap(keysym_name, shift=False):
     time.sleep(0.05)
 
 
+def _int(text, what):
+    """``text`` as an int: bad input gets the usage, not a wrap into another value."""
+    try:
+        return int(text)
+    except ValueError:
+        sys.exit(f"xkey: {what} must be a whole number, got {text!r}\n\n{__doc__}")
+
+
+def _float(text, what):
+    try:
+        return float(text)
+    except ValueError:
+        sys.exit(f"xkey: {what} must be a number, got {text!r}\n\n{__doc__}")
+
+
 def main(argv):
     if not argv:
         sys.exit(__doc__)
@@ -68,18 +83,25 @@ def main(argv):
             else:
                 tap(ch)
     elif cmd == "move":
-        x, y = int(args[0]), int(args[1])
+        if len(args) != 2:
+            sys.exit(__doc__)
+        x, y = _int(args[0], "x"), _int(args[1], "y")
         xtst.XTestFakeMotionEvent(dpy, -1, x, y, 0)
         x11.XFlush(dpy)
     elif cmd == "click":
-        button = int(args[0]) if args else 1
+        button = _int(args[0], "button") if args else 1
+        if not 1 <= button <= 3:
+            sys.exit(f"xkey: button must be 1, 2 or 3, got {button}\n\n{__doc__}")
         xtst.XTestFakeButtonEvent(dpy, button, True, 0)
         xtst.XTestFakeButtonEvent(dpy, button, False, 0)
         x11.XFlush(dpy)
     elif cmd == "sleep":
-        time.sleep(float(args[0]))
+        if len(args) != 1:
+            sys.exit(__doc__)
+        time.sleep(_float(args[0], "seconds"))
     else:
         sys.exit(__doc__)
 
 
-main(sys.argv[1:])
+if __name__ == "__main__":
+    main(sys.argv[1:])

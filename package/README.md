@@ -68,7 +68,8 @@ Let each visitor finish loading before the next visitor searches.
 ## Make sure that the mod loaded
 
 Open `nioh3p.log` in the game folder. Make sure that it contains
-`preflight: exe=ok` and `game tokoyo: 2/2 companion hook(s) installed`.
+`preflight: exe=ok` and `game tokoyo: 3/3 companion hook(s) installed`
+for the player build.
 On the host, after recruitment starts, look for `game create request: raising
 max members 2 -> 3` (or `4`) and the visitor allowance lines.
 The preflight line alone does not prove that the companion hooks installed.
