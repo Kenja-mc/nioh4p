@@ -318,3 +318,72 @@ rows with the right names — host `b` saw `Nioh-LAN-C` and `Nioh-LAN-A`, visito
 Limit: the HUD has exactly two rows, so at four players one companion still has
 no row. Raising that needs a third element, which brings back the creation and
 layout questions above.
+
+## Party HUD: how a row owns its companion (static, 2026-10-27)
+
+All from the merged image dump; no live run has confirmed the rewritten third
+row. Offsets are `nioh.exe` RVAs unless a field is named.
+
+State block (`0x78` bytes, A `0x1b46a90`, B `0x1b46b08`):
+
+| Offset | Meaning |
+| --- | --- |
+| `+0x00` | state: 0 empty, 1 bound, 2 showing, 3 and 4 fading (dispatcher `0xc1f500`) |
+| `+0x08`, `+0x10` | HP current and maximum of the shown companion |
+| `+0x20` | float, -1.0 reset value (`0xc1e310`); `0xc1fb20` zeroes the static one for the id's block |
+| `+0x30` | **reference node** `{character, prev, next}`, 0x18 bytes, up to `+0x48` |
+| `+0x48..+0x60` | four sprite pointers |
+| `+0x68`, `+0x70`, `+0x74`, `+0x76` | fade timer, shown name id, flags |
+
+Reference node: the nodes of one character form a doubly linked list headed at
+`[character+0xf40]`. `0x140753ad0(node)` pushes at the head (`old head.prev =
+node; node.next = old head`), `0x140756bc0(node)` unlinks (and rewrites the head
+when `prev` is NULL), and the character release at `0x1407535d7` walks the list
+and zeroes every node. The static party slots (`0x18a0490`, stride `0x18`) are
+nodes of the same kind. A node is linked by address; copying its bytes to
+another address leaves the neighbours pointing at the old one.
+
+Block-argument entry points (no static block used): assigner `0xc21240(row,
+arg, block)` (excludes the static nodes at `0x141b46ac0` and `0x141b46b38`
+only, binds through `0xc1e400(row, block, character)`, then places the row at
+anchor group `0x5f` for any id other than `0x75`), `0xc1e400` (bind and
+reset), `0xc1e310(block)` (unbind and reset), `0xc1e680`, `0xc20c50`,
+`0xc20a00`, `0xc20580`, `0xc20300`, `0xc1fe60`. Entry points that pick A or B
+by element id: `0xc1e2d0` dtor, `0xc1eba0` init, `0xc1e9c0` release,
+`0xc1f500` update, `0xc210c0` frame, `0xc1f040`, `0xc1f140`, `0xc1ea90`,
+`0xc1edd0`, `0xc1f480`, `0xc1ee40` and the tail of `0xc1fb20` (which zeroes
+`A+0x20` for id `0x73`).
+
+Sprite readiness: `0x140dd93e0(sprite)` is true when `[sprite+0x28]` and
+`[[sprite+0x28]+0x28]` are non-NULL and the container's `+0x2ac` counter is 0.
+The class frame slot checks it; the update slot and the sprite API
+(`0x140dd6130` jumps to `0x140532620` with `rcx = [[sprite+0x28]+0x28]`) do not.
+
+Character data: `data = [character+0x240]`, maximum HP `[data+0x18]`, current
+HP `[data+0x20]` (script getters `Character::GetHostHpRate` and `GetHpRate`
+use the same fields). The assigner accepts a character when `+0xef0 != -1`,
+`+0x430 != 0`, `data != NULL` and `[data+0x10] != 1`.
+
+## Prep screen and lobby: what is known (not implemented)
+
+- The profile packet (id 77, 128 bytes) fills one block at `root+0x4c` and
+  sets `root+0xcc`. The state machine `0xd7d8a0` and the reset `0xd7ca00` work
+  on a larger structure that starts there (`+0x84` phase, `+0x8c`, `+0x98`,
+  `+0x99`). Nothing in the 0x4c..0xcb window is per member, so with three
+  visitors the last arrival wins on every client.
+- The session facade used by the Torii menus is two-party. `0xd7a0d0(root,
+  slot)` and `0xd7af60(root, side, flag)` take a host or partner side
+  (`0xd62c10`, `0xd5f2b0`), and the readiness bits are one per side. Fanout of
+  packets 74, 75, 76 and 17 to slots 2 and 3 is in the proxy; the menus
+  themselves still show one partner.
+- Menu classes involved: `TokoyoCoopMenu@Menu` (`0x14129bf28`, update
+  `0xd2d900`), `TokoyoCoopMatching@Menu` (`0x14129b968`, state update
+  `0xd29ed0`), `TokoyoCoopPartner@Menu` (`0x14129c9e0`, a thin holder: update
+  `0xd2fe80` waits for `0xc82f50` on `[0x14189f400+0x7d8]`),
+  `TokoyoCoopOnlineStatus@Menu` (`0x14129c4e0`, shows the local online state
+  and a countdown, not a member list).
+- A per-member display needs a live capture of the host's prep screen with
+  three companions connected (screenshots of each menu state, and the profile
+  window and `root+0x4e8` read at the same time) before any hook is written.
+  A hook that stores per-sender profiles without a consumer would change
+  nothing on screen, so none is shipped.

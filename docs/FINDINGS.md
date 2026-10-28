@@ -2134,8 +2134,56 @@ address was `0x1c8`, which indicates a null object. The host later logged an
 access violation at `0x765ba0` and exited. The host and one visitor
 screenshots showed two companion rows, not three.
 
-The fault log does not prove why the game accessed invalid memory. The
-experimental row remains off by default. Do not infer that the normal
+### Static analysis of both faults (not yet proven by a fixed build)
+
+Everything below comes from the merged image and the saved logs
+(`runs/cloud-four-hud-fault/`). It names the mechanism. It does not prove that
+the rewritten third row fixes it: that needs the live run listed at the end.
+
+- **Visitor fault, `0x532647` access `0x1c8`.** `0x140532620` is the tail of
+  the sprite API's group lookup: `0x140dd6130(sprite, group)` ends in
+  `rcx = [[sprite+0x28]+0x28]` and jumps there, and `0x140532620` adds `0x1c8`
+  to `rcx` and reads through it. A NULL `[sprite+0x28]` (the sprite's layout
+  link) therefore faults at exactly `0x1c8`. The link is created lazily
+  (`0x140ddc1e0`), so a freshly created sprite is not usable until the layout
+  behind it resolves. The game's own readiness predicate is `0x140dd93e0`
+  (link and container non-null, container not mid-update). The class frame
+  slot `0x140c210c0` guards on it; the class update slot `0x140c1f500` does
+  not. The proxy built row 3 about 170 to 520 ms before the first update and
+  ran the update without the check. The two visitors that faulted ran it
+  170 and 510 ms after creation; the two clients that survived ran it 420 and
+  520 ms after creation. Timing alone does not separate them, so this is a
+  mechanism, not a measured cause.
+- **Host fault, `0x765ba0` access `0x20`.** `0x140765b60` is the character
+  position getter. It reads `[[char+0x230]+8]+0x58` and then `+0x20`, so a
+  character whose model is torn down faults at `0x20`. Block `+0x30` is a
+  weak reference node `{character, prev, next}` in the intrusive list headed
+  at `[character+0xf40]`; the character release path (`0x1407535d7`) zeroes
+  every node still in that list. The old code stored the character pointer
+  with a plain write, so the node was never linked and a released character
+  stayed in block C. All four clients logged the native rows re-parking at
+  about 46 s, the same moment the host faulted.
+- **The block exchange was not identity safe.** Nodes are linked by address.
+  The old `memcpy` swap of A and C moved a node's contents but not its address,
+  so a bind or unbind inside the swap linked or unlinked row 1's address in
+  the wrong character's list. It also copied A's `+0x38/+0x40` into C, which
+  the node semantics make meaningless.
+- **Rewrite.** The assigner `0x140c21240` and the unbind `0x140c1e310` take
+  the block as an argument and are called on block C directly, so the
+  character is bound through C's own node; the class update runs in an
+  exchange window that relocates the node with its neighbours; sprites must
+  pass `0x140dd93e0` before anything runs; and every transition of block C
+  happens on the game thread (the worker thread and the `g_hud_rows` list are
+  gone).
+
+Live evidence still needed: a four-player mission with `hud_row3=1` on a build
+with this change, checking (1) the log lines `all five sprites resolved after N
+frames` and `bound companion ... natively`, (2) that the third name differs
+from the two native names and its HP follows damage and healing on every
+client, (3) no `inconsistent reference node` line, and (4) mission exit and a
+second mission without a fault.
+
+The experimental row remains off by default. Do not infer that the normal
 configuration has the same fault from this test.
 
 With `hud_row3=0`, a repeat LAN run used the same converted save source.

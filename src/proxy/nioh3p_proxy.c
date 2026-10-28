@@ -3144,19 +3144,16 @@ static unsigned relocate_wait_flag(uint8_t *out)
  * row shows that companion's own name, so the hidden row is a complete second
  * companion row. Its state word at +0x28 holds 0x01000000 while hidden and
  * 0x01010001 when drawn. Setting the two missing bits makes the row appear and
- * it stays up. Limits: the HUD has two rows in total, so a fourth player still
- * has none, and this only runs when max_players >= 3.
+ * it stays up. The HUD has two rows in total: the third row for a fourth
+ * player is a separate element (see "the third row" below), and both run only
+ * when max_players allows it. Every row action happens on the game thread.
  * Evidence: docs/RE_TOKOYO_COOP.md, "Party HUD". */
 #define HUD_ROW_CTOR_RVA   0xc1e230u
 #define HUD_ROW_ID_OFF     0x8u
 #define HUD_ROW_FLAGS_OFF  0x28u
 #define HUD_ROW_SHOWN      0x01010001u
-#define HUD_ROWS_MAX       4
 
 static void *(*g_hud_row_ctor)(void *self, int id, int index);
-static void *g_hud_rows[HUD_ROWS_MAX];
-static volatile LONG g_hud_row_count;
-static volatile LONG g_hud_row_worker_started;
 
 /* 48 89 4c 24 08   mov %rcx,0x8(%rsp)
  * 53               push %rbx
@@ -3185,10 +3182,21 @@ static void hud_row_show(void *row)
     *(volatile uint32_t *)flags = now | HUD_ROW_SHOWN;
 }
 
+/* Back to the hidden word 0x01000000: the third row while it has no companion. */
+static void hud_row_hide(void *row)
+{
+    uint8_t *const flags = (uint8_t *)row + HUD_ROW_FLAGS_OFF;
+    if (!readable(flags, 4))
+        return;
+    const uint32_t now = *(const uint32_t *)flags;
+    if (!(now & (HUD_ROW_SHOWN & ~0x01000000u)))
+        return;
+    *(volatile uint32_t *)flags = now & ~(HUD_ROW_SHOWN & ~0x01000000u);
+}
+
 /* Only a companion session gets the second row; another mode that happens to
  * build this gauge class keeps its own layout. The byte is logged whenever it
- * changes: the worker's silence after a tick is otherwise indistinguishable
- * from "mode off". */
+ * changes, so silence from the row code is never ambiguous with "mode off". */
 #define GAME_LOADER_OFF        0x5d0u   /* manager +0x5d0: mission loader phase */
 #define GAME_LOADER_IN_MISSION 0xcu     /* 0xC = in the mission (docs/RE_TOKOYO_COOP.md) */
 
@@ -3221,8 +3229,13 @@ static int hud_row_wanted(void)
  * element count nor that selection is data, so this section does not patch
  * the game: it creates a third element with id 0x73 (whose id maps to block
  * A), gives it a *private vtable* whose block-touching slots run against a
- * proxy-owned block C by swapping A <-> C around each call, and then feeds C
- * a companion character the two native rows do not use.
+ * proxy-owned block C, and lets the class bind C to the companion that
+ * neither native row shows.
+ *
+ * C reaches the class code in two ways. The functions that take the block as
+ * an argument (the assigner 0xc21240 and the unbind 0xc1e310) get &C and run
+ * with no exchange. The methods that choose A or B by element id run inside
+ * a window that exchanges A and C, node identity included (hud_row3_enter).
  *
  * Facts this relies on, all from the runtime image dump (see
  * docs/RE_TOKOYO_COOP.md, "Party HUD"):
@@ -3240,14 +3253,14 @@ static int hud_row_wanted(void)
  *     layout anchor (0xc58930(elem, vec, group)) and writing group 0
  *     (0xdda790(sprite, 0, vec)); the native rows use groups 0x5f and 0x60,
  *     so the third row is row2 + (row2 - row1).
- *   - companion characters live in the static party slot array at 0x18a0490,
- *     stride 0x18, field +0 = character (0x755dc0 is the game's accessor);
- *     block+0x30 is the character a row renders, block+0x00 its state (0 =
- *     empty, 2 = populated in every mission dump).
+ *   - block+0x30 is not a character pointer but a reference node bound into the
+ *     character's release list (see hud_ref_* below); block+0x00 is the row's
+ *     state machine (0 empty, 1 bound, 2/3/4 showing/fading, see 0xc1f500);
+ *     the party slots at 0x18a0490 (stride 0x18) are nodes of the same kind.
  *   - the empty state block is 0x78 bytes and 0xc1eb10 resets it; the ctor
  *     calls that reset for whichever block its id selects. */
 #define HUD_ROW3_ID          0x73
-#define HUD_ROW3_SETTLE      2          /* worker ticks with both rows present */
+#define HUD_ROW3_SETTLE      60         /* frames with both rows resolved before the build */
 #define HUD_ROW3_VTABLE_RVA  0x12729c0u
 #define HUD_ROW3_VTABLE_SIZE 0x4f0u     /* measured extent, not the slot count */
 #define HUD_ROW3_BLOCK_A_RVA 0x1b46a90u
@@ -3257,13 +3270,9 @@ static int hud_row_wanted(void)
 #define HUD_ROW3_CHAR_OFF    0x30u      /* companion character object */
 #define HUD_ROW3_SPRITES_OFF 0x48u      /* four sprite pointers, 0x78-byte block */
 #define HUD_ROW3_CONTAINER_OFF 0x60u    /* element+0x60: the row's container sprite */
-#define HUD_ROW3_STATE_READY 2
 #define HUD_ROW3_ELEMS_RVA   0x189f400u /* [.] = element registry base */
 #define HUD_ROW3_MENU_RVA    0xfa6fd0u  /* returns the menu object */
 #define HUD_ROW3_REGISTER_RVA 0xbfacc0u /* (registry, elem) -> bool */
-#define HUD_ROW3_SLOTS_RVA   0x18a0490u /* static party slots, stride 0x18 */
-#define HUD_ROW3_SLOT_STRIDE 0x18u
-#define HUD_ROW3_SLOT_MAX    4
 /* Where the row positions really come from (assigner 0x140c218ae..0x140c21919):
  *   root_elem   = *(void**)[0x14189f400]        ; registry[0], the HUD root element
  *   root_sprite = *(void**)(root_elem + 0x60)   ; its container sprite
@@ -3289,17 +3298,30 @@ static int hud_row_wanted(void)
  * our element keeps its private copy, so this cannot recurse into itself. */
 #define HUD_ROW3_NATIVE_UPDATE_RVA 0xc1f500u
 #define HUD_ROW3_NATIVE_FRAME_RVA  0xc210c0u
+/* Native helpers that take the block as an explicit argument, and so work on
+ * block C without any exchange of A and C:
+ *   0xc21240 (row, arg, block)  the character assigner; its exclusion list is
+ *                               the static nodes of A and B (0xc21362/0xc2137d)
+ *   0xc1e310 (block)            unbind: unlink the node, hide, state 0
+ *   0xdd93e0 (sprite)           the sprite readiness predicate
+ * Reference node = block+0x30: {character, prev @+0x38, next @+0x40}, an
+ * intrusive doubly linked list whose head is [character+0xf40]. Bind
+ * 0x753ad0 pushes at the head, unbind 0x756bc0 unlinks, and the character's
+ * release path (0x1407535d7) zeroes every node still linked. */
+#define HUD_ROW3_ASSIGN_RVA       0xc21240u
+#define HUD_ROW3_RESET_RVA        0xc1e310u
+#define HUD_ROW3_SPRITE_READY_RVA 0xdd93e0u
+#define HUD_ROW3_REF_OFF          0x30u
+#define HUD_ROW3_REF_PREV         0x08u     /* node+0x08 = block+0x38 */
+#define HUD_ROW3_REF_NEXT         0x10u     /* node+0x10 = block+0x40 */
+#define HUD_ROW3_REF_HEAD         0xf40u    /* character+0xf40 = first node */
 
-/* Companion candidates: the assigner (0xc21240, called from the class update at
- * 0xc1f8e4) walks a hash set of characters; the static party slot array is the
- * same population addressed by slot. Its acceptance test (0xc21330..0xc21360):
- *   char != own(slot 0), *(i32*)(char+0xef0) != -1, *(u8*)(char+0x430) != 0,
- *   *(void**)(char+0x240) != NULL, *(i32*)([char+0x240]+0x10) != 1. */
-#define HUD_ROW3_SET_RVA     0x18a0590u /* {set, ?, ?, begin, count} */
-#define HUD_ROW3_CHAR_DATA   0x240u     /* character +0x240 = player data */
-#define HUD_ROW3_CHAR_VALID  0x430u     /* must be non-zero */
-#define HUD_ROW3_CHAR_STATE  0xef0u     /* must not be -1 */
-#define HUD_ROW3_DATA_ACTIVE 0x10u      /* player data +0x10 must not be 1 */
+/* Companion choice is the game's: the assigner (0xc21240) walks the character
+ * set and takes the first character that is not the local one, has
+ *   *(i32*)(char+0xef0) != -1, *(u8*)(char+0x430) != 0,
+ *   *(void**)(char+0x240) != NULL, *(i32*)([char+0x240]+0x10) != 1,
+ * and is not held by static block A or B (their nodes at 0x141b46ac0 and
+ * 0x141b46b38). The character's HP is [[char+0x240]+0x20] of [..+0x18]. */
 
 /* The seven class methods that read or write block A/B, in the order the
  * vtable stores them. The thunks below dispatch on one of these. */
@@ -3316,23 +3338,26 @@ typedef int (*hud_row_flag_fn)(void *self, unsigned char on);
 typedef void *(*hud_menu_factory_fn)(void *menu, int size, void *args);
 typedef void *(*hud_menu_get_fn)(void);
 typedef int (*hud_register_fn)(void *registry, void *elem);
+typedef int (*hud_assign_fn)(void *row, void *arg, void *block);   /* 0x140c21240 */
+typedef void (*hud_unbind_fn)(void *block);                        /* 0x140c1e310 */
 
-static uint8_t g_hud_row3_block[HUD_ROW3_BLOCK_SIZE] __attribute__((aligned(8)));   /* block C */
-static uint8_t g_hud_row3_saved[HUD_ROW3_BLOCK_SIZE] __attribute__((aligned(8)));   /* block A, while swapped */
+/* Block C, the proxy-owned state block of the third row. Its address is stable
+ * for the life of the process, which is what makes its reference node (see
+ * hud_ref_*) safe: a node is linked into a character's list by address. */
+static uint8_t g_hud_row3_block[HUD_ROW3_BLOCK_SIZE] __attribute__((aligned(8)));
 static void *g_hud_row3_vtable;
 static void *g_hud_row3_orig[HUD_ROW3_SLOT_COUNT];
-static volatile LONG g_hud_row3_swap;      /* 1 while A carries C */
-static volatile LONG g_hud_row3_active;    /* thunks may swap */
+static volatile LONG g_hud_row3_swap;      /* 1 while A and C are exchanged */
+static volatile LONG g_hud_row3_active;    /* thunks may open the window */
 static volatile LONG g_hud_row3_dead;      /* the game destroyed our element */
 static void *g_hud_row3_elem;              /* the element we published */
 static int g_hud_row3_attempts;            /* build attempts this session */
 static int g_hud_row3_failed;              /* stop trying for this session */
-static int g_hud_row3_settle;
-static void *g_hud_row3_char;
-static int g_hud_row3_char_slot = -1;
-static volatile LONG g_hud_row3_pending;   /* worker -> frame thunk: place+show */
+static int g_hud_row3_settle;              /* consecutive settled frames */
+static int g_hud_row3_wait_frames = -1;    /* frames spent waiting for sprites */
+static DWORD g_hud_row3_last_assign;       /* ms of the last companion search */
+static int g_hud_row3_have_pos;            /* the position we last wrote is still in place */
 static volatile LONG g_hud_row3_frame_fired;
-static int g_hud_row3_starved;
 /* Piggyback on the native rows' per-frame slots. */
 static void *g_hud_row3_native_orig[2];    /* 0 = update (0x18), 1 = frame (0x50) */
 static volatile LONG g_hud_row3_native_ok; /* slots patched, originals known */
@@ -3340,17 +3365,13 @@ static volatile LONG g_hud_row3_seen_update;
 static volatile LONG g_hud_row3_seen_frame;
 static volatile LONG g_hud_row3_driven;    /* at least one game-thread drive */
 static DWORD g_hud_row3_last_drive;        /* rate limit, ms */
-static int g_hud_row3_last_had_arg;        /* that tick included the update */
-static DWORD g_hud_row3_lost_ms;           /* throttle for the churn log */
 /* The prep/lobby screen builds rows 0x74/0x75 too, so the third row must wait
  * for the mission HUD. The mission loader phase ([manager+0x5d0] == 0xC, the
  * same field `rig.py state` prints as loader) separates the two. */
 static volatile LONG g_hud_row_gen;        /* bumped for every native 0x74 build */
 static int g_hud_row3_gen = -1;            /* generation our element belongs to */
-static volatile LONG g_hud_row3_ticks;
-static int g_hud_row3_gate_logged = -1;    /* last gate snapshot written */
-static int g_hud_row3_stale_gen = -2;      /* generation last reported stale */
-static int g_hud_row3_wait_gen = -2;       /* generation last reported elementless */
+
+static void hud_row3_veh_install(void);
 
 static uint8_t *hud_row3_a(void) { return g_base + HUD_ROW3_BLOCK_A_RVA; }
 static uint8_t *hud_row3_b(void) { return g_base + HUD_ROW3_BLOCK_B_RVA; }
@@ -3380,50 +3401,147 @@ static void hud_row3_place(void *row3, void *row1, void *row2);
 static int piggy_update(void *self, void *arg, void *block);
 static int piggy_frame(void *self);
 
-/* Take block A out of row 1's hands and put C there.
- *   1  swapped in; caller must call hud_row3_leave()
- *   0  the swap is already held, i.e. a nested call: A already carries C
- *  -1  cannot swap, so the class must not run at all (it would operate on
- *      row 1's block) */
+/* ---- reference nodes ----------------------------------------------------
+ * block+0x30 is not a pointer, it is a weak reference node {char, prev, next}.
+ * The nodes of one character form a doubly linked list whose head is
+ * [char+0xf40]; the rows' blocks and the static party slots (0x18-byte
+ * stride) are all such nodes, linked by ADDRESS. Bind (0x753ad0) pushes the
+ * node at the head, unbind (0x756bc0) unlinks it, and the character's release
+ * path zeroes every node still linked, so the holder sees NULL instead of a
+ * dangling character.
+ *
+ * Two things followed from that, and both are why the earlier version crashed:
+ *   - a raw `block[+0x30] = character` store never joins the list, so the
+ *     character's release could not clear it: the block kept a freed
+ *     character and the class update read through its torn-down model
+ *     (host: exe+0x765ba0, [[char+0x230]+8]+0x58 = 0);
+ *   - exchanging whole blocks by memcpy moved the node's CONTENTS but not its
+ *     address, so bind/unbind inside the exchange linked and unlinked row 1's
+ *     address in another character's list.
+ * hud_ref_move() relocates a node the way the list needs it: copy the three
+ * qwords and repoint the neighbours (and the list head) at the new address. */
+static int hud_ref_consistent(const uint8_t *node)
+{
+    const uint8_t *const ch = *(const uint8_t *const *)node;
+    if (!ch)
+        return 1;                   /* unlinked: nothing points at it */
+    if (!readable(ch + HUD_ROW3_REF_HEAD, sizeof(void *)))
+        return 0;
+    const uint8_t *const prev = *(const uint8_t *const *)(node + HUD_ROW3_REF_PREV);
+    const uint8_t *const next = *(const uint8_t *const *)(node + HUD_ROW3_REF_NEXT);
+    if (prev) {
+        if (!readable(prev, 0x18) ||
+            *(const uint8_t *const *)(prev + HUD_ROW3_REF_NEXT) != node)
+            return 0;
+    } else if (*(const uint8_t *const *)(ch + HUD_ROW3_REF_HEAD) != node) {
+        return 0;
+    }
+    if (next && (!readable(next, 0x18) ||
+                 *(const uint8_t *const *)(next + HUD_ROW3_REF_PREV) != node))
+        return 0;
+    return 1;
+}
+
+static void hud_ref_move(uint8_t *dst, uint8_t *src)
+{
+    uint8_t *const ch = *(uint8_t *const *)src;
+    uint8_t *const prev = *(uint8_t *const *)(src + HUD_ROW3_REF_PREV);
+    uint8_t *const next = *(uint8_t *const *)(src + HUD_ROW3_REF_NEXT);
+    *(uint8_t **)dst = ch;
+    *(uint8_t **)(dst + HUD_ROW3_REF_PREV) = prev;
+    *(uint8_t **)(dst + HUD_ROW3_REF_NEXT) = next;
+    if (ch) {
+        if (prev && readable(prev, 0x18))
+            *(uint8_t **)(prev + HUD_ROW3_REF_NEXT) = dst;
+        else if (!prev && readable(ch + HUD_ROW3_REF_HEAD, sizeof(void *)))
+            *(uint8_t **)(ch + HUD_ROW3_REF_HEAD) = dst;
+        if (next && readable(next, 0x18))
+            *(uint8_t **)(next + HUD_ROW3_REF_PREV) = dst;
+    }
+    *(uint8_t **)src = NULL;
+    *(uint8_t **)(src + HUD_ROW3_REF_PREV) = NULL;
+    *(uint8_t **)(src + HUD_ROW3_REF_NEXT) = NULL;
+}
+
+/* Exchange block A and block C completely, node identity included. The two
+ * halves of a window are the same exchange, so enter and leave share it. */
+static int hud_row3_exchange(int check)
+{
+    uint8_t *const a = hud_row3_a();
+    uint8_t *const c = g_hud_row3_block;
+    if (!readable(a, HUD_ROW3_BLOCK_SIZE))
+        return 0;
+    if (check && (!hud_ref_consistent(a + HUD_ROW3_REF_OFF) ||
+                  !hud_ref_consistent(c + HUD_ROW3_REF_OFF)))
+        return 0;
+    uint64_t node[3];
+    hud_ref_move((uint8_t *)node, a + HUD_ROW3_REF_OFF);
+    hud_ref_move(a + HUD_ROW3_REF_OFF, c + HUD_ROW3_REF_OFF);
+    hud_ref_move(c + HUD_ROW3_REF_OFF, (uint8_t *)node);
+    /* Everything but the node: +0x00..+0x2f and the sprites and timers from
+     * +0x48. */
+    uint8_t tmp[HUD_ROW3_BLOCK_SIZE];
+    memcpy(tmp, a, 0x30);
+    memcpy(a, c, 0x30);
+    memcpy(c, tmp, 0x30);
+    memcpy(tmp, a + 0x48, HUD_ROW3_BLOCK_SIZE - 0x48);
+    memcpy(a + 0x48, c + 0x48, HUD_ROW3_BLOCK_SIZE - 0x48);
+    memcpy(c + 0x48, tmp, HUD_ROW3_BLOCK_SIZE - 0x48);
+    return 1;
+}
+
+/* Take the static block A out of row 1's hands for one call into the class and
+ * put C there. Game thread only.
+ *   1  exchanged; caller must call hud_row3_leave()
+ *   0  the window is already open, i.e. a nested call: A already carries C
+ *  -1  cannot exchange, so the class must not run at all (it would operate
+ *      on row 1's block) */
 static int hud_row3_enter(void)
 {
     if (!g_hud_row3_active)
         return -1;
     if (InterlockedCompareExchange(&g_hud_row3_swap, 1, 0) != 0)
         return 0;
-    uint8_t *const a = hud_row3_a();
-    if (!readable(a, HUD_ROW3_BLOCK_SIZE)) {
+    if (!hud_row3_exchange(1)) {
         InterlockedExchange(&g_hud_row3_swap, 0);
+        static int logged;
+        if (!logged) {
+            logged = 1;
+            const uint8_t *const a = hud_row3_a();
+            LOG("hud row3: block A or C has an inconsistent reference node; the "
+                "class is not run on it (A node %p %p %p, C node %p %p %p)",
+                *(void *const *)(a + 0x30), *(void *const *)(a + 0x38),
+                *(void *const *)(a + 0x40), *(void *const *)(g_hud_row3_block + 0x30),
+                *(void *const *)(g_hud_row3_block + 0x38),
+                *(void *const *)(g_hud_row3_block + 0x40));
+        }
         return -1;
     }
-    /* Session-scoped pointers, mirrored from the live block A on every swap.
-     * An exhaustive scan of the class module (0xc1e000..0xc21a00) finds only
-     * *writes* of 0 to +0x38/+0x40 (the resets at 0xc1eb58/0xc1eb5c and
-     * 0xc1e646/0xc1e64a) and no read that dereferences them, yet every live
-     * block in a mission carries non-zero values there (dumps: +0x38 heap,
-     * +0x40 a pointer into the static party-slot table, e.g. 0x1418a04c0 =
-     * &slot[2]). They are therefore written by another subsystem; mirroring
-     * keeps C looking like a live block for whoever reads them.
-     * Deliberately NOT mirrored: +0x00 state, +0x08..+0x20 HP/Ki, +0x30
-     * companion, +0x48..+0x60 sprites, +0x68 fade timer — those are this
-     * row's own state and would otherwise inherit row 1's. */
-    *(void **)(g_hud_row3_block + 0x38) = *(void *const *)(a + 0x38);
-    *(void **)(g_hud_row3_block + 0x40) = *(void *const *)(a + 0x40);
-    memcpy(g_hud_row3_saved, a, HUD_ROW3_BLOCK_SIZE);
-    memcpy(a, g_hud_row3_block, HUD_ROW3_BLOCK_SIZE);
     return 1;
 }
 
-/* Harvest whatever the call left in A back into C, then put row 1's block
- * back. Nothing else may run between the two halves on this thread. */
+/* Undo the exchange: whatever the call did to C (state, HP, binding) travels
+ * back with it, and row 1 gets its own block and node back. */
 static void hud_row3_leave(void)
 {
-    uint8_t *const a = hud_row3_a();
-    if (readable(a, HUD_ROW3_BLOCK_SIZE)) {
-        memcpy(g_hud_row3_block, a, HUD_ROW3_BLOCK_SIZE);
-        memcpy(a, g_hud_row3_saved, HUD_ROW3_BLOCK_SIZE);
-    }
+    hud_row3_exchange(0);
     InterlockedExchange(&g_hud_row3_swap, 0);
+}
+
+/* Release block C's hold on the world without touching a sprite: unlink its
+ * reference node (only when it is verifiably linked) and clear the block. For
+ * an element that is gone or is about to be rebuilt. */
+static void hud_row3_forget(void)
+{
+    uint8_t *const node = g_hud_row3_block + HUD_ROW3_REF_OFF;
+    if (*(void **)node) {
+        if (hud_ref_consistent(node))
+            ((void (*)(void *))(g_base + 0x756bc0u))(node);
+        else
+            LOG("hud row3: block C reference node is inconsistent, not unlinking");
+    }
+    memset(g_hud_row3_block, 0, sizeof g_hud_row3_block);
+    g_hud_row3_have_pos = 0;
 }
 
 /* A call into our element's own vtable from the game must obey the same
@@ -3433,19 +3551,18 @@ static int hud_row3_self_stale(void *self)
 {
     return self == g_hud_row3_elem && g_hud_row3_gen != hud_row3_generation();
 }
-/* Every failure path after the block swap has to drop the active flag: with it
- * left at 1 the drive and the frame thunks keep treating block C as live while
- * no element is registered, and the next attempt builds on top of a stale C.
- * The element is not released: the proxy knows no deleter for the menu's
- * children, and inventing a vtable call into game code is worse than at most
- * one leaked 0x68-byte element per attempt (capped at three). */
+/* Every failure path after the block exchange has to drop the active flag:
+ * with it left at 1 the drive and the thunks keep treating block C as live
+ * while no element is registered, and the next attempt builds on top of a
+ * stale C. The element is not released: the proxy knows no deleter for the
+ * menu's children, and inventing a vtable call into game code is worse than at
+ * most one leaked 0x68-byte element per attempt (capped at three). */
 static void hud_row3_abandon(void)
 {
     InterlockedExchange(&g_hud_row3_active, 0);
     g_hud_row3_elem = NULL;
     g_hud_row3_gen = -1;
-    g_hud_row3_char = NULL;
-    g_hud_row3_char_slot = -1;
+    hud_row3_forget();
 }
 
 static void *thunk_dtor(void *self, unsigned flags)
@@ -3456,10 +3573,14 @@ static void *thunk_dtor(void *self, unsigned flags)
     void *const r = ((hud_row_dtor_fn)g_hud_row3_orig[HUD_ROW3_DTOR])(self, flags);
     if (st)
         hud_row3_leave();
-    /* The object (and its sprites) are gone; the registry slot is cleared on
-     * the next tick so nothing dereferences freed memory. */
+    /* The object and its sprites are gone: drop block C's reference node now
+     * (a bound node would otherwise stay linked into a character's list for a
+     * block that has nothing left to show) and let the drive clear the
+     * registry slot, if the game did not. */
     if (self == g_hud_row3_elem) {
+        InterlockedExchange(&g_hud_row3_active, 0);
         InterlockedExchange(&g_hud_row3_dead, 1);
+        hud_row3_forget();
         LOG("hud row3: the game destroyed the third row, it will be recreated");
     }
     return r;
@@ -3490,10 +3611,14 @@ static void thunk_release(void *self)
  * field it is 0x140bfb5a0 on every client, an orphan function with no
  * references, i.e. dead register content the update never reads (it picks its
  * own block from the element id). It is forwarded verbatim so the call is
- * byte-identical to the game's, including that leftover value. */
+ * byte-identical to the game's, including that leftover value. An empty block
+ * (state 0) is not updated: that state runs the character assigner, which must
+ * not run on the exchanged blocks (see hud_row3_run_update). */
 static int thunk_update(void *self, void *arg, void *block)
 {
     if (hud_row3_self_stale(self))
+        return 0;
+    if (*(const uint32_t *)(g_hud_row3_block + HUD_ROW3_STATE_OFF) == 0)
         return 0;
     const int st = hud_row3_enter();
     if (st < 0)
@@ -3514,32 +3639,10 @@ static int thunk_frame(void *self)
     const int r = ((hud_row_bool_fn)g_hud_row3_orig[HUD_ROW3_FRAME])(self);
     if (st)
         hud_row3_leave();
-    /* The first game-thread calls of our element answer two open questions at
-     * once: the game drives registry-only rows, and placement may call the
-     * game's anchor helpers, which is only safe on this thread. */
-    if (self == g_hud_row3_elem) {
-        if (!InterlockedExchange(&g_hud_row3_frame_fired, 1))
-            LOG("hud row3: the game drives the frame slot on the game thread");
-        if (InterlockedCompareExchange(&g_hud_row3_pending, 0, 1) != 0) {
-            void **const registry = hud_row3_elements();
-            void *const row1 = hud_row3_elem_at(registry, 0x74);
-            void *const row2 = hud_row3_elem_at(registry, 0x75);
-            if (hud_row3_native(row1) && hud_row3_native(row2)) {
-                static int shown;
-                LOG("hud row3: thunk_frame: pending place from the game thread "
-                    "(row1 %p row2 %p self %p)", row1, row2, self);
-                hud_row3_place(self, row1, row2);
-                LOG("hud row3: thunk_frame: pending place returned");
-                hud_row_show(self);
-                if (!shown) {
-                    shown = 1;
-                    LOG("hud row3: shown, state word %#x, container sprite %p",
-                        *(const uint32_t *)((const uint8_t *)self + HUD_ROW_FLAGS_OFF),
-                        *(void *const *)((const uint8_t *)self + HUD_ROW3_CONTAINER_OFF));
-                }
-            }
-        }
-    }
+    /* The game itself calls the registered element's frame slot on the game
+     * thread; placement and showing are done by the drive, after the update. */
+    if (self == g_hud_row3_elem && !InterlockedExchange(&g_hud_row3_frame_fired, 1))
+        LOG("hud row3: the game drives the frame slot on the game thread");
     return r;
 }
 
@@ -3702,9 +3805,7 @@ static void *hud_row3_build(void **registry)
     }
     LOG("hud row3: element allocated at %p (menu %p)", elem, menu);
 
-    memset(g_hud_row3_block, 0, sizeof g_hud_row3_block);
-    g_hud_row3_char = NULL;
-    g_hud_row3_char_slot = -1;
+    hud_row3_forget();                      /* a clean C, no stale node */
     InterlockedExchange(&g_hud_row3_active, 1);
     const int st = hud_row3_enter();        /* A carries C from here on */
     if (st < 0) {
@@ -3749,162 +3850,9 @@ static void *hud_row3_build(void **registry)
     if (*(uint32_t *)((uint8_t *)elem + 0x50) != 0)
         LOG("hud row3: element flags +0x50 = %#x (expected 0)",
             *(uint32_t *)((uint8_t *)elem + 0x50));
-    /* Visible only once a companion is bound: the tick does that, so an empty
-     * third row never appears on screen. */
+    /* Visible only once a companion is bound and its sprites are resolved: the
+     * drive does that, so an empty third row never appears on screen. */
     return elem;
-}
-
-/* The character acceptance test of the assigner at 0xc21240 (0xc21330..60):
- * skip a character whose +0x430 is zero, whose +0xef0 is -1, whose player data
- * at +0x240 is null, or whose player data +0x10 is 1 (0x1407b4290 is exactly
- * "cmp $1,(%rcx)"). Missing the +0x430 direction made the rebind reject every
- * companion once the mission marked them valid. */
-static int hud_row3_usable(void *ch)
-{
-    if (!ch)
-        return 0;
-    const uint8_t *const c = ch;
-    if (!readable(c + HUD_ROW3_CHAR_VALID, 1) ||
-        !readable(c + HUD_ROW3_CHAR_STATE, 4) ||
-        !readable(c + HUD_ROW3_CHAR_DATA, 8))
-        return 0;
-    if (*(const uint8_t *)(c + HUD_ROW3_CHAR_VALID) == 0)
-        return 0;
-    if (*(const int32_t *)(c + HUD_ROW3_CHAR_STATE) == -1)
-        return 0;
-    const uint8_t *const data = *(const uint8_t *const *)(c + HUD_ROW3_CHAR_DATA);
-    if (!data || !readable(data + HUD_ROW3_DATA_ACTIVE, 4))
-        return 0;
-    if (*(const int32_t *)(data + HUD_ROW3_DATA_ACTIVE) == 1)
-        return 0;
-    return 1;
-}
-
-/* One entry of the character set the assigner walks: it iterates the index
- * range [begin, begin+count) of an open-addressing table and takes the node's
- * first qword as the character. */
-static void *hud_row3_char_from_set(int index)
-{
-    const uint8_t *const container = g_base + HUD_ROW3_SET_RVA;
-    if (!readable(container, 0x28))
-        return NULL;
-    const uintptr_t begin = *(const uintptr_t *)(container + 0x18);
-    const uintptr_t count = *(const uintptr_t *)(container + 0x20);
-    if (index < 0 || (uintptr_t)index >= count || count > 64)
-        return NULL;
-    const void *const set = *(void *const *)container;
-    if (!set || !readable(set, 8))
-        return NULL;
-    const uint8_t *const table = *(const uint8_t *const *)set;
-    if (!table || !readable(table + 8, 0x10))
-        return NULL;
-    const uint64_t mask = *(const uint64_t *)(table + 0x10);
-    void *const *const buckets = *(void *const *const *)(table + 8);
-    if (!mask || !buckets)
-        return NULL;
-    const uint64_t slot = (begin + (uintptr_t)index) & (mask - 1);
-    if (!readable(&buckets[slot], sizeof(void *)))
-        return NULL;
-    const void *const node = buckets[slot];
-    if (!node || !readable(node, sizeof(void *)))
-        return NULL;
-    return *(void *const *)node;
-}
-
-/* Pick a companion neither native row is showing. Returns it and reports where
- * it came from: *slot_out >= 0 for the static party slot array, otherwise
- * *set_out is the character-set index. */
-static void *hud_row3_pick(int *slot_out, int *set_out)
-{
-    *slot_out = -1;
-    *set_out = -1;
-    void *const used1 = *(void *const *)(hud_row3_a() + HUD_ROW3_CHAR_OFF);
-    void *const used2 = *(void *const *)(hud_row3_b() + HUD_ROW3_CHAR_OFF);
-    void *own = NULL;
-    if (readable(g_base + HUD_ROW3_SLOTS_RVA, 8))
-        own = *(void *const *)(g_base + HUD_ROW3_SLOTS_RVA);   /* slot 0 = own */
-    static const int order[] = {3, 2, 1};
-    for (unsigned i = 0; i < sizeof order / sizeof order[0]; i++) {
-        const int slot = order[i];
-        const uint8_t *const rec = g_base + HUD_ROW3_SLOTS_RVA +
-                                   (size_t)slot * HUD_ROW3_SLOT_STRIDE;
-        if (!readable(rec, 8))
-            continue;
-        void *const ch = *(void *const *)rec;
-        if (!ch || ch == own || ch == used1 || ch == used2)
-            continue;
-        if (!hud_row3_usable(ch))
-            continue;
-        *slot_out = slot;
-        LOG("hud row3: picked companion %p from party slot %d", ch, slot);
-        return ch;
-    }
-    LOG("hud row3: no party-slot candidate; walking the companion set");
-    for (int index = 0; index < 64; index++) {
-        void *const ch = hud_row3_char_from_set(index);
-        if (!ch || ch == own || ch == used1 || ch == used2)
-            continue;
-        if (!hud_row3_usable(ch))
-            continue;
-        *set_out = index;
-        LOG("hud row3: picked companion %p from the set at index %d", ch, index);
-        return ch;
-    }
-    return NULL;
-}
-
-/* Keep block C bound to a companion no native row shows. Runs on whichever
- * thread drives it; the block write is one aligned pointer store. */
-static int hud_row3_maintain(void)
-{
-    void **const a = (void **)(hud_row3_a() + HUD_ROW3_CHAR_OFF);
-    void **const b = (void **)(hud_row3_b() + HUD_ROW3_CHAR_OFF);
-    void **const c = (void **)(g_hud_row3_block + HUD_ROW3_CHAR_OFF);
-    uint32_t *const state = (uint32_t *)(g_hud_row3_block + HUD_ROW3_STATE_OFF);
-    if (!readable(a, 8) || !readable(b, 8))
-        return *c != NULL;
-    const int had = g_hud_row3_char != NULL;
-
-    if (*c && (*c == *a || *c == *b)) {
-        /* The assigner re-parks companions every frame, so this can repeat;
-         * one line per second still shows the churn without flooding the log. */
-        const DWORD now = GetTickCount();
-        if (now - g_hud_row3_lost_ms > 1000) {
-            g_hud_row3_lost_ms = now;
-            LOG("hud row3: companion slot %d (%p) taken by a native row, rebinding",
-                g_hud_row3_char_slot, *c);
-        }
-        *c = NULL;
-        *state = 0;
-        g_hud_row3_char = NULL;
-        g_hud_row3_char_slot = -1;
-    } else if (*c && !hud_row3_usable(*c)) {
-        LOG("hud row3: companion slot %d (%p) no longer usable, rebinding",
-            g_hud_row3_char_slot, *c);
-        *c = NULL;
-        *state = 0;
-        g_hud_row3_char = NULL;
-        g_hud_row3_char_slot = -1;
-    }
-
-    if (!*c) {
-        int slot = -1, set_index = -1;
-        void *const ch = hud_row3_pick(&slot, &set_index);
-        if (!ch)
-            return 0;
-        *c = ch;
-        if (*state == 0)
-            *state = HUD_ROW3_STATE_READY;
-        g_hud_row3_char = ch;
-        g_hud_row3_char_slot = slot >= 0 ? slot : -(set_index + 1);
-        if (slot >= 0)
-            LOG("hud row3: companion slot %d character %p %s block C (state %d)",
-                slot, ch, had ? "rebound to" : "bound to", (int)*state);
-        else
-            LOG("hud row3: companion set[%d] character %p %s block C (state %d)",
-                set_index, ch, had ? "rebound to" : "bound to", (int)*state);
-    }
-    return *c != NULL;
 }
 
 /* Row 3 is placed one row-pitch below row 2, computed from the two native
@@ -4208,7 +4156,7 @@ static void hud_row3_place(void *row3, void *row1, void *row2)
     (void)row1;
     (void)row2;
     static float last[3];
-    static int have_last, since_write, logged;
+    static int since_write, logged;
     if (!readable(row3, HUD_ROW3_CONTAINER_OFF + 8))
         return;
     void *const sprite3 = *(void **)((uint8_t *)row3 + HUD_ROW3_CONTAINER_OFF);
@@ -4275,7 +4223,7 @@ static void hud_row3_place(void *row3, void *row1, void *row2)
         }
         return;
     }
-    int changed = !have_last;
+    int changed = !g_hud_row3_have_pos;
     for (int i = 0; i < 3 && !changed; i++)
         if (v3[i] > last[i] + 0.001f || v3[i] < last[i] - 0.001f)
             changed = 1;
@@ -4288,7 +4236,7 @@ static void hud_row3_place(void *row3, void *row1, void *row2)
         }
         return;
     }
-    have_last = 1;
+    g_hud_row3_have_pos = 1;
     since_write = 0;
     for (int i = 0; i < 3; i++)
         last[i] = v3[i];
@@ -4302,152 +4250,304 @@ static void hud_row3_place(void *row3, void *row1, void *row2)
     }
 }
 
-/* Run the class's own update / frame code for our element, with block C in
- * place of A. This is what makes row 3 animate exactly like rows 1/2.
- * The update gets block A as its third argument: A carries C for the duration
- * of the call, and A is the block our element's id selects. */
-static void hud_row3_run_update(void *row3, void *arg, void *block)
+/* Run the class's own update code for our element with block C in the place of
+ * A, so row 3 animates exactly like rows 1/2. The window (hud_row3_enter) is
+ * identity-preserving: the reference node moves with the block. Forward r8
+ * exactly as the game passed it: it is not the state block (the dump shows
+ * 0x140bfb5a0 there on every client, an orphan function address); the class
+ * update computes its own block from the element id.
+ *
+ * The update must never run on an empty block. State 0 makes the class call
+ * its character assigner, which excludes only the static blocks A and B by
+ * address: inside the window that is C and B, so it could pick the character
+ * row 1 is showing. The assigner is therefore called by hud_row3_assign() with
+ * the real blocks in place, and the window only ever runs bound states. */
+static int hud_row3_run_update(void *row3, void *arg, void *r8)
 {
+    if (*(const uint32_t *)(g_hud_row3_block + HUD_ROW3_STATE_OFF) == 0)
+        return 0;
     const int st = hud_row3_enter();
     if (st < 0)
-        return;
-    /* Forward r8 exactly as the game passed it. It is not the state block: the
-     * dump shows 0x140bfb5a0 there on every client, an orphan function address
-     * with no references, i.e. dead register content the class update never
-     * reads (it computes its own block from the element id). */
-    ((hud_row_arg_fn)g_hud_row3_orig[HUD_ROW3_UPDATE])(row3, arg, block);
+        return 0;
+    ((hud_row_arg_fn)g_hud_row3_orig[HUD_ROW3_UPDATE])(row3, arg, r8);
     if (st)
         hud_row3_leave();
+    return 1;
 }
 
-static void hud_row3_run_frame(void *row3)
+/* The game's own readiness predicate for a sprite (0x140dd93e0): the sprite
+ * has a layout link, the link has its container, and the container is not
+ * mid-update. The sprite API behind the class update dereferences that
+ * container without a check, which is exactly the fault at exe+0x532647
+ * (rcx = [[sprite+0x28]+0x28] = 0, access 0x1c8). The class's own frame slot
+ * (0xc210c0) guards on this predicate before it initialises anything; the
+ * update slot does not, so the update may only run once it holds. */
+typedef uint8_t (*hud_sprite_ready_fn)(void *sprite);
+
+static int hud_row3_sprite_ready(void *sprite)
 {
-    const int st = hud_row3_enter();
-    if (st < 0)
-        return;
-    ((hud_row_bool_fn)g_hud_row3_orig[HUD_ROW3_FRAME])(row3);
-    if (st)
-        hud_row3_leave();
+    if (!sprite || !readable(sprite, 0x30))
+        return 0;
+    const uint8_t *const link = *(const uint8_t *const *)((const uint8_t *)sprite + 0x28);
+    if (!link || !readable(link, 0x30) || !*(void *const *)(link + 0x28))
+        return 0;
+    return ((hud_sprite_ready_fn)(g_base + HUD_ROW3_SPRITE_READY_RVA))(sprite) != 0;
 }
 
-/* One game-thread tick for row 3, taken from a native row's own per-frame call.
- * arg is whatever the game passed to that row's update slot; the same context
- * is what our element's update expects, and it is only available on the update
- * slot. */
-static void hud_row3_drive(void *arg, void *block, int have_arg)
+/* -1 when the container sprite and all four block sprites are ready, else the
+ * index of the first one that is not (0 = container, 1..4 = block +0x48..+0x60). */
+static int hud_row3_unready(void *row3)
+{
+    if (!hud_row3_sprite_ready(*(void **)((uint8_t *)row3 + HUD_ROW3_CONTAINER_OFF)))
+        return 0;
+    for (int i = 0; i < 4; i++)
+        if (!hud_row3_sprite_ready(*(void **)(g_hud_row3_block + HUD_ROW3_SPRITES_OFF +
+                                              (size_t)i * 8)))
+            return i + 1;
+    return -1;
+}
+
+/* Let the class bind block C to a companion. This is the game's own assigner
+ * (0x140c21240) called with block C as the explicit block argument and with
+ * NO window: its exclusion test reads the static nodes of rows 1 and 2 at
+ * their real addresses, so it picks a companion neither shows; the character
+ * is bound through the reference node inside C itself (0x140c1e400), so the
+ * character's release list holds C and clears it when the character dies.
+ * That is what the old raw pointer store lacked. One quirk is undone: when
+ * the class hides a row it zeroes the +0x20 field of the static block its id
+ * selects, which for id 0x73 is row 1's. */
+static void hud_row3_assign(void *row3, void *arg)
+{
+    uint8_t *const a = hud_row3_a();
+    uint32_t *const a20 = (uint32_t *)(a + 0x20);
+    uint32_t *const c20 = (uint32_t *)(g_hud_row3_block + 0x20);
+    const uint32_t keep = *a20;
+    ((hud_assign_fn)(g_base + HUD_ROW3_ASSIGN_RVA))(row3, arg, g_hud_row3_block);
+    if (*a20 != keep) {
+        *c20 = *a20;
+        *a20 = keep;
+    }
+}
+
+/* Unbind C natively (0x140c1e310: unlink the reference node, hide the sprites,
+ * state 0). Only for a block whose sprites are alive. */
+static void hud_row3_unbind(void)
+{
+    uint8_t *const a = hud_row3_a();
+    uint32_t *const a20 = (uint32_t *)(a + 0x20);
+    const uint32_t keep = *a20;
+    ((hud_unbind_fn)(g_base + HUD_ROW3_RESET_RVA))(g_hud_row3_block);
+    *a20 = keep;
+}
+
+static void hud_row3_drop(void **registry, const char *why)
+{
+    uint8_t *const slot = (uint8_t *)registry + (size_t)HUD_ROW3_ID * 8;
+    int cleared = 0;
+    if (registry && readable(slot, sizeof(void *)) && g_hud_row3_elem &&
+        *(void **)slot == g_hud_row3_elem) {
+        *(void **)slot = NULL;
+        cleared = 1;
+    }
+    LOG("hud row3: dropped the element (%s, gauge generation %d, registry slot %s)",
+        why, g_hud_row3_gen, cleared ? "cleared" : "not ours");
+    hud_row3_abandon();
+    InterlockedExchange(&g_hud_row3_dead, 0);
+    g_hud_row3_settle = 0;
+}
+
+/* One game-thread tick for row 3, taken from a native row's own update call.
+ * arg is the per-frame context the game passed to that row's update slot; the
+ * same context is what our element's update needs. Every transition of block C
+ * (build, bind, unbind, update, drop) happens here or in the element's own
+ * vtable thunks, i.e. on the game thread; no other thread touches the HUD. */
+static void hud_row3_drive(void *arg, void *r8)
 {
     if (!g_cfg.hud_row3 || g_cfg.max_players < 4 || g_hud_row3_failed ||
-        !g_hud_row3_native_ok)
+        !g_hud_row3_native_ok || !arg)
         return;
     if (g_hud_row3_swap)
-        return;                     /* a swap is in flight, try next frame */
-    if (g_hud_row3_dead)
-        return;                     /* destroyed/stale: the worker rebuilds it */
+        return;                     /* inside a window: never re-enter */
     if (!hud_row_wanted() || !hud_row3_mission())
         return;                     /* prep/lobby or mode off */
-    /* Freshness: an element recorded for an older gauge generation must never be
-     * driven (its sprites died with the previous HUD). But "no element yet" is
-     * NOT stale: the generation is -1 until the worker builds one, and treating
-     * that as stale is what starved the build in trial 4 (drive set dead every
-     * frame, the tick's cleanup reset the settle, and the build never ran). */
-    const int gen = hud_row3_generation();
-    if (g_hud_row3_elem) {
-        if (g_hud_row3_gen != gen) {
-            InterlockedExchange(&g_hud_row3_dead, 1);
-            if (gen != g_hud_row3_stale_gen) {
-                g_hud_row3_stale_gen = gen;
-                LOG("hud row3: element is from gauge generation %d, now %d; "
-                    "marking it stale (no drive)", g_hud_row3_gen, gen);
-            }
-            return;
-        }
-    } else if (gen != g_hud_row3_wait_gen) {
-        g_hud_row3_wait_gen = gen;
-        LOG("hud row3: drive is live in gauge generation %d with no element yet; "
-            "waiting for the worker build", gen);
-    }
     const DWORD now = GetTickCount();
-    if (now == g_hud_row3_last_drive && (!have_arg || g_hud_row3_last_had_arg))
+    if (now == g_hud_row3_last_drive)
         return;                     /* this frame's tick already ran */
     g_hud_row3_last_drive = now;
-    g_hud_row3_last_had_arg = have_arg;
+    hud_row3_veh_install();
 
     void **const registry = hud_row3_elements();
     if (!registry)
         return;
     void *const row1 = hud_row3_elem_at(registry, 0x74);
     void *const row2 = hud_row3_elem_at(registry, 0x75);
-    if (!hud_row3_native(row1) || !hud_row3_native(row2))
-        return;
-    void *const row3 = hud_row3_elem_at(registry, HUD_ROW3_ID);
-    if (!hud_row3_ours(row3)) {
-        InterlockedExchange(&g_hud_row3_pending, 1);   /* worker builds it */
+    if (!hud_row3_native(row1) || !hud_row3_native(row2)) {
+        g_hud_row3_settle = 0;
         return;
     }
-    if (!hud_row3_maintain())
-        return;                     /* no companion to show yet */
-    void **const cslot = (void **)(g_hud_row3_block + HUD_ROW3_CHAR_OFF);
-    void *const before = *cslot;
-    /* One-shot stage logs: if a bound run faults, the last of these names the
-     * stage (update / frame / place / show) and the callee it was entering. */
-    static int s_bound, s_updated, s_framed, s_placed;
-    if (!s_bound) {
-        s_bound = 1;
-        LOG("hud row3: drive: running the bound update (block C char %p, "
-            "+0x38 %p, +0x40 %p, arg %p, r8 %p)", before,
-            *(void *const *)(g_hud_row3_block + 0x38),
-            *(void *const *)(g_hud_row3_block + 0x40), arg, block);
-    }
-    if (have_arg)
-        hud_row3_run_update(row3, arg, block);
-    if (!s_updated) {
-        s_updated = 1;
-        LOG("hud row3: drive: bound update returned");
-    }
-    /* The class update runs the assigner, which parks a companion into the
-     * block its id selects. With A swapped to C that is C, but the assigner
-     * cannot see row 1's real companion while the swap is held, so it may pick
-     * that one. Drop a conflicting pick and keep what maintain() chose. */
-    if (*cslot && (*cslot == *(void *const *)(hud_row3_a() + HUD_ROW3_CHAR_OFF) ||
-                   *cslot == *(void *const *)(hud_row3_b() + HUD_ROW3_CHAR_OFF))) {
-        *cslot = before;
-        if (!before) {
-            *cslot = NULL;
-            *(uint32_t *)(g_hud_row3_block + HUD_ROW3_STATE_OFF) = 0;
-            LOG("hud row3: the class update parked a duplicate companion; "
-                "block C cleared");
+    void *const found = hud_row3_elem_at(registry, HUD_ROW3_ID);
+    const int gen = hud_row3_generation();
+
+    if (g_hud_row3_elem) {
+        const char *why = NULL;
+        if (g_hud_row3_dead)
+            why = "the game destroyed it";
+        else if (g_hud_row3_gen != gen)
+            why = "the HUD was rebuilt under it";
+        else if (found != g_hud_row3_elem)
+            why = "its registry slot changed";
+        if (why) {
+            hud_row3_drop(registry, why);
             return;
         }
+    } else {
+        if (found) {
+            /* A previous screen's element may still be on its way out, so
+             * wait out the same settle the build waits for before calling the
+             * slot taken. Replacing someone else's element would break it. */
+            if (++g_hud_row3_settle >= HUD_ROW3_SETTLE) {
+                LOG("hud row3: element slot %#x already holds %p (not ours), "
+                    "skipping the third row this session", HUD_ROW3_ID, found);
+                g_hud_row3_failed = 1;
+            }
+            return;
+        }
+        /* Build only on a settled HUD: both native rows must have their
+         * sprites resolved for HUD_ROW3_SETTLE consecutive frames. */
+        if (!hud_row3_sprite_ready(*(void **)((uint8_t *)row1 + HUD_ROW3_CONTAINER_OFF)) ||
+            !hud_row3_sprite_ready(*(void **)((uint8_t *)row2 + HUD_ROW3_CONTAINER_OFF))) {
+            g_hud_row3_settle = 0;
+            return;
+        }
+        if (++g_hud_row3_settle < HUD_ROW3_SETTLE)
+            return;
+        if (g_hud_row3_attempts >= 3) {
+            LOG("hud row3: giving up after %d build attempts", g_hud_row3_attempts);
+            g_hud_row3_failed = 1;
+            return;
+        }
+        g_hud_row3_attempts++;
+        LOG("hud row3: element slot %#x is free, creating the third row on the "
+            "game thread", HUD_ROW3_ID);
+        if (hud_row3_build(registry))
+            g_hud_row3_wait_frames = 0;
+        return;
     }
-    g_hud_row3_char = *cslot;
-    hud_row3_run_frame(row3);
-    if (!s_framed) {
-        s_framed = 1;
-        LOG("hud row3: drive: bound frame slot returned");
+
+    void *const row3 = g_hud_row3_elem;
+    /* Nothing may touch the new element's sprites before the layout behind them
+     * has resolved. The wait is logged so a sprite that never resolves names
+     * itself instead of leaving a silent hidden row. */
+    const int unready = hud_row3_unready(row3);
+    if (unready >= 0) {
+        g_hud_row3_wait_frames++;
+        if (g_hud_row3_wait_frames == 1 || g_hud_row3_wait_frames % 600 == 0)
+            LOG("hud row3: waiting for sprite %d to resolve (%d frames so far, "
+                "container %p, block sprites %p %p %p %p)", unready,
+                g_hud_row3_wait_frames,
+                *(void **)((uint8_t *)row3 + HUD_ROW3_CONTAINER_OFF),
+                *(void **)(g_hud_row3_block + 0x48), *(void **)(g_hud_row3_block + 0x50),
+                *(void **)(g_hud_row3_block + 0x58), *(void **)(g_hud_row3_block + 0x60));
+        return;
+    }
+    if (g_hud_row3_wait_frames >= 0) {
+        LOG("hud row3: all five sprites resolved after %d frames",
+            g_hud_row3_wait_frames);
+        g_hud_row3_wait_frames = -1;
+    }
+
+    void *const char_a = *(void *const *)(hud_row3_a() + HUD_ROW3_CHAR_OFF);
+    void *const char_b = *(void *const *)(hud_row3_b() + HUD_ROW3_CHAR_OFF);
+    void *bound = *(void *const *)(g_hud_row3_block + HUD_ROW3_CHAR_OFF);
+    if (bound && (bound == char_a || bound == char_b)) {
+        /* The native rows rebind on their own schedule and know nothing about
+         * row 3: when one lands on our companion the native row keeps it. */
+        LOG("hud row3: companion %p was taken by a native row; unbinding row 3",
+            bound);
+        hud_row3_unbind();
+        hud_row_hide(row3);
+        return;
+    }
+    if (!bound || *(const uint32_t *)(g_hud_row3_block + HUD_ROW3_STATE_OFF) == 0) {
+        hud_row_hide(row3);
+        /* Wait until both native rows hold a companion, so the one left over
+         * is really the third; and look for one at most every 100 ms. */
+        if (!char_a || !char_b || now - g_hud_row3_last_assign < 100)
+            return;
+        g_hud_row3_last_assign = now;
+        hud_row3_assign(row3, arg);
+        g_hud_row3_have_pos = 0;    /* the assigner moved the row to row 1's anchor */
+        bound = *(void *const *)(g_hud_row3_block + HUD_ROW3_CHAR_OFF);
+        if (!bound)
+            return;
+        LOG("hud row3: bound companion %p natively (state %u, node prev %p next %p)",
+            bound, *(const uint32_t *)(g_hud_row3_block + HUD_ROW3_STATE_OFF),
+            *(void *const *)(g_hud_row3_block + 0x38),
+            *(void *const *)(g_hud_row3_block + 0x40));
+    }
+
+    hud_row3_run_update(row3, arg, r8);
+    if (!*(void *const *)(g_hud_row3_block + HUD_ROW3_CHAR_OFF)) {
+        hud_row_hide(row3);         /* the companion was released */
+        return;
+    }
+    /* Acceptance evidence for the live run: what the row holds next to what the
+     * character holds, every 2 s and on any change of either. Read only. */
+    {
+        static DWORD last_ms;
+        static uint64_t last_c[2], last_d[2];
+        static void *last_char;
+        void *const ch = *(void *const *)(g_hud_row3_block + HUD_ROW3_CHAR_OFF);
+        const uint8_t *const data = ch && readable((const uint8_t *)ch + 0x240, 8)
+            ? *(const uint8_t *const *)((const uint8_t *)ch + 0x240) : NULL;
+        const uint64_t c[2] = {*(const uint64_t *)(g_hud_row3_block + 0x08),
+                               *(const uint64_t *)(g_hud_row3_block + 0x10)};
+        const uint64_t d[2] = {data && readable(data + 0x20, 8) ? *(const uint64_t *)(data + 0x20) : 0,
+                               data && readable(data + 0x18, 8) ? *(const uint64_t *)(data + 0x18) : 0};
+        if (now - last_ms >= 2000 || ch != last_char || memcmp(c, last_c, sizeof c) ||
+            memcmp(d, last_d, sizeof d)) {
+            last_ms = now;
+            last_char = ch;
+            memcpy(last_c, c, sizeof c);
+            memcpy(last_d, d, sizeof d);
+            LOG("hud row3: row3 char %p hp %llu/%llu (row block), character hp "
+                "%llu/%llu, state %u, shown word %#x", ch, (unsigned long long)c[0],
+                (unsigned long long)c[1], (unsigned long long)d[0],
+                (unsigned long long)d[1],
+                *(const uint32_t *)(g_hud_row3_block + HUD_ROW3_STATE_OFF),
+                *(const uint32_t *)((const uint8_t *)row3 + HUD_ROW_FLAGS_OFF));
+        }
     }
     hud_row3_place(row3, row1, row2);
-    if (!s_placed) {
-        s_placed = 1;
-        LOG("hud row3: drive: place returned");
-    }
     hud_row_show(row3);
     if (!InterlockedExchange(&g_hud_row3_driven, 1))
-        LOG("hud row3: per-frame drive confirmed through a native row (%s), "
-            "state word %#x, container sprite %p", have_arg ? "update arg" : "frame slot",
+        LOG("hud row3: per-frame drive confirmed through a native row, "
+            "state word %#x, container sprite %p",
             *(const uint32_t *)((const uint8_t *)row3 + HUD_ROW_FLAGS_OFF),
             *(void *const *)((const uint8_t *)row3 + HUD_ROW3_CONTAINER_OFF));
 }
 
 /* Piggyback thunks for the *static* vtable: they are entered for rows 1/2 on
- * the game thread and turn the game's own per-frame call into our tick. Our
- * element uses the private copy, so this never re-enters itself. */
+ * the game thread and turn the game's own per-frame calls into our ticks. Our
+ * element uses the private copy, so this never re-enters itself. The second
+ * companion row is made visible here too, on the same thread as everything
+ * else the class does to it. */
+static void hud_row_keep_shown(void *self)
+{
+    if (g_cfg.max_players >= 3 && hud_row3_native(self) &&
+        *(const uint32_t *)((const uint8_t *)self + HUD_ROW_ID_OFF) == 0x75 &&
+        hud_row_wanted())
+        hud_row_show(self);
+}
+
 static int piggy_update(void *self, void *arg, void *block)
 {
     const int r = ((hud_row_arg_fn)g_hud_row3_native_orig[0])(self, arg, block);
     if (!InterlockedExchange(&g_hud_row3_seen_update, 1))
         LOG("hud row3: piggyback: native update slot (0x18) runs per frame "
             "(self %p, arg %p, r8 %p)", self, arg, block);
-    hud_row3_drive(arg, block, 1);
+    hud_row_keep_shown(self);
+    hud_row3_drive(arg, block);
     return r;
 }
 
@@ -4455,9 +4555,9 @@ static int piggy_frame(void *self)
 {
     const int r = ((hud_row_bool_fn)g_hud_row3_native_orig[1])(self);
     if (!InterlockedExchange(&g_hud_row3_seen_frame, 1))
-        LOG("hud row3: piggyback: native frame slot (0x50) runs per frame (self %p)",
-            self);
-    hud_row3_drive(NULL, NULL, 0);
+        LOG("hud row3: piggyback: native frame slot (0x50) runs per frame "
+            "(self %p)", self);
+    hud_row_keep_shown(self);
     return r;
 }
 
@@ -4559,6 +4659,23 @@ static LONG WINAPI hud_row3_veh(EXCEPTION_POINTERS *ep)
             LOG("hud row3: exception 0x%08x at exe+%#x (access addr %p, rip %p)",
                 (unsigned)er->ExceptionCode, (unsigned)(rip - (uintptr_t)g_base),
                 (void *)access, (void *)rip);
+            /* In-image qwords on the stack, nearest first: with the faulting
+             * offset they name the caller chain without a debugger. They are
+             * candidates (stale spills included), not an unwound stack. */
+            const uint64_t *sp = (const uint64_t *)(uintptr_t)ep->ContextRecord->Rsp;
+            char chain[256];
+            int cn = 0, found = 0;
+            for (int w = 0; w < 192 && found < 10 && readable(sp + w, 8); w++) {
+                const uintptr_t v = (uintptr_t)sp[w];
+                if (v > (uintptr_t)g_base + 0x1000 && v < (uintptr_t)g_base + size &&
+                    cn < (int)sizeof chain - 12) {
+                    cn += fmt(chain + cn, (int)sizeof chain - cn, " %#x",
+                              (unsigned)(v - (uintptr_t)g_base));
+                    found++;
+                }
+            }
+            chain[cn < (int)sizeof chain ? cn : (int)sizeof chain - 1] = 0;
+            LOG("hud row3: fault stack candidates (exe+):%s", chain);
             reported = 1;
         }
     }
@@ -4580,164 +4697,12 @@ static void hud_row3_veh_install(void)
     LOG("hud row3: fault reporter %s", g_hud_row3_veh ? "installed" : "failed");
 }
 
-/* One worker tick: keep the third row alive while the mission HUD is up with
- * four players. Never unregisters; stops touching as soon as the mode is off.
- * Placement and showing move to the game thread once the piggyback fires. */
-static void hud_row3_tick(void)
-{
-    if (!g_cfg.hud_row3 || g_cfg.max_players < 4 || g_hud_row3_failed)
-        return;
-    hud_row3_veh_install();
-    const int tick_no = (int)InterlockedIncrement(&g_hud_row3_ticks);
-    void **const registry = hud_row3_elements();
-    const int natives = registry && hud_row3_native(hud_row3_elem_at(registry, 0x74)) &&
-                        hud_row3_native(hud_row3_elem_at(registry, 0x75));
-    const int wanted = hud_row_wanted();
-    const int mission = hud_row3_mission();
-    const int gen = hud_row3_generation();
-    /* One line per gate change (and a short heartbeat) so a silent worker is
-     * never ambiguous again. */
-    const int snapshot = (registry != NULL) | (natives << 1) | (wanted << 2) |
-                         (mission << 3);
-    if (tick_no <= 6 || snapshot != g_hud_row3_gate_logged) {
-        g_hud_row3_gate_logged = snapshot;
-        LOG("hud row3: tick %d gate registry=%d natives=%d tokoyo=%d mission=%d "
-            "gen=%d element=%d", tick_no, registry != NULL, natives, wanted, mission,
-            gen, g_hud_row3_gen);
-    }
-    if (!natives) {
-        g_hud_row3_settle = 0;
-        return;
-    }
-    if (!wanted)
-        return;                       /* mode off: park, do not unwind */
-    if (!mission)
-        return;                       /* prep/lobby HUD: the third row is mission-only */
-    /* Rows 1/2 are animated by a per-frame caller reached through the menu's
-     * heap (script) objects, so there is no call site to copy. The class's own
-     * vtable is the reachable equivalent: patch its two per-frame slots and the
-     * game's calls to rows 1/2 become our tick for row 3. */
-    hud_row3_native_hook();
-    if (InterlockedExchange(&g_hud_row3_dead, 0) && g_hud_row3_elem) {
-        /* The game destroyed our element, or a drive found it stale. Only act
-         * when there is something to drop: resetting the settle for a no-op is
-         * what starved the rebuild in trial 4 (dead never stayed cleared long
-         * enough for the two-tick settle to elapse). */
-        uint8_t *const slot = (uint8_t *)registry + (size_t)HUD_ROW3_ID * 8;
-        int cleared = 0;
-        if (readable(slot, sizeof(void *)) && *(void **)slot == g_hud_row3_elem) {
-            *(void **)slot = NULL;
-            cleared = 1;
-        }
-        LOG("hud row3: dropped the element from gauge generation %d "
-            "(slot %s), rebuilding after the settle", g_hud_row3_gen,
-            cleared ? "cleared" : "already replaced");
-        g_hud_row3_elem = NULL;
-        g_hud_row3_char = NULL;
-        g_hud_row3_char_slot = -1;
-        g_hud_row3_gen = -1;
-        memset(g_hud_row3_block, 0, sizeof g_hud_row3_block);
-        g_hud_row3_settle = 0;
-    }
-    void *const row3_found = hud_row3_elem_at(registry, HUD_ROW3_ID);
-    const int ours = row3_found && hud_row3_ours(row3_found);
-    void *row3 = ours ? row3_found : NULL;
-    if (row3 && g_hud_row3_gen != gen) {
-        /* Our element survived the registry but the gauge was rebuilt under it:
-         * it and its sprites belong to the previous HUD. Never drive it. */
-        if (gen != g_hud_row3_stale_gen) {
-            g_hud_row3_stale_gen = gen;
-            LOG("hud row3: element belongs to gauge generation %d, now %d; dropping it",
-                g_hud_row3_gen, gen);
-        }
-        uint8_t *const slot = (uint8_t *)registry + (size_t)HUD_ROW3_ID * 8;
-        if (readable(slot, sizeof(void *)) && *(void **)slot == row3)
-            *(void **)slot = NULL;
-        g_hud_row3_elem = NULL;
-        g_hud_row3_char = NULL;
-        g_hud_row3_char_slot = -1;
-        g_hud_row3_gen = -1;
-        memset(g_hud_row3_block, 0, sizeof g_hud_row3_block);
-        g_hud_row3_settle = 0;
-        return;
-    }
-    if (row3_found && !ours) {
-        /* A previous screen's element may still be on its way out, so wait
-         * out the same settle the build waits for before calling 0x73 taken. */
-        if (g_hud_row3_settle < HUD_ROW3_SETTLE) {
-            g_hud_row3_settle++;
-            return;
-        }
-        /* Some other element owns 0x73 in this session's UI. Replacing it
-         * would break whatever it belongs to, so row 3 stays off. */
-        LOG("hud row3: element slot %#x already holds %p (not ours), "
-            "skipping the third row this session", HUD_ROW3_ID, row3_found);
-        g_hud_row3_failed = 1;
-        return;
-    }
-    if (!row3) {
-        if (g_hud_row3_settle < HUD_ROW3_SETTLE) {
-            g_hud_row3_settle++;
-            return;
-        }
-        if (g_hud_row3_attempts >= 3) {
-            LOG("hud row3: giving up after %d build attempts", g_hud_row3_attempts);
-            g_hud_row3_failed = 1;
-            return;
-        }
-        g_hud_row3_attempts++;
-        LOG("hud row3: element slot %#x is free, creating the third row", HUD_ROW3_ID);
-        row3 = hud_row3_build(registry);
-        if (!row3)
-            return;
-    }
-    const int kept = hud_row3_maintain();
-    if (tick_no <= 6)
-        LOG("hud row3: tick %d maintain kept=%d (companion slot %d)",
-            tick_no, kept, g_hud_row3_char_slot);
-    if (!kept) {
-        /* Never show a row we cannot feed: an unbound block C would render
-         * whatever the empty state does, and a duplicate of row 1 is worse. */
-        static int logged;
-        if (!logged) {
-            logged = 1;
-            LOG("hud row3: no companion character distinct from rows 1/2 yet; "
-                "row stays hidden");
-        }
-        return;
-    }
-    if (g_hud_row3_driven)
-        return;                     /* the piggyback now places and shows it */
-    /* Fallback until a native row has gone through the patched slots: arm the
-     * frame thunk, which runs on the game thread if the game calls it at all. */
-    InterlockedExchange(&g_hud_row3_pending, 1);
-    if (!g_hud_row3_frame_fired && ++g_hud_row3_starved == 10)
-        LOG("hud row3: no game-thread frame call yet; the row stays unplaced");
-}
-
-/* The game builds the HUD once per mission but rewrites the state word while
- * it settles, so keep the rows shown for as long as they exist. */
-static DWORD WINAPI hud_row_worker(LPVOID unused)
-{
-    (void)unused;
-    for (int tick = 0; tick < 1200; tick++) {
-        if (hud_row_wanted()) {
-            const LONG n = g_hud_row_count;
-            for (LONG i = 0; i < n; i++)
-                hud_row_show(g_hud_rows[i]);
-        }
-        hud_row3_tick();
-        Sleep(500);
-    }
-    /* Clear the latch so a later HUD build starts a fresh watch: the game
-     * rebuilds the rows on every mission, and the latched flag used to leave
-     * the second and later HUDs with neither a restoration watch nor a row-3
-     * drive. */
-    LOG("hud row: restoration watch ended, a later HUD build starts a new one");
-    InterlockedExchange(&g_hud_row_worker_started, 0);
-    return 0;
-}
-
+/* The second row used to be kept alive by a worker thread that wrote the row's
+ * state word from outside the game thread and kept raw pointers to rows the
+ * game later destroyed. Every row action now runs on the game thread, inside
+ * the per-frame slots of the native rows (piggy_update / piggy_frame), so no
+ * row pointer is stored and nothing touches the HUD from another thread.
+ * This hook only counts HUD generations and arms the piggyback. */
 static void *det_HudRow(void *self, int id, int index)
 {
     void *const row = g_hud_row_ctor(self, id, index);
@@ -4749,16 +4714,9 @@ static void *det_HudRow(void *self, int id, int index)
         LOG("game hud: native gauge generation %ld (mission loader %s)",
             gen, hud_row3_mission() ? "in mission" : "prep");
     }
-    if (g_cfg.max_players >= 3 && id != 0x74 && row && g_hud_row_count < HUD_ROWS_MAX) {
-        const LONG slot = InterlockedIncrement(&g_hud_row_count) - 1;
-        if (slot < HUD_ROWS_MAX) {
-            g_hud_rows[slot] = row;
-            LOG("game hud: companion row id=%#x built", id);
-            if (hud_row_wanted())
-                hud_row_show(row);
-        }
-        if (InterlockedCompareExchange(&g_hud_row_worker_started, 1, 0) == 0)
-            CreateThread(NULL, 0, hud_row_worker, NULL, 0, NULL);
+    if (g_cfg.max_players >= 3 && id != 0x74 && row) {
+        LOG("game hud: companion row id=%#x built", id);
+        hud_row3_native_hook();
     }
     return row;
 }
