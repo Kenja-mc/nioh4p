@@ -2235,8 +2235,14 @@ Closing the menu restored that byte to 1.
 The main HUD has vtable RVA `0x1277e28`. Its methods `0xc58fc0` and
 `0xc59840` propagate visibility to its layout. The extra row owns a separate
 layout, so it must follow those methods rather than the companion rows.
-The current source hooks those two methods and checks the main HUD's flags
-before updating or showing the extra row. This change still needs live proof.
+Candidate `6e5ef2c9` hooks those methods and checks the main HUD's flags.
+It passed all six harness runs and entered `Deep in the Shadows` at four.
+Opening visitor a's pause menu cleared the extra element's flags to
+`0x01000000`, so the callback did run. The separate container still had both
+visibility bytes set to 1 and stayed painted over the menu
+(`shots/hud6e-pause-cleanup-a.png`).
+The current hide helper also hides that container. Every empty, released,
+and menu-hidden row uses the same helper. This change still needs live proof.
 
 Still needed: partial damage and healing on each companion, Ki behavior, a
 completed mission exit and second mission, and character departure/rebinding.

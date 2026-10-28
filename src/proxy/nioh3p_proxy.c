@@ -3182,17 +3182,6 @@ static void hud_row_show(void *row)
     *(volatile uint32_t *)flags = now | HUD_ROW_SHOWN;
 }
 
-/* Back to the hidden word 0x01000000: the third row while it has no companion. */
-static void hud_row_hide(void *row)
-{
-    uint8_t *const flags = (uint8_t *)row + HUD_ROW_FLAGS_OFF;
-    if (!readable(flags, 4))
-        return;
-    const uint32_t now = *(const uint32_t *)flags;
-    if (!(now & (HUD_ROW_SHOWN & ~0x01000000u)))
-        return;
-    *(volatile uint32_t *)flags = now & ~(HUD_ROW_SHOWN & ~0x01000000u);
-}
 
 /* Only a companion session gets the second row; another mode that happens to
  * build this gauge class keeps its own layout. The byte is logged whenever it
@@ -3635,21 +3624,29 @@ static void hud_row3_release_native(void *row)
     }
 }
 
-/* Slots 0xb8 (flag 0x30 on the sprites, then 0xbf3af0) and 0xd8 (flag 0x31,
- * then 0xbf3dd0): show or hide the two bar sprites. */
+/* C owns a separate layout. Its container must follow the bar sprites too:
+ * hiding the element flags alone leaves that layout painted over menus. */
 static int hud_row3_visibility(void *row, uint8_t on, int second)
 {
     hn_v_pb set = HN(hn_v_pb, second ? 0xddc090 : 0xdd9980);
+    void *const container = *(void **)((uint8_t *)row + HUD_ROW3_CONTAINER_OFF);
     void *const s48 = hud_c_sprite(0), *const s50 = hud_c_sprite(1);
     void *const s58 = hud_c_sprite(2), *const s60 = hud_c_sprite(3);
     const int bound = *(const uint32_t *)(g_hud_row3_block + HUD_ROW3_STATE_OFF) != 0;
     if (!on || bound) {
+        if (container) set(container, on);
         if (s48) set(s48, on);
         if (s50) set(s50, on);
     }
     if (s58) set(s58, 0);
     if (s60) set(s60, 0);
     return ((int (*)(void *, uint8_t))(g_base + (second ? 0xbf3dd0 : 0xbf3af0)))(row, on);
+}
+
+static void hud_row_hide(void *row)
+{
+    hud_row3_visibility(row, 0, 0);
+    hud_row3_visibility(row, 0, 1);
 }
 
 static int hud_row3_gameplay(void *row)
@@ -3663,8 +3660,6 @@ static int hud_row3_gameplay(void *row)
         return 1;
     /* The result screen can keep the registered element alive after the
      * native HUD disappears. Hide its sprites before disabling its updates. */
-    hud_row3_visibility(row, 0, 0);
-    hud_row3_visibility(row, 0, 1);
     hud_row_hide(row);
     return 0;
 }
@@ -4867,8 +4862,6 @@ static void hud_row3_follow_hide(void *self, uint8_t on)
     if (hud_row3_elem_at(registry, 0) != self ||
         hud_row3_elem_at(registry, HUD_ROW3_ID) != g_hud_row3_elem)
         return;
-    hud_row3_visibility(g_hud_row3_elem, 0, 0);
-    hud_row3_visibility(g_hud_row3_elem, 0, 1);
     hud_row_hide(g_hud_row3_elem);
 }
 
