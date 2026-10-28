@@ -2168,20 +2168,27 @@ the rewritten third row fixes it: that needs the live run listed at the end.
   so a bind or unbind inside the swap linked or unlinked row 1's address in
   the wrong character's list. It also copied A's `+0x38/+0x40` into C, which
   the node semantics make meaningless.
-- **Rewrite.** The assigner `0x140c21240` and the unbind `0x140c1e310` take
-  the block as an argument and are called on block C directly, so the
-  character is bound through C's own node; the class update runs in an
-  exchange window that relocates the node with its neighbours; sprites must
-  pass `0x140dd93e0` before anything runs; and every transition of block C
-  happens on the game thread (the worker thread and the `g_hud_rows` list are
-  gone).
+- **Rewrite.** Block C is never moved and never exchanged with A. The assigner
+  `0x140c21240` and the unbind `0x140c1e310` take the block as an argument and
+  are called on C, so the character is bound through C's own node at C's own
+  address. The seven class methods that pick block A or B by element id
+  (`0xc1f500` update, `0xc210c0` frame, `0xc1eba0` init, `0xc1e9c0` release,
+  `0xc1f040`, `0xc1f140`; the destructor `0xc1e2d0` touches no block) are
+  rewritten against C in the private vtable, from the disassembly, and every
+  native they call is checked against its first eight bytes before the row is
+  built. Sprites must pass `0x140dd93e0` before any of it runs, and every
+  transition of block C happens on the game thread (the worker thread and the
+  `g_hud_rows` list are gone). A node that disagrees with its character's list
+  is left untouched and disables the row.
 
 Live evidence still needed: a four-player mission with `hud_row3=1` on a build
 with this change, checking (1) the log lines `all five sprites resolved after N
 frames` and `bound companion ... natively`, (2) that the third name differs
 from the two native names and its HP follows damage and healing on every
-client, (3) no `inconsistent reference node` line, and (4) mission exit and a
-second mission without a fault.
+client (the periodic `row3 char ... hp` line), (3) no `disagrees with its
+character's list` or `not the supported build` line, and (4) mission exit and
+a second mission without a fault. The rewrite of the update is the least
+verified part: compare row 3's bar and name behaviour with rows 1 and 2.
 
 The experimental row remains off by default. Do not infer that the normal
 configuration has the same fault from this test.

@@ -3232,10 +3232,12 @@ static int hud_row_wanted(void)
  * proxy-owned block C, and lets the class bind C to the companion that
  * neither native row shows.
  *
- * C reaches the class code in two ways. The functions that take the block as
- * an argument (the assigner 0xc21240 and the unbind 0xc1e310) get &C and run
- * with no exchange. The methods that choose A or B by element id run inside
- * a window that exchanges A and C, node identity included (hud_row3_enter).
+ * C reaches the class code only as an explicit argument: the assigner
+ * 0xc21240 and the helpers 0xc1e310, 0xc1e400, 0xc20c50 ... take the block.
+ * The seven methods that pick A or B by element id with a RIP-relative
+ * address cannot be pointed at C, so the private vtable carries rewrites of
+ * them against C (hud_row3_update_native and friends). Nothing is exchanged
+ * with A and no reference node is ever moved.
  *
  * Facts this relies on, all from the runtime image dump (see
  * docs/RE_TOKOYO_COOP.md, "Party HUD"):
@@ -3315,6 +3317,8 @@ static int hud_row_wanted(void)
 #define HUD_ROW3_REF_PREV         0x08u     /* node+0x08 = block+0x38 */
 #define HUD_ROW3_REF_NEXT         0x10u     /* node+0x10 = block+0x40 */
 #define HUD_ROW3_REF_HEAD         0xf40u    /* character+0xf40 = first node */
+#define HUD_ROW3_REF_UNLINK_RVA   0x756bc0u /* unlink a node */
+#define HUD_ROW3_MODE_MGR_RVA     0x189f420u /* [.] HUD mode manager: +0x150, +0x154 */
 
 /* Companion choice is the game's: the assigner (0xc21240) walks the character
  * set and takes the first character that is not the local one, has
@@ -3347,8 +3351,8 @@ typedef void (*hud_unbind_fn)(void *block);                        /* 0x140c1e31
 static uint8_t g_hud_row3_block[HUD_ROW3_BLOCK_SIZE] __attribute__((aligned(8)));
 static void *g_hud_row3_vtable;
 static void *g_hud_row3_orig[HUD_ROW3_SLOT_COUNT];
-static volatile LONG g_hud_row3_swap;      /* 1 while A and C are exchanged */
-static volatile LONG g_hud_row3_active;    /* thunks may open the window */
+static volatile LONG g_hud_row3_active;    /* our element is live: thunks may run */
+static int g_hud_row3_released;            /* the release slot already ran */
 static volatile LONG g_hud_row3_dead;      /* the game destroyed our element */
 static void *g_hud_row3_elem;              /* the element we published */
 static int g_hud_row3_attempts;            /* build attempts this session */
@@ -3415,11 +3419,10 @@ static int piggy_frame(void *self);
  *     character's release could not clear it: the block kept a freed
  *     character and the class update read through its torn-down model
  *     (host: exe+0x765ba0, [[char+0x230]+8]+0x58 = 0);
- *   - exchanging whole blocks by memcpy moved the node's CONTENTS but not its
- *     address, so bind/unbind inside the exchange linked and unlinked row 1's
- *     address in another character's list.
- * hud_ref_move() relocates a node the way the list needs it: copy the three
- * qwords and repoint the neighbours (and the list head) at the new address. */
+ *   - exchanging whole blocks moved a node's contents but not its address.
+ * Block C therefore never moves, is never exchanged with A, and is only ever
+ * handed to class code as the explicit block argument. Its node stays at one
+ * address for the life of the process. */
 static int hud_ref_consistent(const uint8_t *node)
 {
     const uint8_t *const ch = *(const uint8_t *const *)node;
@@ -3442,106 +3445,408 @@ static int hud_ref_consistent(const uint8_t *node)
     return 1;
 }
 
-static void hud_ref_move(uint8_t *dst, uint8_t *src)
-{
-    uint8_t *const ch = *(uint8_t *const *)src;
-    uint8_t *const prev = *(uint8_t *const *)(src + HUD_ROW3_REF_PREV);
-    uint8_t *const next = *(uint8_t *const *)(src + HUD_ROW3_REF_NEXT);
-    *(uint8_t **)dst = ch;
-    *(uint8_t **)(dst + HUD_ROW3_REF_PREV) = prev;
-    *(uint8_t **)(dst + HUD_ROW3_REF_NEXT) = next;
-    if (ch) {
-        if (prev && readable(prev, 0x18))
-            *(uint8_t **)(prev + HUD_ROW3_REF_NEXT) = dst;
-        else if (!prev && readable(ch + HUD_ROW3_REF_HEAD, sizeof(void *)))
-            *(uint8_t **)(ch + HUD_ROW3_REF_HEAD) = dst;
-        if (next && readable(next, 0x18))
-            *(uint8_t **)(next + HUD_ROW3_REF_PREV) = dst;
-    }
-    *(uint8_t **)src = NULL;
-    *(uint8_t **)(src + HUD_ROW3_REF_PREV) = NULL;
-    *(uint8_t **)(src + HUD_ROW3_REF_NEXT) = NULL;
-}
-
-/* Exchange block A and block C completely, node identity included. The two
- * halves of a window are the same exchange, so enter and leave share it. */
-static int hud_row3_exchange(int check)
-{
-    uint8_t *const a = hud_row3_a();
-    uint8_t *const c = g_hud_row3_block;
-    if (!readable(a, HUD_ROW3_BLOCK_SIZE))
-        return 0;
-    if (check && (!hud_ref_consistent(a + HUD_ROW3_REF_OFF) ||
-                  !hud_ref_consistent(c + HUD_ROW3_REF_OFF)))
-        return 0;
-    uint64_t node[3];
-    hud_ref_move((uint8_t *)node, a + HUD_ROW3_REF_OFF);
-    hud_ref_move(a + HUD_ROW3_REF_OFF, c + HUD_ROW3_REF_OFF);
-    hud_ref_move(c + HUD_ROW3_REF_OFF, (uint8_t *)node);
-    /* Everything but the node: +0x00..+0x2f and the sprites and timers from
-     * +0x48. */
-    uint8_t tmp[HUD_ROW3_BLOCK_SIZE];
-    memcpy(tmp, a, 0x30);
-    memcpy(a, c, 0x30);
-    memcpy(c, tmp, 0x30);
-    memcpy(tmp, a + 0x48, HUD_ROW3_BLOCK_SIZE - 0x48);
-    memcpy(a + 0x48, c + 0x48, HUD_ROW3_BLOCK_SIZE - 0x48);
-    memcpy(c + 0x48, tmp, HUD_ROW3_BLOCK_SIZE - 0x48);
-    return 1;
-}
-
-/* Take the static block A out of row 1's hands for one call into the class and
- * put C there. Game thread only.
- *   1  exchanged; caller must call hud_row3_leave()
- *   0  the window is already open, i.e. a nested call: A already carries C
- *  -1  cannot exchange, so the class must not run at all (it would operate
- *      on row 1's block) */
-static int hud_row3_enter(void)
-{
-    if (!g_hud_row3_active)
-        return -1;
-    if (InterlockedCompareExchange(&g_hud_row3_swap, 1, 0) != 0)
-        return 0;
-    if (!hud_row3_exchange(1)) {
-        InterlockedExchange(&g_hud_row3_swap, 0);
-        static int logged;
-        if (!logged) {
-            logged = 1;
-            const uint8_t *const a = hud_row3_a();
-            LOG("hud row3: block A or C has an inconsistent reference node; the "
-                "class is not run on it (A node %p %p %p, C node %p %p %p)",
-                *(void *const *)(a + 0x30), *(void *const *)(a + 0x38),
-                *(void *const *)(a + 0x40), *(void *const *)(g_hud_row3_block + 0x30),
-                *(void *const *)(g_hud_row3_block + 0x38),
-                *(void *const *)(g_hud_row3_block + 0x40));
-        }
-        return -1;
-    }
-    return 1;
-}
-
-/* Undo the exchange: whatever the call did to C (state, HP, binding) travels
- * back with it, and row 1 gets its own block and node back. */
-static void hud_row3_leave(void)
-{
-    hud_row3_exchange(0);
-    InterlockedExchange(&g_hud_row3_swap, 0);
-}
-
 /* Release block C's hold on the world without touching a sprite: unlink its
- * reference node (only when it is verifiably linked) and clear the block. For
- * an element that is gone or is about to be rebuilt. */
-static void hud_row3_forget(void)
+ * reference node natively and clear the block. For an element that is gone or
+ * about to be rebuilt. A node that does not agree with its character's list is
+ * NOT cleared: zeroing it would leave the neighbours and the list head pointing
+ * into a block we then reuse. The block is left exactly as it is and the row
+ * is disabled for the session. Returns 1 when the block is clean. */
+static int hud_row3_forget(void)
 {
     uint8_t *const node = g_hud_row3_block + HUD_ROW3_REF_OFF;
     if (*(void **)node) {
-        if (hud_ref_consistent(node))
-            ((void (*)(void *))(g_base + 0x756bc0u))(node);
-        else
-            LOG("hud row3: block C reference node is inconsistent, not unlinking");
+        if (!hud_ref_consistent(node)) {
+            LOG("hud row3: block C's reference node disagrees with its character's "
+                "list (char %p prev %p next %p); block left untouched, third row "
+                "disabled for this session", *(void **)node,
+                *(void **)(node + HUD_ROW3_REF_PREV), *(void **)(node + HUD_ROW3_REF_NEXT));
+            g_hud_row3_failed = 1;
+            return 0;
+        }
+        ((void (*)(void *))(g_base + HUD_ROW3_REF_UNLINK_RVA))(node);
     }
     memset(g_hud_row3_block, 0, sizeof g_hud_row3_block);
     g_hud_row3_have_pos = 0;
+    g_hud_row3_released = 0;
+    return 1;
+}
+
+/* ---- the class methods that select block A or B by element id ------------
+ * Seven methods of the class pick their block from the element id with a
+ * RIP-relative address, so they cannot be pointed at block C. The helpers
+ * they call take the block as an argument. These functions are the same
+ * code with C substituted, written against the disassembly (0xc1f500 update,
+ * 0xc210c0 frame, 0xc1eba0 init, 0xc1e9c0 release, 0xc1f040 / 0xc1f140 the
+ * two visibility slots); 0xc1e2d0, the destructor, does not touch a block and
+ * stays the game's. Every native they call is checked against its first bytes
+ * (hud_row3_code_ok) so a different executable build refuses the feature
+ * instead of running mismatched code. */
+typedef void (*hn_v_p)(void *);
+typedef void (*hn_v_ppp)(void *, void *, void *);
+typedef void (*hn_v_pp)(void *, void *);
+typedef uint8_t (*hn_b_p)(void *);
+typedef uint8_t (*hn_b_pi)(void *, int);
+typedef void (*hn_v_pb)(void *, uint8_t);
+typedef void (*hn_v_pib)(void *, int, uint8_t);
+typedef void (*hn_v_anim)(void *, int, int, float, uint8_t);    /* 0xdd94c0 */
+typedef void (*hn_v_text)(void *, int, int, int, int);          /* 0xddadc0 */
+typedef void (*hn_v_setf)(void *, int, float);                  /* 0xddc000 */
+typedef void *(*hn_p_fii)(float, int, int);                     /* 0xddf270 */
+#define HN(type, rva) ((type)(g_base + (rva)))
+
+static const struct { uint32_t rva; uint8_t bytes[8]; } g_hud_row3_native_sig[] = {
+    {0xbf3df0, {0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83}},
+    {0xbf33c0, {0x48, 0x8b, 0x15, 0x39, 0xc0, 0xca, 0x00, 0x48}},
+    {0xddf270, {0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c}},
+    {0xc1eb10, {0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74}},
+    {0xc1e310, {0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74}},
+    {0xc1e400, {0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x18, 0x57}},
+    {0xc1e680, {0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74}},
+    {0xc20c50, {0x48, 0x8b, 0xc4, 0x56, 0x57, 0x48, 0x81, 0xec}},
+    {0xc20a00, {0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c}},
+    {0xc20580, {0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74}},
+    {0xc20300, {0x40, 0x53, 0x48, 0x83, 0xec, 0x70, 0x41, 0x83}},
+    {0xc1fe60, {0x40, 0x53, 0x48, 0x83, 0xec, 0x70, 0x41, 0x83}},
+    {0xc21240, {0x40, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55}},
+    {0xdd9980, {0x88, 0x51, 0x30, 0xc3, 0xcc, 0xcc, 0xcc, 0xcc}},
+    {0xddc090, {0x88, 0x51, 0x31, 0xc3, 0xcc, 0xcc, 0xcc, 0xcc}},
+    {0xddbf00, {0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x41, 0x0f}},
+    {0xdd94c0, {0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c}},
+    {0xddadc0, {0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83}},
+    {0xdd9480, {0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0xe8, 0x45}},
+    {0xdd93c0, {0x48, 0x83, 0xec, 0x28, 0xe8, 0x07, 0xce, 0xff}},
+    {0xdd93e0, {0x48, 0x8b, 0x41, 0x28, 0x48, 0x85, 0xc0, 0x74}},
+    {0xdd9400, {0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b}},
+    {0xddcb00, {0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83}},
+    {0xddc000, {0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83}},
+    {0xdd6660, {0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x8b, 0xda}},
+    {0xdd6700, {0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83}},
+    {0xdd66c0, {0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83}},
+    {0xdd95d0, {0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83}},
+    {0xddc0a0, {0x48, 0x8b, 0xc4, 0x57, 0x41, 0x54, 0x41, 0x55}},
+    {0xdcfb70, {0x4c, 0x8b, 0x15, 0x69, 0xda, 0xb4, 0x00, 0x44}},
+    {0xce2c30, {0x48, 0x8b, 0x05, 0xc9, 0xc7, 0xbb, 0x00, 0x48}},
+    {0xddf3b0, {0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83}},
+    {0x77f9b0, {0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74}},
+    {0x7b2c00, {0x40, 0x57, 0x48, 0x83, 0xec, 0x30, 0x48, 0xc7}},
+    {0x7b2580, {0x4c, 0x8b, 0x81, 0xa8, 0x01, 0x00, 0x00, 0x4d}},
+    {0x7b4290, {0x83, 0x39, 0x01, 0x0f, 0x94, 0xc0, 0xc3, 0xcc}},
+    {0x765b60, {0x48, 0x89, 0x5c, 0x24, 0x10, 0x56, 0x48, 0x83}},
+    {0xc01980, {0x48, 0x83, 0xec, 0x38, 0x48, 0x8b, 0xc1, 0x48}},
+    {0x752640, {0x48, 0x83, 0xec, 0x28, 0x65, 0x48, 0x8b, 0x04}},
+    {0xc04270, {0x48, 0x83, 0xec, 0x58, 0x48, 0x8b, 0x05, 0x9d}},
+    {0xdda790, {0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83}},
+    {0xbf3af0, {0x88, 0x51, 0x28, 0xc3, 0xcc, 0xcc, 0xcc, 0xcc}},
+    {0xbf3dd0, {0x88, 0x51, 0x2a, 0xc3, 0xcc, 0xcc, 0xcc, 0xcc}},
+    {0xbf30a0, {0x48, 0x8d, 0x05, 0x21, 0x5e, 0x67, 0x00, 0x89}},
+    {0x756bc0, {0x48, 0x8b, 0x51, 0x10, 0x48, 0x8b, 0x41, 0x08}},
+    {0xc1f500, {0x48, 0x8b, 0xc4, 0x48, 0x81, 0xec, 0x88, 0x00}},
+    {0xc210c0, {0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83}},
+    {0xc1eba0, {0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c}},
+    {0xc1e9c0, {0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74}},
+    {0xc1f040, {0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c}},
+    {0xc1f140, {0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c}},
+    {0xc1e2d0, {0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83}},
+};
+/* Constants the class reads from .rdata: 1.0, the y offset (60.0), the fade
+ * limit (15.0) and the five sprite scales. */
+static const struct { uint32_t rva; uint32_t bits; } g_hud_row3_const_sig[] = {
+    {0x1588938, 0x3f800000u}, {0x12675d8, 0x42700000u}, {0x1268c10, 0x41700000u},
+    {0x1244088, 0x3f42d0e5u}, {0x158889c, 0x3f000000u}, {0x12390e0, 0x3f004189u},
+};
+
+/* 1 when every native the rewrite calls has the bytes it was written against. */
+static int hud_row3_code_ok(void)
+{
+    static int verdict = -1;
+    if (verdict >= 0)
+        return verdict;
+    verdict = 1;
+    for (size_t i = 0; i < sizeof g_hud_row3_native_sig / sizeof g_hud_row3_native_sig[0]; i++) {
+        const uint8_t *const at = g_base + g_hud_row3_native_sig[i].rva;
+        if (!readable(at, 8) || memcmp(at, g_hud_row3_native_sig[i].bytes, 8)) {
+            LOG("hud row3: executable bytes at %#x are not the supported build; "
+                "the third row stays off", g_hud_row3_native_sig[i].rva);
+            verdict = 0;
+            return 0;
+        }
+    }
+    for (size_t i = 0; i < sizeof g_hud_row3_const_sig / sizeof g_hud_row3_const_sig[0]; i++) {
+        const uint8_t *const at = g_base + g_hud_row3_const_sig[i].rva;
+        if (!readable(at, 4) || *(const uint32_t *)at != g_hud_row3_const_sig[i].bits) {
+            LOG("hud row3: constant at %#x is not the supported build's; the third "
+                "row stays off", g_hud_row3_const_sig[i].rva);
+            verdict = 0;
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void *hud_c_sprite(int i)
+{
+    return *(void **)(g_hud_row3_block + HUD_ROW3_SPRITES_OFF + (size_t)i * 8);
+}
+
+/* Init, 0xc1eba0: five sprites, the element id as their layout key. */
+static int hud_row3_init_native(void *row)
+{
+    uint8_t *const c = g_hud_row3_block;
+    void **const vt = *(void ***)row;
+    int (*const id_of)(void *) = (int (*)(void *))vt[0xa8 / 8];
+    const uint8_t ok = HN(hn_b_p, 0xbf33c0)(row);
+    void *s = HN(hn_p_fii, 0xddf270)(0.761f, 0x27761, id_of(row));
+    *(void **)((uint8_t *)row + HUD_ROW3_CONTAINER_OFF) = s;
+    if (!s)
+        return 0;
+    *((uint8_t *)s + 0x39) = 1;
+    HN(hn_v_p, 0xc1eb10)(c);
+    static const struct { int id; float scale; } spr[4] = {
+        {0x3fe35, 0.5f}, {0x7fcb9, 0.5f}, {0x51dd7, 0.5f}, {0x15ac4, 0.501f},
+    };
+    for (int i = 0; i < 4; i++) {
+        s = HN(hn_p_fii, 0xddf270)(spr[i].scale, spr[i].id, id_of(row));
+        *(void **)(c + HUD_ROW3_SPRITES_OFF + (size_t)i * 8) = s;
+        if (!s)
+            return 0;
+    }
+    return ok;
+}
+
+/* Release, 0xc1e9c0: the container, then the four block sprites. Once. */
+static void hud_row3_release_native(void *row)
+{
+    if (g_hud_row3_released)
+        return;
+    g_hud_row3_released = 1;
+    void *const cont = *(void **)((uint8_t *)row + HUD_ROW3_CONTAINER_OFF);
+    if (cont)
+        HN(hn_v_p, 0xddf3b0)(cont);
+    for (int i = 0; i < 4; i++) {
+        void *const s = hud_c_sprite(i);
+        if (s)
+            HN(hn_v_p, 0xddf3b0)(s);
+        *(void **)(g_hud_row3_block + HUD_ROW3_SPRITES_OFF + (size_t)i * 8) = NULL;
+    }
+}
+
+/* Slots 0xb8 (flag 0x30 on the sprites, then 0xbf3af0) and 0xd8 (flag 0x31,
+ * then 0xbf3dd0): show or hide the two bar sprites. */
+static int hud_row3_visibility(void *row, uint8_t on, int second)
+{
+    hn_v_pb set = HN(hn_v_pb, second ? 0xddc090 : 0xdd9980);
+    void *const s48 = hud_c_sprite(0), *const s50 = hud_c_sprite(1);
+    void *const s58 = hud_c_sprite(2), *const s60 = hud_c_sprite(3);
+    const int bound = *(const uint32_t *)(g_hud_row3_block + HUD_ROW3_STATE_OFF) != 0;
+    if (!on || bound) {
+        if (s48) set(s48, on);
+        if (s50) set(s50, on);
+    }
+    if (s58) set(s58, 0);
+    if (s60) set(s60, 0);
+    return ((int (*)(void *, uint8_t))(g_base + (second ? 0xbf3dd0 : 0xbf3af0)))(row, on);
+}
+
+/* Frame, 0xc210c0: once the container and the two bar sprites resolve, put the
+ * bar sprites in their start pose. Returns the class's own success flag. */
+static int hud_row3_frame_native(void *row)
+{
+    if (!HN(hn_b_p, 0xce2c30)(row))
+        return 0;
+    void *const cont = *(void **)((uint8_t *)row + HUD_ROW3_CONTAINER_OFF);
+    if (!cont)
+        return 0;
+    if (HN(hn_b_p, 0xdd9400)(cont) && !HN(hn_b_p, 0xdd93e0)(cont)) {
+        const int e = ((int (*)(uint32_t))(g_base + 0xdcfb70))(0xf2155);
+        ((void (*)(void *, int, int, int, int))(g_base + 0xddc0a0))(cont, e, 0, 0, 0);
+        ((void (*)(void *, uint32_t))(g_base + 0xdd95d0))(cont, 0xf2155);
+    }
+    void *const s48 = hud_c_sprite(0), *const s50 = hud_c_sprite(1);
+    if (!s48 || !s50 || !HN(hn_b_p, 0xdd93e0)(cont) ||
+        !HN(hn_b_p, 0xdd93e0)(s48) || !HN(hn_b_p, 0xdd93e0)(s50))
+        return 0;
+    HN(hn_v_setf, 0xddc000)(s48, 0, 0.0f);
+    HN(hn_v_setf, 0xddc000)(s48, 8, 0.0f);
+    for (int i = 3; i <= 6; i++)
+        HN(hn_v_pib, 0xddbf00)(s48, i, 0);
+    const int e = ((int (*)(void *, int))(g_base + 0xdd6660))(s48, 1);
+    if (e != -1)
+        HN(hn_v_text, 0xddadc0)(s48, 0x10, 0, e, 0);
+    return 1;
+}
+
+/* Update, 0xc1f500, for block C. State 0 (empty) is not handled here: it runs
+ * the character assigner, which the drive calls by itself (hud_row3_assign) so
+ * that its exclusion test sees rows 1 and 2 at their real addresses. States:
+ * 1 bound and fading in, 2 showing, 3 the companion went away, 4 following
+ * the companion (placing the name tag on the world position). */
+static void hud_row3_update_native(void *row, void *arg)
+{
+    uint8_t *const c = g_hud_row3_block;
+    uint32_t *const state = (uint32_t *)(c + HUD_ROW3_STATE_OFF);
+    uint8_t *const mgr = *(uint8_t *const *)(g_base + HUD_ROW3_MODE_MGR_RVA);
+    void *const cont = *(void **)((uint8_t *)row + HUD_ROW3_CONTAINER_OFF);
+    if (!mgr || !readable(mgr + 0x150, 8) || !cont)
+        return;
+    hn_v_ppp refresh_a = HN(hn_v_ppp, 0xc20c50), refresh_b = HN(hn_v_ppp, 0xc20a00),
+             refresh_c = HN(hn_v_ppp, 0xc20580);
+    hn_b_pi done = HN(hn_b_pi, 0xdd93c0);
+    void *const s48 = hud_c_sprite(0), *const s50 = hud_c_sprite(1);
+    void *ch = *(void **)(c + HUD_ROW3_CHAR_OFF);
+
+    HN(hn_v_p, 0xbf3df0)(row);
+    switch (*state) {
+    case 1:
+        if (!ch) {
+            HN(hn_v_pp, 0xc1e680)(row, c);
+            break;
+        }
+        if (done(s48, 0) && done(s50, 0))
+            *state = 2;
+        refresh_a(row, arg, c);
+        refresh_b(row, arg, c);
+        refresh_c(row, arg, c);
+        break;
+    case 2:
+        if (!ch) {
+            HN(hn_v_pp, 0xc1e680)(row, c);
+            break;
+        }
+        if (*(const int *)(mgr + 0x154) == 1) {
+            float *const t = (float *)(c + 0x68);
+            if (*(const float *)(g_base + 0x1268c10) > *t)
+                *t += *(const float *)((const uint8_t *)arg + 0x18322c);
+            else
+                HN(hn_v_pp, 0xc1e680)(row, c);
+        }
+        refresh_a(row, arg, c);
+        refresh_b(row, arg, c);
+        refresh_c(row, arg, c);
+        break;
+    case 3:
+        if (done(s48, 1)) {
+            if (!done(s50, 1))
+                break;
+            HN(hn_v_p, 0xddcb00)(s50);
+            if (ch && *((const uint8_t *)ch + 0x430)) {
+                const uint8_t *const data = *(const uint8_t *const *)((const uint8_t *)ch + 0x240);
+                if (!data)
+                    break;
+                if (!HN(hn_b_p, 0x7b4290)((void *)(data + 0x10))) {
+                    *state = 4;
+                    break;
+                }
+            }
+            HN(hn_v_p, 0xc1e310)(c);
+        } else {
+            if (!ch || !*((const uint8_t *)ch + 0x430))
+                break;
+            refresh_a(row, arg, c);
+            refresh_b(row, arg, c);
+        }
+        break;
+    case 4: {
+        if (!ch) {
+            HN(hn_v_p, 0xc1e310)(c);
+            HN(hn_v_pb, 0xddc090)(cont, 0);
+            HN(hn_v_pb, 0xdd9980)(cont, 0);
+            break;
+        }
+        const uint8_t *const data = *(const uint8_t *const *)((const uint8_t *)ch + 0x240);
+        if (!data)
+            break;
+        if (*(const uint64_t *)(data + 0x20) != *(const uint64_t *)(c + 0x08) ||
+            *(const uint64_t *)(data + 0x18) != *(const uint64_t *)(c + 0x10)) {
+            ((void (*)(void *, void *, void *))(g_base + 0xc1e400))(row, c, ch);
+            refresh_a(row, arg, c);
+            refresh_b(row, arg, c);
+        }
+        if (*(const int *)(mgr + 0x154) == 0) {
+            ((void (*)(void *, void *, void *))(g_base + 0xc1e400))(row, c,
+                                                                    *(void **)(c + HUD_ROW3_CHAR_OFF));
+            refresh_a(row, arg, c);
+            refresh_b(row, arg, c);
+        }
+        if (*(const int *)(mgr + 0x150) != 1)
+            break;
+        float v[4] __attribute__((aligned(16))) = {0, 0, 0, 0};
+        ((void (*)(void *, void *))(g_base + 0x765b60))(ch, v);
+        v[1] += *(const float *)(g_base + 0x12675d8);
+        const uint8_t flag = HN(hn_b_p, 0xc01980)(v);
+        HN(hn_v_pib, 0xddbf00)(s48, 0x15, flag);
+        uint8_t pose[16] __attribute__((aligned(16)));
+        memcpy(pose, ((const void *(*)(void))(g_base + 0x752640))(), sizeof pose);
+        ((void (*)(void *, void *))(g_base + 0xc04270))(pose, v);
+        HN(hn_v_ppp, 0xdda790)(s48, (void *)0, pose);
+        break;
+    }
+    default:
+        break;
+    }
+
+    /* Common tail: two steps, then the shown name id follows the character. */
+    HN(hn_v_ppp, 0xc20300)(row, arg, c);
+    HN(hn_v_ppp, 0xc1fe60)(row, arg, c);
+    ch = *(void **)(c + HUD_ROW3_CHAR_OFF);
+    const uint8_t *const data = ch ? *(const uint8_t *const *)((const uint8_t *)ch + 0x240) : NULL;
+    if (data) {
+        void *const names = (void *)(data + 0x9d8);
+        int name = *(const int *)((const uint8_t *(*)(void *, int))(g_base + 0x7b2c00))(names, 2);
+        const uint8_t *const x = *(const uint8_t *const *)((const uint8_t *)ch + 0x320);
+        if (x) {
+            const unsigned w = (unsigned)(*(const uint16_t *)(x + 6) & 6u);
+            if (w == 2)
+                name = 0;
+            else if (w == 0)
+                name = ((int (*)(void *, int))(g_base + 0x7b2580))(names, 2);
+        }
+        int *const shown = (int *)(c + 0x70);
+        if (name != *shown) {
+            int r = 0, ok = 1;
+            if (name) {
+                const uint8_t *const root = *(const uint8_t *const *)(g_base + 0x1871720);
+                const uint8_t *const tbl = root && readable(root + 0x70, 8)
+                    ? *(const uint8_t *const *)(root + 0x70) : NULL;
+                const uint8_t *const entry = tbl && readable(tbl + 0x428, 8)
+                    ? ((const uint8_t *(*)(void *, int))(g_base + 0x77f9b0))(
+                          *(void *const *)(tbl + 0x428), name) : NULL;
+                if (entry && readable(entry, 0x10))
+                    r = ((int (*)(void *, uint32_t, const void *))(g_base + 0xdd6700))(
+                        cont, 0xf2155, entry + *(const uint32_t *)(entry + 0xc));
+                else
+                    ok = 0;     /* the text tables are not up yet: try next frame */
+            } else {
+                r = ((int (*)(void *, uint32_t, uint32_t))(g_base + 0xdd66c0))(cont, 0xf2155, 0x21);
+            }
+            if (ok) {
+                HN(hn_v_text, 0xddadc0)(cont, 8, 0, r, 0);
+                HN(hn_v_anim, 0xdd94c0)(cont, 5, 0, 1.0f, 1);
+                *shown = name;
+            }
+        }
+    }
+
+    /* Mode flags of the HUD manager: the name tag follows mode 1. */
+    uint8_t *const flag = c + 0x74;
+    int mode = *(const int *)(mgr + 0x150);
+    if (mode == 1 && !*flag) {
+        HN(hn_v_pib, 0xddbf00)(s48, 0x15, 1);
+        HN(hn_v_anim, 0xdd94c0)(s48, 8, 0, 1.0f, 1);
+        mode = *(const int *)(mgr + 0x150);
+    }
+    if (mode != 1) {
+        if (*flag) {
+            HN(hn_v_anim, 0xdd94c0)(s48, 9, 0, 1.0f, 1);
+            mode = *(const int *)(mgr + 0x150);
+        }
+        if (mode != 1 && !*flag && !HN(hn_b_pi, 0xdd9480)(s48, 9))
+            HN(hn_v_pib, 0xddbf00)(s48, 0x15, 0);
+    }
+    *flag = *(const int *)(mgr + 0x150) == 1;
+    if (*(const int *)(*(uint8_t *const *)(g_base + HUD_ROW3_MODE_MGR_RVA) + 0x154) == 2) {
+        HN(hn_v_pib, 0xddbf00)(s48, 2, 0);
+        HN(hn_v_pib, 0xddbf00)(s50, 0, 0);
+    }
 }
 
 /* A call into our element's own vtable from the game must obey the same
@@ -3551,12 +3856,12 @@ static int hud_row3_self_stale(void *self)
 {
     return self == g_hud_row3_elem && g_hud_row3_gen != hud_row3_generation();
 }
-/* Every failure path after the block exchange has to drop the active flag:
- * with it left at 1 the drive and the thunks keep treating block C as live
- * while no element is registered, and the next attempt builds on top of a
- * stale C. The element is not released: the proxy knows no deleter for the
- * menu's children, and inventing a vtable call into game code is worse than at
- * most one leaked 0x68-byte element per attempt (capped at three). */
+/* Every failure path after the block was handed to a new element has to drop
+ * the active flag: with it left at 1 the drive and the thunks keep treating
+ * block C as live while no element is registered. The element is not released:
+ * the proxy knows no deleter for the menu's children, and inventing a vtable
+ * call into game code is worse than at most one leaked 0x68-byte element per
+ * attempt (capped at three). */
 static void hud_row3_abandon(void)
 {
     InterlockedExchange(&g_hud_row3_active, 0);
@@ -3565,107 +3870,83 @@ static void hud_row3_abandon(void)
     hud_row3_forget();
 }
 
+/* The slots of the private vtable. Everything that must not run on a dead or
+ * stale element returns before it touches a sprite. */
 static void *thunk_dtor(void *self, unsigned flags)
 {
-    const int st = hud_row3_enter();
-    if (st < 0)
-        return NULL;
-    void *const r = ((hud_row_dtor_fn)g_hud_row3_orig[HUD_ROW3_DTOR])(self, flags);
-    if (st)
-        hud_row3_leave();
-    /* The object and its sprites are gone: drop block C's reference node now
-     * (a bound node would otherwise stay linked into a character's list for a
-     * block that has nothing left to show) and let the drive clear the
-     * registry slot, if the game did not. */
     if (self == g_hud_row3_elem) {
+        void *const r = ((hud_row_dtor_fn)g_hud_row3_orig[HUD_ROW3_DTOR])(self, flags);
+        /* The object and its sprites are gone (the base destructor calls the
+         * release slot below): unlink block C's node now, and let the drive
+         * clear the registry slot if the game did not. */
         InterlockedExchange(&g_hud_row3_active, 0);
         InterlockedExchange(&g_hud_row3_dead, 1);
         hud_row3_forget();
         LOG("hud row3: the game destroyed the third row, it will be recreated");
+        return r;
     }
-    return r;
+    return ((hud_row_dtor_fn)g_hud_row3_orig[HUD_ROW3_DTOR])(self, flags);
 }
 
 static int thunk_init(void *self)
 {
-    const int st = hud_row3_enter();
-    if (st < 0)
-        return 0;
-    const int r = ((hud_row_bool_fn)g_hud_row3_orig[HUD_ROW3_INIT])(self);
-    if (st)
-        hud_row3_leave();
-    return r;
+    return g_hud_row3_active && self == g_hud_row3_elem ? hud_row3_init_native(self) : 0;
 }
 
 static void thunk_release(void *self)
 {
-    const int st = hud_row3_enter();
-    if (st < 0)
-        return;
-    ((hud_row_void_fn)g_hud_row3_orig[HUD_ROW3_RELEASE])(self);
-    if (st)
-        hud_row3_leave();
+    if (g_hud_row3_active && self == g_hud_row3_elem)
+        hud_row3_release_native(self);
 }
 
-/* Slot 0x18 takes (this, per-frame arg, r8). r8 is NOT the state block: in the
- * field it is 0x140bfb5a0 on every client, an orphan function with no
- * references, i.e. dead register content the update never reads (it picks its
- * own block from the element id). It is forwarded verbatim so the call is
- * byte-identical to the game's, including that leftover value. An empty block
- * (state 0) is not updated: that state runs the character assigner, which must
- * not run on the exchanged blocks (see hud_row3_run_update). */
+/* Slot 0x18 takes (this, per-frame arg, r8); r8 is dead register content the
+ * update never reads. Only the drive calls it, once the sprites resolved; the
+ * assigner is the drive's job, so an empty block is not updated. */
+static int hud_row3_unready(void *row3);
 static int thunk_update(void *self, void *arg, void *block)
 {
-    if (hud_row3_self_stale(self))
+    (void)block;
+    if (!g_hud_row3_active || self != g_hud_row3_elem || hud_row3_self_stale(self) ||
+        !arg || *(const uint32_t *)(g_hud_row3_block + HUD_ROW3_STATE_OFF) == 0 ||
+        hud_row3_unready(self) >= 0)
         return 0;
-    if (*(const uint32_t *)(g_hud_row3_block + HUD_ROW3_STATE_OFF) == 0)
-        return 0;
-    const int st = hud_row3_enter();
-    if (st < 0)
-        return 0;
-    const int r = ((hud_row_arg_fn)g_hud_row3_orig[HUD_ROW3_UPDATE])(self, arg, block);
-    if (st)
-        hud_row3_leave();
-    return r;
+    /* When the class hides a row it zeroes the +0x20 field of the static block
+     * its id selects (the tail of 0xc1fb20), which for id 0x73 is row 1's.
+     * Undo that write and give it to C, where the real code would have put it. */
+    uint32_t *const a20 = (uint32_t *)(hud_row3_a() + 0x20);
+    const uint32_t keep = *a20;
+    hud_row3_update_native(self, arg);
+    if (*a20 != keep) {
+        *(uint32_t *)(g_hud_row3_block + 0x20) = *a20;
+        *a20 = keep;
+    }
+    return 1;
 }
 
 static int thunk_frame(void *self)
 {
-    if (hud_row3_self_stale(self))
+    if (!g_hud_row3_active || self != g_hud_row3_elem || hud_row3_self_stale(self))
         return 0;
-    const int st = hud_row3_enter();
-    if (st < 0)
-        return 0;
-    const int r = ((hud_row_bool_fn)g_hud_row3_orig[HUD_ROW3_FRAME])(self);
-    if (st)
-        hud_row3_leave();
+    const int r = hud_row3_frame_native(self);
     /* The game itself calls the registered element's frame slot on the game
      * thread; placement and showing are done by the drive, after the update. */
-    if (self == g_hud_row3_elem && !InterlockedExchange(&g_hud_row3_frame_fired, 1))
+    if (!InterlockedExchange(&g_hud_row3_frame_fired, 1))
         LOG("hud row3: the game drives the frame slot on the game thread");
     return r;
 }
 
 static int thunk_b8(void *self, unsigned char on)
 {
-    const int st = hud_row3_enter();
-    if (st < 0)
+    if (!g_hud_row3_active || self != g_hud_row3_elem)
         return 0;
-    const int r = ((hud_row_flag_fn)g_hud_row3_orig[HUD_ROW3_B8])(self, on);
-    if (st)
-        hud_row3_leave();
-    return r;
+    return hud_row3_visibility(self, on, 0);
 }
 
 static int thunk_d8(void *self, unsigned char on)
 {
-    const int st = hud_row3_enter();
-    if (st < 0)
+    if (!g_hud_row3_active || self != g_hud_row3_elem)
         return 0;
-    const int r = ((hud_row_flag_fn)g_hud_row3_orig[HUD_ROW3_D8])(self, on);
-    if (st)
-        hud_row3_leave();
-    return r;
+    return hud_row3_visibility(self, on, 1);
 }
 
 /* Copy the class vtable once and point the seven block-touching slots at the
@@ -3780,6 +4061,10 @@ static int hud_row3_sprite_count(const uint8_t *block)
  * failure is logged with the step that produced it. */
 static void *hud_row3_build(void **registry)
 {
+    if (!hud_row3_code_ok()) {
+        g_hud_row3_failed = 1;
+        return NULL;
+    }
     if (!hud_row3_vtable_setup())
         return NULL;
     void *const menu = ((hud_menu_get_fn)(g_base + HUD_ROW3_MENU_RVA))();
@@ -3805,22 +4090,16 @@ static void *hud_row3_build(void **registry)
     }
     LOG("hud row3: element allocated at %p (menu %p)", elem, menu);
 
-    hud_row3_forget();                      /* a clean C, no stale node */
-    InterlockedExchange(&g_hud_row3_active, 1);
-    const int st = hud_row3_enter();        /* A carries C from here on */
-    if (st < 0) {
-        LOG("hud row3: cannot swap block A for block C, not creating");
-        hud_row3_abandon();
+    if (!hud_row3_forget())                 /* a clean C, no stale node */
         return NULL;
-    }
-    g_hud_row_ctor(elem, HUD_ROW3_ID, 0);   /* resets and binds "A" == C */
+    InterlockedExchange(&g_hud_row3_active, 1);
+    /* What the class constructor 0xc1e230 does, minus its reset of the static
+     * block its id selects (that would be row 1's): the base constructor, the
+     * class fields, and then init on block C. */
+    ((void *(*)(void *, int, int))(g_base + 0xbf30a0))(elem, HUD_ROW3_ID, 0);
     *(void **)elem = g_hud_row3_vtable;     /* private vtable, id getter original */
-    /* vt[0x08] is the init that creates the five sprites; run it through the
-     * private vtable so the swap path is exercised, not just assumed. The
-     * thunk sees the swap already held and calls the original directly. */
-    const int inited = ((hud_row_bool_fn)((void **)g_hud_row3_vtable)[0x08 / 8])(elem);
-    if (st)
-        hud_row3_leave();
+    *(void **)((uint8_t *)elem + HUD_ROW3_CONTAINER_OFF) = NULL;
+    const int inited = hud_row3_init_native(elem);
     if (!inited) {
         LOG("hud row3: init reported failure, element left unregistered");
         hud_row3_abandon();
@@ -4250,30 +4529,6 @@ static void hud_row3_place(void *row3, void *row1, void *row2)
     }
 }
 
-/* Run the class's own update code for our element with block C in the place of
- * A, so row 3 animates exactly like rows 1/2. The window (hud_row3_enter) is
- * identity-preserving: the reference node moves with the block. Forward r8
- * exactly as the game passed it: it is not the state block (the dump shows
- * 0x140bfb5a0 there on every client, an orphan function address); the class
- * update computes its own block from the element id.
- *
- * The update must never run on an empty block. State 0 makes the class call
- * its character assigner, which excludes only the static blocks A and B by
- * address: inside the window that is C and B, so it could pick the character
- * row 1 is showing. The assigner is therefore called by hud_row3_assign() with
- * the real blocks in place, and the window only ever runs bound states. */
-static int hud_row3_run_update(void *row3, void *arg, void *r8)
-{
-    if (*(const uint32_t *)(g_hud_row3_block + HUD_ROW3_STATE_OFF) == 0)
-        return 0;
-    const int st = hud_row3_enter();
-    if (st < 0)
-        return 0;
-    ((hud_row_arg_fn)g_hud_row3_orig[HUD_ROW3_UPDATE])(row3, arg, r8);
-    if (st)
-        hud_row3_leave();
-    return 1;
-}
 
 /* The game's own readiness predicate for a sprite (0x140dd93e0): the sprite
  * has a layout link, the link has its container, and the container is not
@@ -4308,8 +4563,8 @@ static int hud_row3_unready(void *row3)
 }
 
 /* Let the class bind block C to a companion. This is the game's own assigner
- * (0x140c21240) called with block C as the explicit block argument and with
- * NO window: its exclusion test reads the static nodes of rows 1 and 2 at
+ * (0x140c21240) called with block C as the explicit block argument: its
+ * exclusion test reads the static nodes of rows 1 and 2 at
  * their real addresses, so it picks a companion neither shows; the character
  * is bound through the reference node inside C itself (0x140c1e400), so the
  * character's release list holds C and clears it when the character dies.
@@ -4366,8 +4621,6 @@ static void hud_row3_drive(void *arg, void *r8)
     if (!g_cfg.hud_row3 || g_cfg.max_players < 4 || g_hud_row3_failed ||
         !g_hud_row3_native_ok || !arg)
         return;
-    if (g_hud_row3_swap)
-        return;                     /* inside a window: never re-enter */
     if (!hud_row_wanted() || !hud_row3_mission())
         return;                     /* prep/lobby or mode off */
     const DWORD now = GetTickCount();
@@ -4486,7 +4739,7 @@ static void hud_row3_drive(void *arg, void *r8)
             *(void *const *)(g_hud_row3_block + 0x40));
     }
 
-    hud_row3_run_update(row3, arg, r8);
+    thunk_update(row3, arg, r8);
     if (!*(void *const *)(g_hud_row3_block + HUD_ROW3_CHAR_OFF)) {
         hud_row_hide(row3);         /* the companion was released */
         return;
