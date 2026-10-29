@@ -23,6 +23,13 @@
  *      Torii Gate companion mode, two inline hooks (the host mirrors the
  *      preparation packets to every companion; later companions leave the
  *      shared mission-start counter to slot 1). See docs/RE_TOKOYO_COOP.md.
+ *   5. Host-authoritative lobby rules (enemy_hp_percent,
+ *      assist_drain_percent, respawn_at_shrine): the host publishes one lobby
+ *      data value and a client of that lobby uses it instead of its own file;
+ *      the local file applies only to a lobby this process confirmed it owns,
+ *      and solo play keeps the stock numbers. Three small native detours apply
+ *      the values (character status max HP, the inline assist drain, and the
+ *      pending respawn point). See docs/FINDINGS.md, "Lobby gameplay rules".
  *
  * Built freestanding: no CRT and no api-ms-win-crt-* imports, because Proton's
  * Wine (like plain Wine) does not ship those apisets - a CRT-linked DLL would
@@ -472,6 +479,12 @@ typedef struct {
      * 4-player session behaves exactly like the shipped two-row build. 1 opts
      * into the third row (element 0x73, private vtable, block C). */
     int hud_row3;
+    /* Lobby rules. Host values are authoritative once a session exists; a
+     * visitor's file is ignored for these three (see rules_effective). The
+     * defaults are the stock game numbers. */
+    int enemy_hp_percent;       /* 25..400, 100 = stock enemy max HP */
+    int assist_drain_percent;   /* 0..1000, 100 = stock 166 per tick, 0 = off */
+    int respawn_at_shrine;      /* 0/1; use the native last-shrine respawn */
 } Config;
 
 /* Compiled-in defaults equal the shipped player config. The search filters are
@@ -489,6 +502,9 @@ static Config g_cfg = {
     .drop_slots_filter = 0,
     .trace             = 0,
     .hud_row3          = 0,
+    .enemy_hp_percent     = 100,
+    .assist_drain_percent = 100,
+    .respawn_at_shrine    = 0,
 };
 
 /* cfg_load runs before the log is open, so it only records the outcome here;
@@ -505,6 +521,58 @@ static int  g_cfg_status;           /* CFG_*; never CFG_LOADED before cfg_load *
 static int  g_cfg_unknown_keys;
 static int  g_cfg_max_players_bad;  /* max_players was out of range */
 static int  g_cfg_max_players_raw;  /* the value as parsed */
+
+/* Strict decimal for the lobby-rule keys: sign and digits only, no suffix and
+ * no overflow. The other keys keep their historical atoi behaviour. */
+static int parse_int_strict(const char *s, int *out)
+{
+    const char *p = s;
+    int neg = 0, digits = 0;
+    long v = 0;
+    if (*p == '+' || *p == '-') {
+        neg = *p == '-';
+        p++;
+    }
+    if (*p < '0' || *p > '9')
+        return 0;
+    while (*p >= '0' && *p <= '9') {
+        if (++digits > 9)
+            return 0;
+        v = v * 10 + (*p - '0');
+        p++;
+    }
+    if (*p)
+        return 0;
+    if (neg)
+        v = -v;
+    if (v < -2147483647L - 1 || v > 2147483647L)
+        return 0;
+    *out = (int)v;
+    return 1;
+}
+
+/* Rejected rule values are reported once the log is open. The rejected text
+ * itself is never echoed: it is unvalidated bytes and the log records only
+ * the key and the accepted range. */
+typedef struct { char key[24]; int lo, hi; } BadRule;
+static BadRule g_cfg_bad_rules[4];
+static int g_cfg_bad_rules_n;
+
+static void cfg_rule_int(const char *k, const char *v, int *dst, int lo, int hi)
+{
+    int iv;
+    if (!parse_int_strict(v, &iv) || iv < lo || iv > hi) {
+        if (g_cfg_bad_rules_n < (int)(sizeof g_cfg_bad_rules / sizeof g_cfg_bad_rules[0])) {
+            BadRule *bad = &g_cfg_bad_rules[g_cfg_bad_rules_n];
+            fmt(bad->key, (int)sizeof bad->key, "%s", k);
+            bad->lo = lo;
+            bad->hi = hi;
+        }
+        g_cfg_bad_rules_n++;
+        return;
+    }
+    *dst = iv;
+}
 
 static void cfg_load(const char *dir)
 {
@@ -549,6 +617,8 @@ static void cfg_load(const char *dir)
                 char *ke = k + strlen(k);
                 while (ke > k && (ke[-1] == ' ' || ke[-1] == '\t' || ke[-1] == '\r')) *--ke = 0;
                 while (*v == ' ' || *v == '\t') v++;
+                char *ve = v + strlen(v);
+                while (ve > v && (ve[-1] == ' ' || ve[-1] == '\t' || ve[-1] == '\r')) *--ve = 0;
                 int iv = atoi_a(v);
                 if (!strcmp(k, "max_players"))         g_cfg.max_players = (uint32_t)iv;
                 else if (!strcmp(k, "dump_image"))     g_cfg.dump_image = iv;
@@ -570,6 +640,12 @@ static void cfg_load(const char *dir)
                     if (g_out[0])
                         g_out_dir = g_out;
                 }
+                else if (!strcmp(k, "enemy_hp_percent"))
+                    cfg_rule_int(k, v, &g_cfg.enemy_hp_percent, 25, 400);
+                else if (!strcmp(k, "assist_drain_percent"))
+                    cfg_rule_int(k, v, &g_cfg.assist_drain_percent, 0, 1000);
+                else if (!strcmp(k, "respawn_at_shrine"))
+                    cfg_rule_int(k, v, &g_cfg.respawn_at_shrine, 0, 1);
                 else g_cfg_unknown_keys++;
             }
         }
@@ -613,12 +689,19 @@ static void cfg_report(void)
         LOG("config: %d unknown key(s) ignored", g_cfg_unknown_keys);
     if (g_cfg_max_players_bad)
         LOG("config: max_players=%d out of range; using 3", g_cfg_max_players_raw);
+    for (int i = 0; i < g_cfg_bad_rules_n && i < (int)(sizeof g_cfg_bad_rules / sizeof g_cfg_bad_rules[0]); i++)
+        LOG("config: %s rejected (want an integer %d..%d); default kept",
+            g_cfg_bad_rules[i].key, g_cfg_bad_rules[i].lo, g_cfg_bad_rules[i].hi);
+    if (g_cfg_bad_rules_n > (int)(sizeof g_cfg_bad_rules / sizeof g_cfg_bad_rules[0]))
+        LOG("config: %d more rule value(s) rejected; defaults kept",
+            g_cfg_bad_rules_n - (int)(sizeof g_cfg_bad_rules / sizeof g_cfg_bad_rules[0]));
     LOG("config: max_players=%u dump_image=%d redump_after_s=%d hook_eos=%d out_dir=%s "
         "dump_every_s=%d drop_lock_filter=%d force_unlock=%d drop_slots_filter=%d trace=%d "
-        "hud_row3=%d",
+        "hud_row3=%d enemy_hp_percent=%d assist_drain_percent=%d respawn_at_shrine=%d",
         g_cfg.max_players, g_cfg.dump_image, g_cfg.redump_after_s, g_cfg.hook_eos, g_out_dir,
         g_cfg.dump_every_s, g_cfg.drop_lock_filter, g_cfg.force_unlock, g_cfg.drop_slots_filter,
-        g_cfg.trace, g_cfg.hud_row3);
+        g_cfg.trace, g_cfg.hud_row3, g_cfg.enemy_hp_percent, g_cfg.assist_drain_percent,
+        g_cfg.respawn_at_shrine);
 }
 
 /* ------------------------------------------------------------ PE in-memory */
@@ -1776,6 +1859,11 @@ static int steam_repair(void)
     return fixed;
 }
 
+/* CreateLobby returns only an API call handle, never proof that this process
+ * owns a lobby. The flag is a hint that lets rules_publish try the rule key;
+ * ownership is confirmed only when our own SetLobbyData for that key
+ * succeeds (Steam rejects lobby data writes from non-owners). */
+static volatile LONG g_rules_create_requested;
 static uint64_t EOS_CALL det_SteamCreateLobby(void *self, int lobby_type, int max_members)
 {
     SITE_NOTE("SteamCreateLobby");
@@ -1790,6 +1878,10 @@ static uint64_t EOS_CALL det_SteamCreateLobby(void *self, int lobby_type, int ma
 #endif
     PFN_SteamCreateLobby o = (PFN_SteamCreateLobby)g_steam[0].orig;
     uint64_t call = o ? o(self, lobby_type, max_members) : 0;
+    /* Nonzero is an API call handle, not a created lobby; it only enables the
+     * publication attempt. rules_publish sets g_rules_owned_lobby on success. */
+    if (call)
+        InterlockedExchange(&g_rules_create_requested, 1);
     LOG("Steam CreateLobby -> call %llu", (unsigned long long)call);
     return call;
 }
@@ -1812,6 +1904,11 @@ static uint8_t EOS_CALL det_SteamSetLobbyMemberLimit(void *self, uint64_t lobby,
 }
 
 static void install_game_metadata_guard(void);
+/* Lobby rules live after the game-protocol constants; these are the only
+ * Steam-side entry points that need them. */
+static void rules_publish(void *self, uint64_t lobby);
+static void rules_join_lobby(void *self, uint64_t lobby);
+static void rules_left_lobby(void);
 
 /* Lobby *data* is what a joining client filters on: if the host advertises a
  * two-slot session, a third player's client never lists it as joinable. */
@@ -1838,7 +1935,11 @@ static int EOS_CALL det_SteamSetLobbyData(void *self, uint64_t lobby, const char
             key ? key : "(null)", value ? value : "(null)");
     }
     PFN_SteamSetLobbyData o = (PFN_SteamSetLobbyData)g_steam[2].orig;
-    return o ? o(self, lobby, key, use) : 0;
+    int r = o ? o(self, lobby, key, use) : 0;
+    /* The host's own keys are already in place; publish our rule string once
+     * per lobby after the native write so a joining client sees both. */
+    rules_publish(self, lobby);
+    return r;
 }
 
 #ifdef NIOH3P_RESEARCH
@@ -1876,6 +1977,8 @@ static uint64_t EOS_CALL det_SteamJoinLobby(void *self, uint64_t lobby)
     LOG("Steam JoinLobby: lobby=%llu", (unsigned long long)lobby);
     PFN_SteamJoinLobby o = (PFN_SteamJoinLobby)g_steam[7].orig;
     uint64_t call = o ? o(self, lobby) : 0;
+    if (lobby)
+        rules_join_lobby(self, lobby);
     LOG("Steam JoinLobby -> call %llu", (unsigned long long)call);
 #ifdef NIOH3P_RESEARCH
     if (g_cfg.trace)
@@ -1944,6 +2047,7 @@ static void EOS_CALL det_SteamLeaveLobby(void *self, uint64_t lobby)
     PFN_SteamLeaveLobby o = (PFN_SteamLeaveLobby)g_steam[11].orig;
     if (o)
         o(self, lobby);
+    rules_left_lobby();
 }
 
 #ifdef NIOH3P_RESEARCH
@@ -2980,6 +3084,304 @@ static void install_game_visitor_allowance(void)
 #define GAME_ROOT_RVA      0x1790a70u  /* session root; +0x3c8 = own slot index */
 #define GAME_COOP_MODE_RVA 0x191de34u  /* 1 while a Tokoyo companion session prepares */
 #define GAME_MANAGER_RVA   0x18715e0u  /* online manager; +0x5b0 role, +0x660 Tokoyo */
+#define GAME_PARTY_SLOTS_RVA   0x18a0490u
+#define GAME_PARTY_SLOT_STRIDE 0x18u
+#define GAME_PARTY_SLOT_COUNT  4
+
+/* ---------------------------------------------------------- lobby rules ---
+ * Gameplay settings must agree on every client, so the host's file is the only
+ * source once a session exists. The host publishes one lobby-data value after
+ * its own data; a joining client reads it before the mission and otherwise
+ * keeps the stock numbers. A visitor's nondefault file is never applied in a
+ * session, so it cannot override the host.
+ * Wire format, fixed order, no extras: "v1 ehp=150 adr=0 rs=1". */
+#define RULES_KEY "nioh3p_rules"
+
+typedef struct {
+    int enemy_hp_pct;       /* 25..400, 100 = stock */
+    int assist_drain_pct;   /* 0..1000, 100 = stock 166/tick, 0 = off */
+    int respawn_shrine;     /* 0/1 */
+} Rules;
+
+static Rules g_rules_host;
+static volatile LONG g_rules_host_seq;     /* seqlock, odd while writing */
+static volatile LONG g_rules_host_ok;
+static volatile LONG64 g_rules_join_lobby;
+static void *volatile g_rules_join_self;
+static volatile LONG64 g_rules_owned_lobby;      /* SetLobbyData(RULES_KEY) ok */
+static volatile LONG64 g_rules_published_lobby;
+static volatile LONG g_assist_drain_step = 166;  /* machine stub reads this */
+static volatile LONG g_rules_last_role = -2;
+static volatile LONG g_rules_bad_host_logged;
+static volatile LONG g_rules_pub_fail_logged;
+static DWORD g_rules_request_ms;
+/* Cached copies of the effective rules, written only by rules_apply. The
+ * native detours read these first, so the stock path costs one load. */
+static volatile LONG g_rules_enemy_pct = 100;
+static volatile LONG g_rules_respawn_on = 0;
+
+static uint8_t *game_manager_ptr(void)
+{
+    uint8_t *const *slot = (uint8_t *const *)(g_base + GAME_MANAGER_RVA);
+    if (!readable(slot, sizeof(void *)))
+        return 0;
+    uint8_t *m = *slot;
+    return (m && readable(m, 0x5b4)) ? m : 0;
+}
+
+static int game_role(void)
+{
+    uint8_t *m = game_manager_ptr();
+    return m ? *(const int32_t *)(m + 0x5b0) : -1;
+}
+
+static void rules_stock(Rules *r)
+{
+    r->enemy_hp_pct = 100;
+    r->assist_drain_pct = 100;
+    r->respawn_shrine = 0;
+}
+
+static void rules_local(Rules *r)
+{
+    r->enemy_hp_pct = g_cfg.enemy_hp_percent;
+    r->assist_drain_pct = g_cfg.assist_drain_percent;
+    r->respawn_shrine = g_cfg.respawn_at_shrine;
+}
+
+/* Authority follows lobby membership, not the native role field: that field
+ * can still say host (or nothing) while a join is in flight. A joined lobby
+ * makes this process a client for the rule set until it leaves, and until the
+ * host value arrives the stock numbers apply - never the local file, so a
+ * visitor cannot override the host and a pending join cannot leak local
+ * values. The local file is used only for a lobby this process confirmed it
+ * owns by publishing the rule key. With neither, solo play keeps stock. */
+static void rules_effective(Rules *r)
+{
+    uint64_t joined = (uint64_t)InterlockedCompareExchange64(&g_rules_join_lobby, 0, 0);
+    uint64_t owned = (uint64_t)InterlockedCompareExchange64(&g_rules_owned_lobby, 0, 0);
+    if (owned && (!joined || joined == owned)) {
+        rules_local(r);
+        return;
+    }
+    if (!joined) {
+        rules_stock(r);
+        return;
+    }
+    if (!g_rules_host_ok) {
+        rules_stock(r);
+        return;
+    }
+    for (int tries = 0; tries < 4; tries++) {
+        LONG s1 = g_rules_host_seq;
+        if (s1 & 1)
+            continue;
+        Rules copy = g_rules_host;
+        __asm__ volatile("" ::: "memory");
+        if (g_rules_host_seq == s1) {
+            *r = copy;
+            return;
+        }
+    }
+    rules_stock(r);
+}
+
+static int rules_drain_step(int pct)
+{
+    int step = (int)(((long)pct * 166 + 50) / 100);
+    return step < 0 ? 0 : step;
+}
+
+static void rules_apply(void)
+{
+    Rules r;
+    rules_effective(&r);
+    InterlockedExchange(&g_assist_drain_step, rules_drain_step(r.assist_drain_pct));
+    InterlockedExchange(&g_rules_enemy_pct, r.enemy_hp_pct);
+    InterlockedExchange(&g_rules_respawn_on, r.respawn_shrine);
+}
+
+static int rules_key_int(const char *tok, const char *key, int *out, int lo, int hi)
+{
+    size_t n = strlen(key);
+    if (strncmp(tok, key, n) || tok[n] != '=')
+        return 0;
+    return parse_int_strict(tok + n + 1, out) && *out >= lo && *out <= hi;
+}
+
+/* Reject anything that is not exactly the four fixed tokens. */
+static int rules_parse(const char *s, Rules *out)
+{
+    char tok[4][32];
+    int n = 0;
+    while (*s) {
+        while (*s == ' ' || *s == '\t')
+            s++;
+        if (!*s)
+            break;
+        int len = 0;
+        while (*s && *s != ' ' && *s != '\t') {
+            if (len >= (int)sizeof tok[0] - 1)
+                return 0;
+            if (n >= 4)
+                return 0;
+            tok[n][len++] = *s++;
+        }
+        tok[n][len] = 0;
+        if (++n > 4)
+            return 0;
+    }
+    if (n != 4 || strcmp(tok[0], "v1"))
+        return 0;
+    Rules r;
+    if (!rules_key_int(tok[1], "ehp", &r.enemy_hp_pct, 25, 400) ||
+        !rules_key_int(tok[2], "adr", &r.assist_drain_pct, 0, 1000) ||
+        !rules_key_int(tok[3], "rs", &r.respawn_shrine, 0, 1))
+        return 0;
+    *out = r;
+    return 1;
+}
+
+/* One SteamMatchMaking009 method by its zero-based vtable index (the same
+ * numbers g_steam stores one-based). The research build may have replaced the
+ * slot with a forwarding detour; g_steam[].orig is then the real method. */
+static void *steam_mm_method(void *self, unsigned vtable_index, int table_index)
+{
+    if (g_steam[table_index].orig)
+        return g_steam[table_index].orig;
+    if (!self || !readable(self, sizeof(void *)))
+        return 0;
+    void **vt = *(void ***)self;
+    void **slot = vt + vtable_index;
+    if (!readable(slot, sizeof(void *)) || !executable_ptr(*slot))
+        return 0;
+    return *slot;
+}
+
+static void rules_publish(void *self, uint64_t lobby)
+{
+    if (!lobby || !self || !g_rules_create_requested)
+        return;
+    if ((uint64_t)InterlockedCompareExchange64(&g_rules_published_lobby, 0, 0) == lobby)
+        return;
+    Rules r;
+    rules_local(&r);
+    char value[48];
+    fmt(value, (int)sizeof value, "v1 ehp=%d adr=%d rs=%d",
+        r.enemy_hp_pct, r.assist_drain_pct, r.respawn_shrine);
+    void *fn = steam_mm_method(self, 20, 2);   /* ISteamMatchmaking::SetLobbyData */
+    if (!fn)
+        return;
+    typedef int (EOS_CALL *SetData)(void *, uint64_t, const char *, const char *);
+    int ok = ((SetData)fn)(self, lobby, RULES_KEY, value);
+    if (ok) {
+        /* Steam accepts lobby-data writes only from the owner, so this is the
+         * ownership proof the CreateLobby API handle cannot give. */
+        InterlockedExchange64(&g_rules_published_lobby, (LONG64)lobby);
+        InterlockedExchange64(&g_rules_owned_lobby, (LONG64)lobby);
+        LOG("rules: host rules \"%s\" published in lobby %llu (ownership confirmed)",
+            value, (unsigned long long)lobby);
+    } else if (InterlockedCompareExchange(&g_rules_pub_fail_logged, 1, 0) == 0) {
+        LOG("rules: cannot publish host rules in lobby %llu (not the owner)",
+            (unsigned long long)lobby);
+    }
+}
+
+/* Read the host's published rules from the lobby this process asked to join.
+ * Called from the JoinLobby detour (that call is asynchronous, so membership
+ * is not yet confirmed there) and again from the 250 ms worker until the value
+ * arrives. A client that never receives it plays the stock numbers. */
+static void rules_poll_host(void *self, uint64_t lobby)
+{
+    if (!self || !lobby)
+        return;
+    void *get = steam_mm_method(self, 19, 3);  /* GetLobbyData */
+    if (get) {
+        typedef const char *(EOS_CALL *GetData)(void *, uint64_t, const char *);
+        const char *v = ((GetData)get)(self, lobby, RULES_KEY);
+        if (v && *v) {
+            Rules r;
+            if (rules_parse(v, &r)) {
+                InterlockedIncrement(&g_rules_host_seq);
+                g_rules_host = r;
+                __asm__ volatile("" ::: "memory");
+                InterlockedIncrement(&g_rules_host_seq);
+                InterlockedExchange(&g_rules_host_ok, 1);
+                rules_apply();
+                LOG("rules: host value \"%s\" accepted", v);
+            } else if (InterlockedCompareExchange(&g_rules_bad_host_logged, 1, 0) == 0) {
+                LOG("rules: host value is invalid; stock rules kept");
+            }
+            return;
+        }
+    }
+    DWORD now = GetTickCount();
+    if (now - g_rules_request_ms < 2000)
+        return;
+    g_rules_request_ms = now;
+    void *req = steam_mm_method(self, 28, 8);  /* RequestLobbyData */
+    if (req) {
+        typedef int (EOS_CALL *ReqData)(void *, uint64_t);
+        ((ReqData)req)(self, lobby);
+    }
+}
+
+static void rules_join_lobby(void *self, uint64_t lobby)
+{
+    /* The lobby argument is the requested id; JoinLobby itself returns only an
+     * API call handle, so this records "we are a client here" for rule
+     * authority, not a completed join. */
+    g_rules_join_self = self;
+    InterlockedExchange64(&g_rules_join_lobby, (LONG64)lobby);
+    InterlockedExchange(&g_rules_host_ok, 0);
+    uint64_t owned = (uint64_t)InterlockedCompareExchange64(&g_rules_owned_lobby, 0, 0);
+    if (owned != lobby) {
+        /* Joining someone else's session: drop the creator state and any
+         * cached publication so nothing of ours is used or re-sent. */
+        InterlockedExchange64(&g_rules_owned_lobby, 0);
+        InterlockedExchange64(&g_rules_published_lobby, 0);
+    }
+    LOG("rules: join requested for lobby %llu; reading host rules",
+        (unsigned long long)lobby);
+    /* Ask for the data and take it now, not up to a full worker tick later. */
+    rules_poll_host(self, lobby);
+}
+
+static void rules_left_lobby(void)
+{
+    InterlockedExchange64(&g_rules_join_lobby, 0);
+    InterlockedExchange(&g_rules_host_ok, 0);
+    InterlockedExchange64(&g_rules_owned_lobby, 0);
+    InterlockedExchange64(&g_rules_published_lobby, 0);
+    InterlockedExchange(&g_rules_create_requested, 0);
+    g_rules_join_self = 0;
+}
+
+static void rules_tick(void)
+{
+    rules_apply();
+    int role = game_role();
+    if (role != g_rules_last_role) {
+        g_rules_last_role = role;
+        rules_apply();       /* role can flip between ticks */
+        LOG("rules: role %d, host rules %s, assist drain step %ld",
+            role, g_rules_host_ok ? "received" : "absent",
+            (long)g_assist_drain_step);
+    }
+    uint64_t lobby = (uint64_t)InterlockedCompareExchange64(&g_rules_join_lobby, 0, 0);
+    if (!lobby || g_rules_host_ok)
+        return;
+    rules_poll_host(g_rules_join_self, lobby);
+}
+
+static DWORD WINAPI rules_worker(LPVOID unused)
+{
+    (void)unused;
+    for (;;) {
+        rules_tick();
+        Sleep(250);
+    }
+}
 
 typedef uint8_t (*PFN_GameSend)(unsigned, const uint8_t *, unsigned, int);
 typedef void (*PFN_WaitFlag)(void);
@@ -5049,6 +5451,850 @@ static void *det_HudRow(void *self, int id, int index)
     return row;
 }
 
+/* ------------------------------ shared world: Kodama and shrine access -- */
+
+/* Both features are script bindings, so the game's own mission script decides
+ * when they run. These hooks only change the native decision where the stock
+ * two-player assumptions lock the other players out; a real 3/4-player party is
+ * required, so a solo or stock two-player mission keeps every native gate.
+ *
+ * Kodama: Mission::SetStrayKodama (0x948e50) accepts the host (role 0) and a
+ * Tokoyo visitor (role 1 while manager+0x660 is set); a shrine visitor is
+ * rejected by that native role gate at 0x140948e90..0x140948eaa, so the
+ * native insertion 0x905bc0(save, collection id) never runs on that client.
+ * Only for that rejected case, when this client's save still lacks the
+ * selected Kodama's ID, does the hook run exactly that insertion BEFORE the
+ * binding (after verifying the plaintext prologue bytes of 0x905bc0); the
+ * host and a Tokoyo visitor keep the original order and the native path.
+ * That matches the native accept ordering (insertion first, then the
+ * completion tail 0x1408edb60 ->
+ * script VM+0x328), so the tail always sees the new save state. 0x905bc0
+ * deduplicates against the save list, marks the save dirty (movb $1,(save)
+ * at 0x140905dd2, the same dirty byte 0x8ff270 writes at 0x1408ff283), is
+ * per client and per save, never touches another player's save and sends no
+ * packet.
+ *
+ * Shrine: Mission::IsYashiroActive (0x9488a0) returns false when the co-op
+ * latch manager+0x626 is set while co-op is active, which is why the host loses
+ * the Pray prompt as soon as a visitor arrives. In Tokoyo it also returns false
+ * when manager+0x662 is set; [INFERENCE] that byte is the "shrine used" latch
+ * behind Gadget::SetYashiroOnlineDoneAccess (the event handler at 0x1407bf723
+ * sets it, but the event-id path from 0x899120 was not traced), and text.dis
+ * contains no write that clears it (seven references: five reads, that one
+ * setter), so without help the prompt never returns in Tokoyo. The native
+ * predicate reads 0x662 only when manager+0x660 is set. The binding writes its
+ * answer into the script argument (0x140ddfd00 at 0x140948941), so returning 1
+ * from this detour cannot change what the mission script sees: the hook clears
+ * the two co-op latches only for the duration of the native predicate call
+ * (0x662 only in Tokoyo) and restores them immediately. Between the latch
+ * reads at 0x140948914/0x14094892f the native body runs only the binding glue
+ * 0x140ddf4e0/0x140ddfd00, neither of which references the latches; every
+ * other reader and writer of 0x626/0x662 in the binary is game-thread
+ * mission/script code.
+ *
+ * Checkpoint export: nioh3p_world_last_shrine returns the published id only
+ * while it still equals the live native checkpoint manager+0x114, i.e. what
+ * the stock death action would consume right now. That is not a freshness
+ * proof: shrine ids repeat across missions and a native reset of
+ * manager+0x114 on mission change is untested.
+ *
+ * Checkpoint: Mission::YashiroAccessFunction (0x949360) already calls
+ * 0x8ff270(save, shrine id) for every mode, which sets the visited-shrine bit
+ * and marks the save dirty. The non-Tokoyo branch additionally stores the id in
+ * manager+0x114, but the Tokoyo branch skips that store. The hook mirrors it
+ * after validating the same selected gadget, the access flag and the visited
+ * bit that the native call just set. manager+0x114 is the field the stock death
+ * action at 0xa84a8b reads before calling 0x87de00(manager, id).
+ *
+ * Hook sites replace complete prologue instructions with a 14-byte absolute
+ * jump. The first instructions of all five functions are position independent
+ * except for the security-cookie load, which the relocation helpers rebuild as
+ * a movabs from the same absolute address. */
+#define WORLD_SELECTED_RVA    0x191e290u  /* current interaction object */
+#define WORLD_SAVE_RVA        0x189f408u  /* local save/progress object */
+#define WORLD_MGR_TOKOYO      0x660u
+#define WORLD_MGR_ROLE        0x5b0u
+#define WORLD_MGR_CHECKPOINT  0x114u
+#define WORLD_MGR_SHRINE_ON   0x629u
+#define WORLD_MGR_COOP_ON     0x626u
+#define WORLD_MGR_COOP_DONE   0x662u
+#define WORLD_MGR_MENU_WEAK   0xa90u
+#define WORLD_SHRINE_BITS     0x15682cu  /* u32: visited shrine bits, 0..31 */
+#define WORLD_SHRINE_ACC      0x1a82u    /* richdata: access flag */
+#define WORLD_SHRINE_ID       0x1a68u    /* richdata: shrine id */
+#define WORLD_KODAMA_COUNT    0x15c2e4u
+#define WORLD_KODAMA_IDS      0x15c2e8u
+#define WORLD_KODAMA_KEY      0x44cu
+#define WORLD_KODAMA_MAX      512
+#define WORLD_TREE_MAX_DEPTH  64
+
+typedef struct {
+    uint8_t *obj;
+    uint8_t *rich;
+    uint32_t id;
+} WorldShrine;
+
+static uint8_t *world_manager(void)
+{
+    uint8_t *const *p = (uint8_t *const *)(g_base + GAME_MANAGER_RVA);
+    uint8_t *m;
+    if (!readable(p, sizeof *p))
+        return NULL;
+    m = *p;
+    if (!m || !readable(m + WORLD_MGR_ROLE, 0xb4))
+        return NULL;
+    return m;
+}
+
+static uint8_t *world_save(void)
+{
+    uint8_t *const *p = (uint8_t *const *)(g_base + WORLD_SAVE_RVA);
+    if (!readable(p, sizeof *p) || !*p)
+        return NULL;
+    return *p;
+}
+
+/* The session root's slot records are the admission view the rest of the proxy
+ * already uses. e8 is 2 for a connected member, 0 for an empty slot and 3 for
+ * a closed slot, so counting ==2 is the live party size rather than the
+ * configured cap or a departed member's stale record. */
+static int world_party_count(void)
+{
+    const uint8_t *root = g_base + GAME_ROOT_RVA;
+    int n = 0;
+    if (!readable(root, 3 * 0xa8 + 0xe9))
+        return 0;
+    for (int slot = 0; slot < 4; slot++)
+        if (root[(size_t)slot * 0xa8 + 0xe8] == 2)
+            n++;
+    return n;
+}
+
+/* At least three connected members in any co-op mode. Both the Torii Gate
+ * companion path and the shrine-visitor path qualify; solo and stock
+ * two-player missions do not. The Tokoyo latch is not required: the Kodama
+ * fallback exists precisely for a shrine visitor that the native role gate
+ * rejects, and the shrine co-op latch is set in both modes. */
+static int world_coop_world(void)
+{
+    return world_manager() && world_party_count() >= 3;
+}
+
+static int world_selected_shrine(WorldShrine *s)
+{
+    uint8_t *const *slot = (uint8_t *const *)(g_base + WORLD_SELECTED_RVA);
+    uint8_t *obj;
+    uint8_t *rich;
+    if (!readable(slot, sizeof *slot))
+        return 0;
+    obj = *slot;
+    if (!obj || !readable(obj, 0x388) || *(const uint16_t *)(obj + 4) != 2)
+        return 0;
+    rich = *(uint8_t **)(obj + 0x380);
+    if (!rich || !readable(rich + WORLD_SHRINE_ID, 0x1c))
+        return 0;
+    s->obj = obj;
+    s->rich = rich;
+    s->id = *(const uint32_t *)(rich + WORLD_SHRINE_ID);
+    return 1;
+}
+
+/* The selected gadget's own shrine fields: the richdata access flag and an id
+ * other than -1. IsYashiroActive additionally needs manager+0x629. Checkpoint
+ * recording does not use this helper: the native call and the visited bit are
+ * its proof. The id is not range-limited because 0x8ff270 shifts a 32-bit
+ * mask by it; the checkpoint check masks the shift count exactly as the native
+ * instruction does. */
+static int world_shrine_usable(const WorldShrine *s)
+{
+    if (!s->rich)
+        return 0;
+    if (!readable(s->rich + WORLD_SHRINE_ACC, 1) || !s->rich[WORLD_SHRINE_ACC])
+        return 0;
+    if (s->id == 0xffffffffu)
+        return 0;
+    return 1;
+}
+
+static uint8_t *world_gadget_node(uint8_t *node, uint8_t *sentinel,
+                                  uint8_t *want, int depth)
+{
+    uint8_t *data;
+    uint8_t *hit;
+    if (node == sentinel || depth > WORLD_TREE_MAX_DEPTH || !readable(node, 0x30))
+        return NULL;
+    data = *(uint8_t **)(node + 0x28);
+    if (data && readable(data, 0x10) && *(uint8_t **)data == want)
+        return node;
+    hit = world_gadget_node(*(uint8_t **)node, sentinel, want, depth + 1);
+    if (hit)
+        return hit;
+    return world_gadget_node(*(uint8_t **)(node + 0x10), sentinel, want, depth + 1);
+}
+
+/* Collection id of the currently selected Kodama, or 0. The gadget map is the
+ * same red-black tree that HasStrayKodama and SetStrayKodama walk. */
+static int world_selected_kodama(uint32_t *id_out)
+{
+    uint8_t *const *sel = (uint8_t *const *)(g_base + WORLD_SELECTED_RVA);
+    uint8_t *m = world_manager();
+    uint8_t *header;
+    uint8_t *root;
+    uint8_t *node;
+    uint8_t *data;
+    uint32_t id;
+    if (!m || !readable(sel, sizeof *sel) || !*sel ||
+        !readable(m + 0x40, 8))
+        return 0;
+    header = *(uint8_t **)(m + 0x40);
+    /* MSVC std::map header layout, confirmed live (header 0x60dc5b20:
+     * left 616172e0 with parent 6161b390, parent 61617830 with parent
+     * 60dc5b20 = the header, right 6161ac60): [0] is the leftmost node
+     * (MIN), [8] the root, [0x10] the rightmost. The native walk at
+     * 0x140948ee0 starts at MIN and iterates in-order successors through
+     * the parent links (+8). This DFS instead starts at the ROOT: with
+     * only left/right links, a preorder DFS from the root is what visits
+     * every node; starting at MIN would cover only MIN's subtree and miss
+     * the ancestor subtrees. Leaf children point back at the header, which
+     * is the sentinel the recursion compares against. */
+    if (!header || !readable(header, 16))
+        return 0;
+    root = *(uint8_t **)(header + 8);
+    node = world_gadget_node(root, header, *sel, 0);
+    if (!node || !readable(node + 0x20, 0x10))
+        return 0;
+    if (*(const uint32_t *)(node + 0x20) != WORLD_KODAMA_KEY)
+        return 0;
+    data = *(uint8_t **)(node + 0x28);
+    if (!data || !readable(data + 0xb4, 4))
+        return 0;
+    id = *(const uint32_t *)(data + 0xb4);
+    if (id == 0xffffffffu)
+        return 0;
+    *id_out = id;
+    return 1;
+}
+
+/* 1 collected, 0 not collected, -1 unreadable. Mirrors 0x8ef1b0's linear scan;
+ * the save fields and the 512 cap are the native ones. */
+static int world_kodama_collected(uint8_t *save, uint32_t id)
+{
+    int n;
+    const uint32_t *ids;
+    if (!save || !readable(save + WORLD_KODAMA_COUNT, 4))
+        return -1;
+    n = *(const int *)(save + WORLD_KODAMA_COUNT);
+    if (n < 0 || n > WORLD_KODAMA_MAX)
+        return -1;
+    if (!n)
+        return 0;
+    if (!readable(save + WORLD_KODAMA_IDS, (size_t)n * 4))
+        return -1;
+    ids = (const uint32_t *)(save + WORLD_KODAMA_IDS);
+    for (int i = 0; i < n; i++)
+        if (ids[i] == id)
+            return 1;
+    return 0;
+}
+
+static unsigned world_reloc_cookie(uint8_t *out, const uint8_t *head,
+                                   unsigned head_len)
+{
+    uintptr_t cookie = (uintptr_t)(g_base + 0x17f7f98u);
+    memcpy(out, head, head_len);
+    out[head_len] = 0x48;               /* movabs cookie,%rax */
+    out[head_len + 1] = 0xa1;
+    memcpy(out + head_len + 2, &cookie, 8);
+    return head_len + 10;
+}
+
+/* Mission::IsYashiroActive: sub rsp,0x158; mov cookie,%rax */
+static unsigned relocate_world_active(uint8_t *out)
+{
+    static const uint8_t head[] = {0x48, 0x81, 0xec, 0x58, 0x01, 0x00, 0x00};
+    return world_reloc_cookie(out, head, sizeof head);
+}
+
+/* Mission::YashiroAccessFunction: mov rbp,0x20(rsp); push rdi;
+ * sub rsp,0x140; mov cookie,%rax */
+static unsigned relocate_world_access(uint8_t *out)
+{
+    static const uint8_t head[] = {0x48, 0x89, 0x6c, 0x24, 0x20, 0x57,
+                                   0x48, 0x81, 0xec, 0x40, 0x01, 0x00, 0x00};
+    return world_reloc_cookie(out, head, sizeof head);
+}
+
+/* Mission::SetStrayKodama: push rbx; push r14; sub rsp,0x148; mov cookie,%rax */
+static unsigned relocate_world_kodama(uint8_t *out)
+{
+    static const uint8_t head[] = {0x40, 0x53, 0x41, 0x56,
+                                   0x48, 0x81, 0xec, 0x48, 0x01, 0x00, 0x00};
+    return world_reloc_cookie(out, head, sizeof head);
+}
+
+static int (*g_world_active_orig)(void *);
+static int (*g_world_access_orig)(void *);
+static int (*g_world_kodama_orig)(void *);
+static int (*g_world_menu_orig)(void *);
+#ifdef NIOH3P_RESEARCH
+static int (*g_world_has_orig)(void *);
+#endif
+
+/* Last shrine id accepted by Mission::YashiroAccessFunction on this client.
+ * -1 means none yet. The game thread publishes with InterlockedExchange, so
+ * any thread can poll it without touching game memory. Consumed by the rules
+ * branch; nothing in this translation unit calls it. */
+static volatile LONG g_world_shrine_id = -1;
+/* Cross-branch contract, see docs/RE_TOKOYO_COOP.md. */
+int nioh3p_world_last_shrine(uint32_t *id);
+int nioh3p_world_last_shrine(uint32_t *id)
+{
+    LONG v;
+    uint8_t *m;
+    if (!id)
+        return 0;
+    v = g_world_shrine_id;
+    if (v < 0)
+        return 0;
+    /* Gate on the live native checkpoint: manager+0x114 is the field the
+     * stock death action at 0xa84a8b consumes, so the accessor hands out
+     * exactly what the native respawn path would use right now. This does
+     * NOT prove the value is fresh for this mission: shrine ids are reused
+     * across missions (0 and 1 repeat), and whether the game resets
+     * manager+0x114 on mission change is untested. If the native field is
+     * stale after a mission change, this accessor is stale with it, by
+     * design, matching native behaviour. */
+    m = world_manager();
+    if (!m || !readable(m + WORLD_MGR_CHECKPOINT, 4) ||
+        *(const uint32_t *)(m + WORLD_MGR_CHECKPOINT) != (uint32_t)v)
+        return 0;
+    *id = (uint32_t)v;
+    return 1;
+}
+
+static int det_IsYashiroActive(void *arg)
+{
+    WorldShrine s;
+    uint8_t *m;
+    uint8_t coop;
+    uint8_t done;
+    int native;
+    if (!world_coop_world())
+        return g_world_active_orig(arg);
+    if (!world_selected_shrine(&s))
+        return g_world_active_orig(arg);
+    m = world_manager();
+    if (!m)
+        return g_world_active_orig(arg);
+    if (!world_shrine_usable(&s)) {
+        static uint32_t logged_id = 0xffffffffu;
+        int access = readable(s.rich + WORLD_SHRINE_ACC, 1) ?
+                     s.rich[WORLD_SHRINE_ACC] : -1;
+        if (logged_id != s.id) {
+            logged_id = s.id;
+            LOG("world: shrine %u not available (access=%d)", s.id, access);
+        }
+        return g_world_active_orig(arg);
+    }
+    if (!readable(m + WORLD_MGR_SHRINE_ON, 1) || !m[WORLD_MGR_SHRINE_ON]) {
+        static uint32_t logged_id = 0xffffffffu;
+        if (logged_id != s.id) {
+            logged_id = s.id;
+            LOG("world: shrine %u blocked by the mission active flag", s.id);
+        }
+        return g_world_active_orig(arg);
+    }
+    if (!readable(m + WORLD_MGR_COOP_ON, 1) ||
+        !readable(m + WORLD_MGR_COOP_DONE, 1))
+        return g_world_active_orig(arg);
+    coop = m[WORLD_MGR_COOP_ON];
+    done = m[WORLD_MGR_COOP_DONE];
+    if (!coop && !done) {
+        native = g_world_active_orig(arg);
+        if (native) {
+            static uint32_t logged_id = 0xffffffffu;
+            if (logged_id != s.id) {
+                logged_id = s.id;
+                LOG("world: shrine %u usable in co-op (coop=0 done=0, result=1)",
+                    s.id);
+            }
+        }
+        return native;
+    }
+
+    /* The binding writes its answer into the script argument (0x140ddfd00 at
+     * 0x140948941), so returning 1 from this detour cannot change what the
+     * mission script sees. Clear the co-op latches only for the duration of
+     * the native predicate, then restore them: the native code computes and
+     * writes the answer itself. The native body reads 0x662 only when
+     * manager+0x660 (Tokoyo) is set, so 0x662 is cleared only then. */
+    m[WORLD_MGR_COOP_ON] = 0;
+    if (m[WORLD_MGR_TOKOYO]) {
+        m[WORLD_MGR_COOP_DONE] = 0;
+        __asm__ volatile("" ::: "memory");
+        native = g_world_active_orig(arg);
+        __asm__ volatile("" ::: "memory");
+        m[WORLD_MGR_COOP_DONE] = done;
+    } else {
+        __asm__ volatile("" ::: "memory");
+        native = g_world_active_orig(arg);
+        __asm__ volatile("" ::: "memory");
+    }
+    m[WORLD_MGR_COOP_ON] = coop;
+    {
+        static uint32_t logged_id = 0xffffffffu;
+        if (logged_id != s.id) {
+            logged_id = s.id;
+            LOG("world: shrine %u usable in co-op (cleared coop=%u done=%u tokoyo=%u, result=%d)",
+                s.id, coop, done, (unsigned)m[WORLD_MGR_TOKOYO], native);
+        }
+    }
+    return native;
+}
+
+static int det_YashiroAccess(void *arg)
+{
+    WorldShrine pre;
+    WorldShrine post;
+    uint8_t *save = world_save();
+    uint8_t *m;
+    uint32_t bits;
+    uint32_t bit;
+    const int have_pre = world_selected_shrine(&pre);
+    const int r = g_world_access_orig(arg);
+
+    if (!world_coop_world())
+        return r;
+    if (!have_pre || !world_selected_shrine(&post)) {
+        LOG("world: shrine access returned without a selected shrine");
+        return r;
+    }
+    if (pre.obj != post.obj || pre.id != post.id) {
+        LOG("world: shrine changed during access (%u -> %u)", pre.id, post.id);
+        return r;
+    }
+    if (post.id == 0xffffffffu) {
+        LOG("world: shrine access had no shrine id");
+        return r;
+    }
+    if (!save || !readable(save + WORLD_SHRINE_BITS, 4)) {
+        LOG("world: shrine %u save bits unreadable", post.id);
+        return r;
+    }
+    bits = *(const uint32_t *)(save + WORLD_SHRINE_BITS);
+    bit = 1u << (post.id & 31u);
+    if (!(bits & bit)) {
+        LOG("world: shrine %u visited bit %#x absent after native (bits %#x)",
+            post.id, bit, bits);
+        return r;
+    }
+    m = world_manager();
+    if (!m || !readable(m + WORLD_MGR_CHECKPOINT, 4)) {
+        LOG("world: shrine %u checkpoint field unreadable", post.id);
+        return r;
+    }
+    if (*(const uint32_t *)(m + WORLD_MGR_CHECKPOINT) != post.id) {
+        *(uint32_t *)(m + WORLD_MGR_CHECKPOINT) = post.id;
+        LOG("world: shrine %u recorded as checkpoint (visited bits %#x)",
+            post.id, bits);
+    }
+    InterlockedExchange(&g_world_shrine_id, (LONG)post.id);
+    return r;
+}
+
+static int det_SetStrayKodama(void *arg)
+{
+    /* Plaintext prologue of 0x140905bc0: push r12; sub $0x40,%rsp;
+     * movslq 0x15c2e4(%rcx),%r9; mov %rcx,%r12. Executable memory alone does
+     * not prove the function (game code pages can be encrypted/swapped), so
+     * the bytes are compared before the direct call. */
+    static const uint8_t insert_head[] = {
+        0x41, 0x54, 0x48, 0x83, 0xec, 0x40,
+        0x4c, 0x63, 0x89, 0xe4, 0xc2, 0x15, 0x00,
+        0x4c, 0x8b, 0xe1
+    };
+    uint8_t *save = world_save();
+    uint8_t *m = world_manager();
+    uint32_t id = 0;
+    /* The gate order matters: world_coop_world() first, so the save lookup
+     * and the insertion only happen in a real 3+ player session. */
+    const int have = save && world_coop_world() && world_selected_kodama(&id);
+    /* The native role gate at 0x140948e90..0x140948eaa rejects exactly a
+     * role-1 client while manager+0x660 (Tokoyo) is clear: the shrine
+     * visitor. Only for that case does the native insertion never run, so
+     * only that case pre-inserts; the host and a Tokoyo visitor keep the
+     * original order and the pure native path. */
+    const int rejected_visitor = have && m &&
+                                 m[WORLD_MGR_ROLE] == 1 &&
+                                 !m[WORLD_MGR_TOKOYO];
+    int pre = -1;
+    int r;
+    if (rejected_visitor) {
+        pre = world_kodama_collected(save, id);
+        /* Run the same insertion 0x905bc0(save, id) BEFORE the binding: the
+         * native accept path also inserts first and runs the completion tail
+         * (0x1408edb60 -> script VM+0x328) after it, so the tail sees the new
+         * save state. The insertion deduplicates against the save list and
+         * marks the save dirty (movb $1,(save) at 0x140905dd2, the byte
+         * 0x8ff270 writes at 0x1408ff283). */
+        if (pre == 0 &&
+            *(const int *)(save + WORLD_KODAMA_COUNT) < WORLD_KODAMA_MAX &&
+            readable(g_base + 0x905bc0, sizeof insert_head) &&
+            !memcmp(g_base + 0x905bc0, insert_head, sizeof insert_head)) {
+            ((void (*)(uint8_t *, uint32_t))(g_base + 0x905bc0))(save, id);
+            if (world_kodama_collected(save, id) == 1)
+                LOG("world: Kodama %u credited through 0x905bc0", id);
+            else
+                LOG("world: Kodama %u insertion did not land", id);
+        }
+    }
+    r = g_world_kodama_orig(arg);
+    if (!have)
+        return r;
+    {
+        const int now = world_kodama_collected(save, id);
+        if (now == 1 && pre != 1) {
+            static uint32_t logged_id = 0xffffffffu;
+            if (logged_id != id) {
+                logged_id = id;
+                LOG("world: Kodama %u now collected on this client (save count %d)",
+                    id, *(const int *)(save + WORLD_KODAMA_COUNT));
+            }
+        } else if (now == 0) {
+            static uint32_t logged_id = 0xffffffffu;
+            if (logged_id != id) {
+                logged_id = id;
+                LOG("world: Kodama %u not collected after the binding", id);
+            }
+        }
+    }
+    return r;
+}
+
+static int det_YashiroOpenMenu(void *arg)
+{
+    WorldShrine s;
+    uint8_t *m;
+    const int have = world_selected_shrine(&s);
+    const int r = g_world_menu_orig(arg);
+
+    if (!have || !world_coop_world())
+        return r;
+    m = world_manager();
+    if (m && readable(m + WORLD_MGR_MENU_WEAK, 8) &&
+        *(uint8_t **)(m + WORLD_MGR_MENU_WEAK))
+        LOG("world: shrine %u menu opened", s.id);
+    return r;
+}
+
+#ifdef NIOH3P_RESEARCH
+static int det_HasStrayKodama(void *arg)
+{
+    uint32_t id = 0;
+    uint8_t *m;
+    int have;
+    int r;
+    if (!g_cfg.trace)
+        return g_world_has_orig(arg);
+    have = world_selected_kodama(&id);
+    r = g_world_has_orig(arg);
+    if (!have)
+        return r;
+    {
+        static uint32_t logged_id = 0xffffffffu;
+        static int logged_r = -1;
+        if (logged_id != id || logged_r != r) {
+            logged_id = id;
+            logged_r = r;
+            m = world_manager();
+            LOG("world: Kodama %u lookup -> %d (role=%d tokoyo=%d)",
+                id, r, m ? (int)m[WORLD_MGR_ROLE] : -1,
+                m ? (int)m[WORLD_MGR_TOKOYO] : -1);
+        }
+    }
+    return r;
+}
+#endif
+/* ------------------------------------------ prep companion roster (help) -- */
+
+/* The preparation and matching menus render their help box through one shared
+ * per-frame updater, 0xd2ce40: four text lines whose slot ids live in the
+ * dword tables at 0x178d2a0 (texts: 0xb,0xc,0xd,0xe) and 0x178d2b0 (per-line
+ * dim flags: 0x6,0x7,0x8,0x9). Texts are set on the sprite at this+0x68 with
+ * 0xddaee0(sprite, slot, stringHash); the raw-text variant 0xddaf90(sprite,
+ * slot, utf16, len) is the same setter the companion card uses - its len is
+ * the wide count including the terminating NUL, the convention of both
+ * native call sites - and the per-line attributes are
+ * 0xddbf00(sprite, flagSlot, dimmed) and
+ * 0xddb2c0(sprite, textSlot, colour dword at 0x126977c / 0x12697a0).
+ *
+ * The roster shows only in the Tokoyo preparation: the coop mode byte
+ * (GAME_COOP_MODE_RVA) is 1 and the mission loader phase ([manager+0x5d0]) is
+ * strictly below the in-mission 0xC. The mode byte is 1 in the mission too and
+ * root+0x3c0 == 0xE in both, so the phase is the separator; every other
+ * matching menu, and the session after mission entry, keeps its stock help
+ * box. When the session holds three or four members, the detour rewrites help
+ * lines 2-4 (slots 0xc/0xd/0xe) after the stock pass with the roster: the
+ * connected companions' session names, the companion count prefixed to the
+ * first line ("3 Nioh-LAN-A"). Members come from the game's own session
+ * member array pointer ([0x17900b0+0xc0], stride 0xd0); the count is u32
+ * [session+0xc0] on the CSessionP2p object at [mgr+0xa8] (live-proven), with
+ * the NUL-terminated UTF-8 name at member+0x10, skipping the local member
+ * (index root[0x3c8]). Names are untrusted: bounded to 0x40 bytes,
+ * control/newline bytes dropped before conversion and C0/C1 controls again
+ * after it, and converted with the
+ * game's own UTF-8 -> UTF-16 helper 0xddf4c0 (code page 65001), formatted
+ * with the game's own wide formatter 0x7e6ee0 under a constant format string.
+ * Line 1 (slot 0xb, the per-menu-item help) stays stock, and with fewer than
+ * three members the whole box is stock. No input, no invented characters, no
+ * overlay; every pointer is readability-guarded before use and every callee
+ * is signature-checked once at first use. The log records counts only, never
+ * names or platform ids. */
+#define HELP_UPDATE_RVA     0xd2ce40u   /* shared help-box updater */
+#define HELP_SAVE_RVA       0x189f408u  /* save/progress object the updater checks */
+#define HELP_SLOT_IDS_RVA   0x178d2a0u  /* 4 dword text ids, then 4 dword flag ids */
+#define HELP_COLOR_ON_RVA   0x126977cu  /* active-line colour dword */
+#define HELP_COLOR_OFF_RVA  0x12697a0u  /* dimmed-line colour dword */
+#define HELP_SET_TEXT_RVA   0xddaf90u   /* (sprite, slot, utf16, len) */
+#define HELP_SET_FLAG_RVA   0xddbf00u   /* (sprite, flagSlot, dimmed) */
+#define HELP_SET_COLOR_RVA  0xddb2c0u   /* (sprite, textSlot, colour) */
+#define HELP_CONV_RVA       0xddf4c0u   /* (dst, dstChars, utf8, srcChars) */
+#define HELP_FMT_RVA        0x7e6ee0u   /* wide variadic formatter */
+#define HELP_SESSION_RVA    0x17900b0u  /* static session manager */
+#define HELP_SESSION_OFF    0xa8u       /* [mgr+0xa8] = CSessionP2p session object */
+#define HELP_COUNT_OFF      0xc0u       /* u32 member count on the session object */
+#define HELP_MEMBERS_OFF    0xc0u       /* [mgr+0xc0] = global member array base */
+#define HELP_MEMBER_STRIDE  0xd0u
+#define HELP_MEMBER_NAME    0x10u       /* NUL-terminated UTF-8 name */
+#define HELP_ROSTER_MAX     3           /* lines 2-4 of the help box */
+
+typedef int (*help_set_text_fn)(void *, int, const void *, int);
+typedef void (*help_set_flag_fn)(void *, int, unsigned char);
+typedef int (*help_set_color_fn)(void *, int, uint32_t);
+typedef int (*help_conv_fn)(wchar_t *, int, const char *, int);
+typedef int (*help_fmt_fn)(wchar_t *, size_t, const wchar_t *, ...);
+
+static void (*orig_help_update)(void *self);
+static int help_api_ok;              /* 0 unchecked, 1 ok, -1 signature mismatch */
+
+/* The five callees the detour drives are version-locked by prologue before
+ * the first call: a different build must refuse the roster, not guess ABIs.
+ * Every signature below was taken from the disassembly of the function it
+ * names (docs/RE_TOKOYO_COOP.md, roster section):
+ *   0xddaf90 (sprite, slot, utf16, len): saves rbx/rbp/rsi, pushes rdi;
+ *     len is the wide length INCLUDING the terminating NUL, in UTF-16 code
+ *     units - both native call sites (0xc6c2cd..0xc6c2fe, 0xd2c5f4..0xd2c60e)
+ *     pass strlen+1 over a wide/byte scan. Returns 0xddaff0's bool.
+ *   0xddbf00 (sprite, flagSlot, byte): r8b goes to 0x546920 (dim flag).
+ *   0xddb2c0 (sprite, textSlot, dword): r8d stored as the colour dword.
+ *   0xddf4c0 (dst, dstChars, utf8, srcBytes): MultiByteToWideChar wrapper,
+ *     code page 0xfde9 = 65001 (UTF-8); dst capacity in wide chars, source
+ *     length in bytes; returns chars written.
+ *   0x7e6ee0 (dst, capChars, fmt, ...): wide variadic formatter, cap in wide
+ *     chars; return value unused here, the buffer is pre-zeroed and scanned. */
+static int help_api_check(void)
+{
+    static const struct { unsigned rva; uint8_t n; const uint8_t *bytes; } sigs[] = {
+        {HELP_SET_TEXT_RVA, 17, (const uint8_t *)
+            "\x48\x89\x5c\x24\x08\x48\x89\x6c\x24\x10\x48\x89\x74\x24\x18\x57"
+            "\x48\x83\xec\x20"},
+        {HELP_SET_FLAG_RVA, 10, (const uint8_t *)
+            "\x40\x53\x48\x83\xec\x20\x41\x0f\xb6\xd8"},
+        {HELP_SET_COLOR_RVA, 9, (const uint8_t *)
+            "\x40\x53\x48\x83\xec\x20\x41\x8b\xd8"},
+        {HELP_CONV_RVA, 10, (const uint8_t *)
+            "\x48\x83\xec\x38\x89\x54\x24\x28\x33\xd2"},
+        {HELP_FMT_RVA, 10, (const uint8_t *)
+            "\x4c\x89\x44\x24\x18\x4c\x89\x4c\x24\x20"},
+    };
+
+    for (size_t i = 0; i < sizeof sigs / sizeof sigs[0]; i++) {
+        const uint8_t *site = g_base + sigs[i].rva;
+        if (!readable(site, sigs[i].n) || memcmp(site, sigs[i].bytes, sigs[i].n)) {
+            LOG("help roster: helper %#x does not match this build, roster off",
+                sigs[i].rva);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Whole prologue of 0xd2ce40 up to and including the save-object branch:
+ *   push %rdi; sub $0x30,%rsp;
+ *   cmpq $0x0,[0x14189f408]   (RIP-relative -> movabs + cmpq (%rax))
+ *   mov %rcx,%rdi             (original order kept: the mov precedes the branch)
+ *   je 0x140d2d01a            (skip tail: add $0x30,%rsp; pop %rdi; ret - rdi
+ *                              is only popped there, never read)
+ * The branch cannot be a rel32 inside the trampoline: VirtualAlloc may land
+ * more than 2 GiB from the module and a wrapped rel32 would jump into the
+ * void. It is rebuilt position-independently as an inverted short jne over a
+ * 14-byte absolute jump to the skip tail; the not-taken path falls through to
+ * the installer's trampoline tail, which returns to the site tail 0xd2ce57.
+ * Body = 39 bytes; site coverage = 23 bytes (0xd2ce40..0xd2ce56). */
+static unsigned relocate_help_update(uint8_t *out)
+{
+    static const uint8_t head[] = {0x40, 0x57, 0x48, 0x83, 0xec, 0x30};
+    static const uint8_t cmpq[] = {0x48, 0x83, 0x38, 0x00};
+    static const uint8_t mov[] = {0x48, 0x8b, 0xf9};
+    static const uint8_t jne_over[] = {0x75, 0x0e};       /* over the 14-byte jmp */
+    static const uint8_t abs_jmp[] = {0xff, 0x25, 0, 0, 0, 0};
+    const uintptr_t manager = (uintptr_t)(g_base + HELP_SAVE_RVA);
+    const uintptr_t skip = (uintptr_t)(g_base + 0xd2d01au);
+    memcpy(out, head, sizeof head);                      /* 6  */
+    out[6] = 0x48; out[7] = 0xb8;                        /* movabs %rax */
+    memcpy(out + 8, &manager, 8);                        /* 16 */
+    memcpy(out + 16, cmpq, sizeof cmpq);                 /* 20 */
+    memcpy(out + 20, mov, sizeof mov);                   /* 23 */
+    memcpy(out + 23, jne_over, sizeof jne_over);         /* 25 */
+    memcpy(out + 25, abs_jmp, sizeof abs_jmp);           /* 31 */
+    memcpy(out + 31, &skip, 8);                          /* 39 */
+    return 39;
+}
+
+static void det_HelpRoster(void *self)
+{
+    orig_help_update(self);
+    if (g_cfg.max_players < 3)
+        return;
+    /* Tokoyo preparation only. The coop mode byte (GAME_COOP_MODE_RVA) is 1
+     * in the mission too, and root+0x3c0 == 0xE in both prep and mission, so
+     * the separator is the mission loader phase ([manager+0x5d0]: 0 observed
+     * in prep, 0xC in mission). The gate is a positive bound - any phase
+     * strictly below the in-mission value - so menus outside the preparing
+     * companion session, and the session after mission entry, keep their
+     * stock help box. */
+    const int32_t *coop_mode = (const int32_t *)(g_base + GAME_COOP_MODE_RVA);
+    if (!readable(coop_mode, 4) || *coop_mode != 1)
+        return;
+    uint8_t *const *loader = (uint8_t *const *)(g_base + GAME_MANAGER_RVA);
+    if (!readable(loader, 8) || !*loader || !readable(*loader + GAME_LOADER_OFF, 4))
+        return;
+    if (*(const uint32_t *)(*loader + GAME_LOADER_OFF) >= GAME_LOADER_IN_MISSION)
+        return;
+    if (!help_api_ok)
+        help_api_ok = help_api_check() ? 1 : -1;
+    if (help_api_ok < 0)
+        return;
+    /* Member count and array come from two different objects (live-proven on
+     * a four-client mission): the count is u32[session+0xc0] on the
+     * CSessionP2p object at [mgr+0xa8] - the same field the game's own
+     * name-index scan 0xd72bb0 bounds its loop with (`cmp %ebx,0xc0(%rcx)`,
+     * text.dis 3851335) - while the member array base is the global pointer
+     * [mgr+0xc0], exactly what the member getter 0xd72640 dereferences. The
+     * u32 at mgr+0xf4 read 0 on all four clients, so it is not the count. */
+    const uint8_t *mgr = g_base + HELP_SESSION_RVA;
+    if (!readable(mgr + HELP_SESSION_OFF, 8) || !readable(mgr + HELP_MEMBERS_OFF, 8))
+        return;
+    const uint8_t *session = *(const uint8_t *const *)(mgr + HELP_SESSION_OFF);
+    if (!session || !readable(session + HELP_COUNT_OFF, 4))
+        return;
+    const uint32_t count = *(const uint32_t *)(session + HELP_COUNT_OFF);
+    if (count < 3 || count > 4)
+        return;
+    const uint8_t *members = *(const uint8_t *const *)(mgr + HELP_MEMBERS_OFF);
+    if (!members || !readable(members, (size_t)count * HELP_MEMBER_STRIDE))
+        return;
+    const uint8_t *root = g_base + GAME_ROOT_RVA;
+    if (!readable(root + 0x3c8, 1) || root[0x3c8] >= count)
+        return;
+    const unsigned self_index = root[0x3c8];
+    void *sprite = readable((const uint8_t *)self + 0x68, 8)
+                             ? *(void *const *)((const uint8_t *)self + 0x68) : NULL;
+    if (!sprite || !readable(sprite, 8))
+        return;
+    const uint8_t *ids = g_base + HELP_SLOT_IDS_RVA;
+    if (!readable(ids, 8 * sizeof(uint32_t)))
+        return;
+    const uint32_t *text_id = (const uint32_t *)ids;         /* 0xb 0xc 0xd 0xe */
+    const uint32_t *flag_id = (const uint32_t *)(ids + 16);  /* 0x6 0x7 0x8 0x9 */
+    const uint32_t color_on = readable(g_base + HELP_COLOR_ON_RVA, 4)
+                                  ? *(const uint32_t *)(g_base + HELP_COLOR_ON_RVA) : 0;
+    const help_set_text_fn set_text = (help_set_text_fn)(g_base + HELP_SET_TEXT_RVA);
+    const help_set_flag_fn set_flag = (help_set_flag_fn)(g_base + HELP_SET_FLAG_RVA);
+    const help_set_color_fn set_color = (help_set_color_fn)(g_base + HELP_SET_COLOR_RVA);
+    const help_conv_fn to_utf16 = (help_conv_fn)(g_base + HELP_CONV_RVA);
+    const help_fmt_fn wfmt = (help_fmt_fn)(g_base + HELP_FMT_RVA);
+
+    /* Companion names: session members other than the local one, in session
+     * order, up to three lines. */
+    wchar_t names[HELP_ROSTER_MAX][0x40];
+    int name_len[HELP_ROSTER_MAX];
+    int companions = 0;
+    for (uint32_t i = 0; i < count && companions < HELP_ROSTER_MAX; i++) {
+        if (i == self_index)
+            continue;
+        const char *name = (const char *)(members + (size_t)i * HELP_MEMBER_STRIDE +
+                                          HELP_MEMBER_NAME);
+        if (!readable(name, 0x41))
+            continue;
+        /* Untrusted UTF-8: bounded, and every control/newline byte is dropped
+         * at the boundary (ASCII controls cannot appear inside a multi-byte
+         * sequence, so byte filtering is safe), then the converted wide line
+         * is filtered again for the C0/C1 controls UTF-8 can still encode. */
+        char clean[0x40];
+        size_t len = 0;
+        for (size_t r = 0; r < 0x40 && name[r]; r++) {
+            const unsigned char c = (unsigned char)name[r];
+            if (c >= 0x20 && c != 0x7f)
+                clean[len++] = name[r];
+        }
+        if (len >= 0x40)
+            len = 0x3f;
+        clean[len] = 0;
+        if (!len)
+            continue;
+        wchar_t *dst = names[companions];
+        memset(dst, 0, sizeof names[0]);
+        if (to_utf16(dst, 0x40, clean, (int)len + 1) <= 0)
+            continue;
+        int wl = 0;
+        for (int r = 0; r < 0x40 && dst[r]; r++) {
+            const wchar_t ch = dst[r];
+            if (ch < 0x20 || ch == 0x7f || (ch >= 0x80 && ch <= 0x9f))
+                continue;
+            dst[wl++] = ch;
+        }
+        if (!wl)
+            continue;
+        name_len[companions++] = wl;
+    }
+    if (!companions)
+        return;
+
+    /* First roster line carries the companion count ("3 Nioh-LAN-A"). */
+    wchar_t line0[0x40];
+    memset(line0, 0, sizeof line0);
+    wfmt(line0, 0x3f, L"%d %ls", companions, names[0]);
+    int line0_len = 0;
+    while (line0_len < 0x3f && line0[line0_len])
+        line0_len++;
+
+    int shown = 0;
+    for (int k = 0; k < companions; k++) {
+        const int index = k + 1;             /* help lines 2-4, line 1 stays stock */
+        if (index > 3)
+            break;
+        const wchar_t *text = k ? names[k] : line0;
+        const int len = k ? name_len[k] : line0_len;
+        /* 0xddaf90's length is the wide count INCLUDING the terminating NUL,
+         * the convention of both native call sites; every buffer above keeps
+         * its terminating zero inside the array, so len + 1 stays in bounds. */
+        if (set_text(sprite, (int)text_id[index], text, len + 1))
+            shown++;
+        set_flag(sprite, (int)flag_id[index], 0);        /* active, not dimmed */
+        set_color(sprite, (int)text_id[index], color_on);
+    }
+
+    /* One privacy-safe log line per roster change: counts only, never names
+     * or platform ids. */
+    static uint32_t last_count;
+    if (last_count != (uint32_t)companions) {
+        last_count = (uint32_t)companions;
+        LOG("help roster: %d companion(s) on the prep help box, %d line(s) set",
+            companions, shown);
+    }
+}
+
 static InlineHook g_inline_hooks[] = {
     {HUD_ROW_CTOR_RVA, 19, "hud row", (void *)det_HudRow, (void **)&g_hud_row_ctor,
      {0x48, 0x89, 0x4c, 0x24, 0x08, 0x53, 0x48, 0x83, 0xec, 0x30,
@@ -5059,6 +6305,28 @@ static InlineHook g_inline_hooks[] = {
     {0x8af1b0, 17, "coop wait flag", (void *)det_WaitFlag, (void **)&g_wait_flag,
      {0x48, 0x83, 0xec, 0x28, 0x48, 0x8b, 0x05, 0x25, 0x24, 0xfc, 0x00,
       0x8b, 0x88, 0xb0, 0x05, 0x00, 0x00}, relocate_wait_flag},
+    {0x9488a0, 14, "shrine active", (void *)det_IsYashiroActive, (void **)&g_world_active_orig,
+     {0x48, 0x81, 0xec, 0x58, 0x01, 0x00, 0x00, 0x48, 0x8b, 0x05, 0xea, 0xf6, 0xea, 0x00},
+     relocate_world_active},
+    {0x949360, 20, "shrine access", (void *)det_YashiroAccess, (void **)&g_world_access_orig,
+     {0x48, 0x89, 0x6c, 0x24, 0x20, 0x57, 0x48, 0x81, 0xec, 0x40, 0x01, 0x00, 0x00,
+      0x48, 0x8b, 0x05, 0x24, 0xec, 0xea, 0x00}, relocate_world_access},
+    {0x949620, 18, "shrine menu", (void *)det_YashiroOpenMenu, (void **)&g_world_menu_orig,
+     {0x40, 0x57, 0x48, 0x81, 0xec, 0x60, 0x01, 0x00, 0x00,
+      0x48, 0xc7, 0x44, 0x24, 0x38, 0xfe, 0xff, 0xff, 0xff}, NULL},
+    {0x948e50, 18, "kodama collect", (void *)det_SetStrayKodama, (void **)&g_world_kodama_orig,
+     {0x40, 0x53, 0x41, 0x56, 0x48, 0x81, 0xec, 0x48, 0x01, 0x00, 0x00,
+      0x48, 0x8b, 0x05, 0x36, 0xf1, 0xea, 0x00}, relocate_world_kodama},
+#ifdef NIOH3P_RESEARCH
+    {0x947f60, 23, "kodama lookup", (void *)det_HasStrayKodama, (void **)&g_world_has_orig,
+     {0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20,
+      0x57, 0x48, 0x81, 0xec, 0x50, 0x01, 0x00, 0x00}, NULL},
+#endif
+    {HELP_UPDATE_RVA, 23, "help roster", (void *)det_HelpRoster,
+     (void **)&orig_help_update,
+     {0x40, 0x57, 0x48, 0x83, 0xec, 0x30, 0x48, 0x83, 0x3d, 0xba, 0x25, 0xb7,
+      0x00, 0x00, 0x48, 0x8b, 0xf9, 0x0f, 0x84, 0xc3, 0x01, 0x00, 0x00},
+     relocate_help_update},
 #ifdef NIOH3P_RESEARCH
     {0xd6acc0, 19, "game dispatch", (void *)det_GameDispatch, (void **)&g_game_dispatch,
      {0x48, 0x8b, 0xc4, 0x55, 0x53, 0x57, 0x41, 0x57, 0x48, 0x8d, 0x68, 0xa1,
@@ -5113,6 +6381,370 @@ static int inline_install(InlineHook *h)
         LOG("game tokoyo: cannot restore execute protection at %#x (err %lu)",
             h->rva, GetLastError());
     return 1;
+}
+
+/* ------------------------------------------------ lobby-rule native hooks --
+ * Three code points only, all verified against their plaintext prologues:
+ *   0x7c7eb0  character status recalc: computes max HP from the character
+ *             data and the mission scaling, then clamps current HP. We scale
+ *             the freshly computed maximum and a full current value, never the
+ *             stored maximum, so a later recalc cannot compound the factor.
+ *   0x8c1bbe  the inline continuous assist drain (166 per update). The stub
+ *             below replaces only that block; every pause/delay/failure and all
+ *             revive/recovery code after 0x8c1bf6 stays native.
+ *   0x884b60  the manager respawn state machine. When a position-based
+ *             respawn is pending, an opt-in Tokoyo rule replaces the point
+ *             through the native shrine setter 0x87de00 before the state
+ *             machine copies it to the character (state 3). */
+static void (*g_status_recalc)(void *status);
+static void (*g_respawn_state)(void *manager);
+
+static int character_is_player(const uint8_t *ch)
+{
+    if (!ch || !readable(ch + 0xe90, sizeof(void *)))
+        return 0;
+    /* The character-data flags at +0xe90 are the native player test used by
+     * the status code: bit 1 is set for player/companion data. */
+    uint8_t *data = *(uint8_t *const *)(ch + 0xe90);
+    if (!data || !readable(data + 4, 4))
+        return 0;
+    return (*(const uint32_t *)(data + 4) >> 1) & 1;
+}
+
+/* Defined once in the shared-world feature. Returns 1 only while the shrine
+ * this client last activated still equals the live checkpoint at
+ * manager+0x114; 0 means "no trusted id", and the caller then uses that same
+ * manager field, so a stale id cannot leak into the next mission. */
+extern int nioh3p_world_last_shrine(uint32_t *id);
+
+/* The assist block at manager+0x660 owns the local character at +0x58 and the
+ * one companion at +0xa8. Those two contexts alone do not cover a four-player
+ * session, so the native party slot array is checked as well: stride 0x18,
+ * field +0 is the character object (same table the HUD row code uses).
+ * Neither a party member nor a companion may receive the enemy multiplier. */
+static int character_is_party(uint8_t *ch)
+{
+    for (int i = 0; i < GAME_PARTY_SLOT_COUNT; i++) {
+        uint8_t *slot = g_base + GAME_PARTY_SLOTS_RVA + (size_t)i * GAME_PARTY_SLOT_STRIDE;
+        if (readable(slot, sizeof(void *)) && *(void *const *)slot == (void *)ch)
+            return 1;
+    }
+    uint8_t *mgr = game_manager_ptr();
+    if (!mgr || !readable(mgr + 0x660, 0x100))
+        return 0;
+    for (int i = 0; i < 2; i++) {
+        uint8_t *ctx = mgr + 0x660 + 0x58 + (size_t)i * 0x50;
+        if (*(void *const *)ctx == (void *)ch)
+            return 1;
+    }
+    return 0;
+}
+
+static void det_status_recalc(void *status)
+{
+    if (g_status_recalc)
+        g_status_recalc(status);
+    int pct = g_rules_enemy_pct;
+    if (pct == 100 || !status)
+        return;
+    uint8_t *st = status;
+    uint8_t *ch = *(uint8_t *const *)st;
+    if (!ch)
+        return;
+    static volatile LONG player_seen;
+    if (character_is_player(ch) || character_is_party(ch)) {
+        if (InterlockedIncrement(&player_seen) <= 4)
+            LOG("rules: player/party HP left at %llu/%llu (player data flag)",
+                (unsigned long long)*(const uint64_t *)(st + 0x18),
+                (unsigned long long)*(const uint64_t *)(st + 0x20));
+        return;
+    }
+    uint64_t *maxp = (uint64_t *)(st + 0x18);
+    uint64_t *curp = (uint64_t *)(st + 0x20);
+    uint64_t base = *maxp, cur = *curp;
+    if (!base)
+        return;
+    uint64_t scaled = (base * (uint64_t)pct + 50) / 100;
+    if (!scaled)
+        scaled = 1;
+    if (scaled == base)
+        return;
+    *maxp = scaled;
+    if (cur == base || cur > scaled)
+        *curp = scaled;
+    static volatile LONG seen;
+    LONG n = InterlockedIncrement(&seen);
+    if (n <= 8 || n % 500 == 0)
+        LOG("rules: enemy HP %llu -> %llu (%d%%, current %llu -> %llu)",
+            (unsigned long long)base, (unsigned long long)scaled, pct,
+            (unsigned long long)cur, (unsigned long long)*curp);
+}
+
+/* VMProtect decrypts pages lazily. Only enter the shrine setter when its
+ * prologue is the verified plaintext; otherwise the native body-position
+ * point is left untouched rather than calling into ciphertext. */
+static int shrine_setter_plain(void)
+{
+    static const uint8_t head[8] = {0x48, 0x8b, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83};
+    uint8_t *fn = g_base + 0x87de00;
+    return readable(fn, sizeof head) && memcmp(fn, head, sizeof head) == 0;
+}
+
+/* 0x87de00's lookup is a map-style tree: head = *(void**)(manager+0x50), and a
+ * non-host role also tries *(void**)(manager+0x60) first. Node layout: left
+ * +0, parent +8, right +0x10, nil byte +0x19, key u32 +0x20, payload +0x30.
+ * A miss makes the setter a no-op, and the state/id it writes are already true
+ * before the call, so only this hit is evidence that a replacement happened.
+ * Runs in the game thread immediately before the native call. */
+static uint8_t *rules_find_shrine(uint8_t *head, int key)
+{
+    if (!head || !readable(head, 0x10))
+        return 0;
+    uint8_t *node = *(uint8_t *const *)(head + 8);
+    uint8_t *found = head;
+    for (int steps = 0; steps < 64 && node && readable(node, 0x24) &&
+         *(const uint8_t *)(node + 0x19) == 0; steps++) {
+        if (*(const int32_t *)(node + 0x20) >= key) {
+            found = node;
+            node = *(uint8_t *const *)node;             /* left */
+        } else {
+            node = *(uint8_t *const *)(node + 0x10);    /* right */
+        }
+    }
+    if (found == head || *(const int32_t *)(found + 0x20) != key)
+        return 0;
+    if (!readable(found + 0x30, 0x14))
+        return 0;
+    return found;
+}
+/* 0x87de00 resolves the shrine node, rewrites the pending point and sets the
+ * machine back to state 1, so the replacement must happen exactly once per
+ * pending respawn: re-firing on the state-2 update would reset the timer to
+ * state 1 on every tick and the respawn would never complete. The latch is
+ * cleared whenever no position-based respawn is pending any more. */
+static volatile LONG g_rules_respawn_replaced;
+
+static void det_respawn_state(void *manager)
+{
+    uint8_t *mgr = manager;
+    if (mgr && readable(mgr, 0x664)) {
+        int state = *(const int32_t *)(mgr + 0x5f0);
+        int point_id = *(const int32_t *)(mgr + 0x614);
+        /* States 1..4 are the pending/respawn cycle; state 0 is idle. */
+        if (state == 0 || state >= 3 || point_id >= 0)
+            InterlockedExchange(&g_rules_respawn_replaced, 0);
+        if (g_rules_respawn_on && g_cfg.max_players >= 3 &&
+            *(const uint8_t *)(mgr + 0x660)) {
+            int role = *(const int32_t *)(mgr + 0x5b0);
+            /* State 1/2 is a pending respawn; a negative point id means the
+             * point came from a position (the native self-recovery body
+             * position), not from a shrine. Do not query the shrine or
+             * checkpoint otherwise. */
+            if ((role == 0 || role == 1) && (state == 1 || state == 2) &&
+                point_id < 0) {
+                uint32_t used = 0;
+                int have_used = nioh3p_world_last_shrine(&used);
+                int native = *(const int32_t *)(mgr + 0x114);
+                /* The native id is an int, not a 0..31 index: 0x8ff270 only
+                 * uses the low five bits of its bit mask. Only -1 (0xffffffff)
+                 * means "no shrine". */
+                int shrine = have_used ? (int)used : native;
+                int valid = shrine != -1;
+                int plain = valid ? shrine_setter_plain() : 0;
+                /* Mirror the setter's own lookup: role 0 searches
+                 * manager+0x50; every other role tries manager+0x60 and then
+                 * falls back to +0x50. Only a hit makes it write. */
+                uint8_t *node = 0;
+                if (valid && plain) {
+                    if (role != 0 && readable(mgr + 0x60, sizeof(void *)))
+                        node = rules_find_shrine(*(uint8_t *const *)(mgr + 0x60), shrine);
+                    if (!node && readable(mgr + 0x50, sizeof(void *)))
+                        node = rules_find_shrine(*(uint8_t *const *)(mgr + 0x50), shrine);
+                }
+                static volatile LONG no_shrine_logged, cipher_logged, miss_logged;
+                if (!valid && InterlockedIncrement(&no_shrine_logged) == 1)
+                    LOG("rules: self-recovery pending but no used shrine; body position kept");
+                else if (valid && !plain && InterlockedIncrement(&cipher_logged) == 1)
+                    LOG("rules: shrine setter 0x87de00 is not plaintext yet; body position kept");
+                else if (valid && plain && !node && InterlockedIncrement(&miss_logged) == 1)
+                    LOG("rules: shrine %d is not in the role tree; body position kept", shrine);
+                if (valid && plain && node &&
+                    InterlockedCompareExchange(&g_rules_respawn_replaced, 1, 0) == 0) {
+                    typedef void (*SetShrinePoint)(void *, unsigned);
+                    SetShrinePoint set = (SetShrinePoint)(void *)(g_base + 0x87de00);
+                    set(manager, (unsigned)shrine);
+                    /* The setter writes position +0x600, angle +0x610, state 1
+                     * and id -1 whenever its own lookup hits, which the scan
+                     * above just proved. The pre-existing state/id values are
+                     * not used as proof. */
+                    LOG("rules: self-recovery respawn point -> shrine %d (%s, node found, native 0x87de00)",
+                        shrine, have_used ? "world accessor" : "manager+0x114");
+                }
+            }
+        }
+    }
+    if (g_respawn_state)
+        g_respawn_state(manager);
+}
+
+static InlineHook g_rules_hooks[] = {
+    {0x7c7eb0, 19, "status recalc", (void *)det_status_recalc,
+     (void **)&g_status_recalc,
+     {0x48, 0x8b, 0xc4, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
+      0x41, 0x57, 0x48, 0x81, 0xec, 0x20, 0x01, 0x00, 0x00}, NULL},
+    {0x884b60, 20, "respawn state", (void *)det_respawn_state,
+     (void **)&g_respawn_state,
+     {0x40, 0x57, 0x48, 0x81, 0xec, 0x90, 0x00, 0x00, 0x00, 0x8b,
+      0x81, 0xf0, 0x05, 0x00, 0x00, 0x48, 0x8b, 0xf9, 0x85, 0xc0}, NULL},
+};
+
+/* Executable stub for the drain block. It reads g_assist_drain_step each
+ * update and reproduces the stock clamp, then jumps to 0x8c1bf6. Only RAX and
+ * RCX are clobbered; the original block clobbered RAX and both are dead at
+ * the resume point. */
+
+static uint8_t *emit8(uint8_t *p, uint8_t v) { *p = v; return p + 1; }
+static uint8_t *emit32(uint8_t *p, int32_t v) { memcpy(p, &v, 4); return p + 4; }
+static uint8_t *emit64(uint8_t *p, uint64_t v) { memcpy(p, &v, 8); return p + 8; }
+
+static uint8_t *build_assist_stub(uint8_t *p, void *resume)
+{
+    p = emit8(p, 0x48); p = emit8(p, 0xb8);            /* movabs rax, &step */
+    p = emit64(p, (uint64_t)(uintptr_t)&g_assist_drain_step);
+    p = emit8(p, 0x8b); p = emit8(p, 0x00);            /* mov eax,[rax] */
+    p = emit8(p, 0x85); p = emit8(p, 0xc0);            /* test eax,eax */
+    p = emit8(p, 0x0f); p = emit8(p, 0x84);
+    uint8_t *done32 = p; p = emit32(p, 0);
+
+    p = emit8(p, 0x8b); p = emit8(p, 0x4e); p = emit8(p, 0x0c);  /* mov ecx,[rsi+0xc] */
+    p = emit8(p, 0x85); p = emit8(p, 0xc9);                      /* test ecx,ecx */
+    p = emit8(p, 0x7e); uint8_t *pending1 = p; p++;
+    p = emit8(p, 0x3b); p = emit8(p, 0xc8);                      /* cmp ecx,eax */
+    p = emit8(p, 0x76); uint8_t *zcur8 = p; p++;
+    p = emit8(p, 0x2b); p = emit8(p, 0xc8);                      /* sub ecx,eax */
+    p = emit8(p, 0x89); p = emit8(p, 0x4e); p = emit8(p, 0x0c);
+    p = emit8(p, 0xeb); uint8_t *pending2 = p; p++;
+    uint8_t *zcur = p;
+    p = emit8(p, 0xc7); p = emit8(p, 0x46); p = emit8(p, 0x0c); p = emit32(p, 0);
+    uint8_t *pending = p;
+
+    p = emit8(p, 0x8b); p = emit8(p, 0x4e); p = emit8(p, 0x14);  /* mov ecx,[rsi+0x14] */
+    p = emit8(p, 0x85); p = emit8(p, 0xc9);
+    p = emit8(p, 0x7e); uint8_t *done8 = p; p++;
+    p = emit8(p, 0x3b); p = emit8(p, 0xc8);
+    p = emit8(p, 0x76); uint8_t *zpend8 = p; p++;
+    p = emit8(p, 0x2b); p = emit8(p, 0xc8);
+    p = emit8(p, 0x89); p = emit8(p, 0x4e); p = emit8(p, 0x14);
+    p = emit8(p, 0xeb); uint8_t *done3 = p; p++;
+    uint8_t *zpend = p;
+    p = emit8(p, 0xc7); p = emit8(p, 0x46); p = emit8(p, 0x14); p = emit32(p, 0);
+    uint8_t *done = p;
+
+    /* Stock leaves both gauges alone when the current value is already zero
+     * (0x8c1bc3 jumps straight to 0x8c1bf6), so the pending gauge must not be
+     * drained alone: that would eat the revive reserve after a gauge-empty
+     * failure. */
+    *pending1 = (uint8_t)(done - (pending1 + 1));
+    *pending2 = (uint8_t)(pending - (pending2 + 1));
+    *zcur8 = (uint8_t)(zcur - (zcur8 + 1));
+    *done8 = (uint8_t)(done - (done8 + 1));
+    *zpend8 = (uint8_t)(zpend - (zpend8 + 1));
+    *done3 = (uint8_t)(done - (done3 + 1));
+    int32_t rel = (int32_t)(done - (done32 + 4));
+    memcpy(done32, &rel, 4);
+
+    p = emit8(p, 0xff); p = emit8(p, 0x25); p = emit8(p, 0); p = emit8(p, 0);
+    p = emit8(p, 0); p = emit8(p, 0);
+    p = emit64(p, (uint64_t)(uintptr_t)resume);
+    return p;   /* one past the stub: install uses (end - mem) for flushing */
+}
+
+/* 1 installed, 0 not plaintext yet, -1 failed. Only success is cached: a
+ * transient allocation or protection failure must be retried by the worker. */
+static int install_assist_drain(void)
+{
+    static int state;
+    static const uint8_t expected[14] = {
+        0x8b, 0x46, 0x0c, 0x85, 0xc0, 0x7e, 0x31,
+        0x3d, 0xa6, 0x00, 0x00, 0x00, 0x7e, 0x0a,
+    };
+    if (state)
+        return state;
+    uint8_t *site = g_base + 0x8c1bbe;
+    if (!readable(site, sizeof expected) || memcmp(site, expected, sizeof expected))
+        return 0;
+    uint8_t *mem = VirtualAlloc(NULL, 128, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!mem)
+        return -1;
+    uint8_t *end = build_assist_stub(mem, g_base + 0x8c1bf6);
+    DWORD old;
+    if (!VirtualProtect(mem, 128, PAGE_EXECUTE_READ, &old)) {
+        VirtualFree(mem, 0, MEM_RELEASE);
+        return -1;
+    }
+    FlushInstructionCache(GetCurrentProcess(), mem, (SIZE_T)(end - mem));
+    uint8_t patch[14];
+    abs_jmp(patch, mem);
+    if (!VirtualProtect(site, sizeof patch, PAGE_EXECUTE_READWRITE, &old)) {
+        VirtualFree(mem, 0, MEM_RELEASE);
+        return -1;
+    }
+    memcpy(site, patch, sizeof patch);
+    FlushInstructionCache(GetCurrentProcess(), site, sizeof patch);
+    if (!VirtualProtect(site, sizeof patch, PAGE_EXECUTE_READ, &old))
+        LOG("rules: cannot restore execute protection at 0x8c1bbe (err %lu)", GetLastError());
+    state = 1;
+    LOG("rules: assist drain intercepted at 0x8c1bbe (stock step 166)");
+    return 1;
+}
+
+static DWORD WINAPI rules_hooks_worker(LPVOID unused)
+{
+    (void)unused;
+    int state[2] = {0, 0};
+    int tries[2] = {0, 0};
+    int drain = 0;
+    for (int waited = 0; waited < 600000; waited += 50) {
+        int pending = 0;
+        for (int i = 0; i < 2; i++) {
+            if (state[i])
+                continue;
+            state[i] = inline_install(&g_rules_hooks[i]);
+            if (state[i] < 0) {
+                if (++tries[i] >= 4) {
+                    LOG("rules: %s hook failed %d time(s), giving up",
+                        g_rules_hooks[i].name, tries[i]);
+                    state[i] = -1;
+                } else {
+                    state[i] = 0;
+                    pending++;
+                }
+            } else if (!state[i]) {
+                pending++;
+            }
+        }
+        if (!drain) {
+            int r = install_assist_drain();
+            if (r > 0) {
+                drain = r;
+            } else {
+                if (r < 0) {
+                    static int fail_logged;
+                    if (fail_logged++ == 0)
+                        LOG("rules: assist drain stub install failed (alloc/protect); retrying");
+                }
+                pending++;
+            }
+        }
+        if (!pending)
+            break;
+        Sleep(50);
+    }
+    if (!drain)
+        LOG("rules: assist drain bytes never became plaintext; stock drain kept");
+    LOG("rules: native hooks status=%d respawn=%d drain=%d",
+        state[0], state[1], drain);
+    return 0;
 }
 
 static DWORD WINAPI tokoyo_hooks_worker(LPVOID unused)
@@ -5605,6 +7237,18 @@ static DWORD WINAPI worker(LPVOID unused)
             LOG("game tokoyo: cannot start the hook thread (err %lu)", GetLastError());
     }
     if (g_cfg.hook_eos && mod_active) {
+        HANDLE t = CreateThread(NULL, 0, rules_worker, NULL, 0, NULL);
+        if (t)
+            CloseHandle(t);
+        else
+            LOG("rules: cannot start the lobby-rule thread (err %lu)", GetLastError());
+        if (exe_supported()) {
+            t = CreateThread(NULL, 0, rules_hooks_worker, NULL, 0, NULL);
+            if (t)
+                CloseHandle(t);
+            else
+                LOG("rules: cannot start the native-hook thread (err %lu)", GetLastError());
+        }
         install_game_visitor_allowance();
         install_game_invite_hooks();
     }

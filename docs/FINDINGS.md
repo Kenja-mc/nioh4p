@@ -2256,3 +2256,132 @@ All four players entered a mission. The host saw a visitor move, and all four
 game processes were still running after the movement check. The host showed
 two companion health rows. The run did not test damage, revival, mission
 completion, or four distinct Steam accounts.
+
+## Lobby gameplay rules: enemy HP, assist drain, self-recovery shrine
+
+Three host-authoritative settings (`enemy_hp_percent`, `assist_drain_percent`,
+`respawn_at_shrine`) are published once in the host's lobby data under
+`nioh3p_rules` as `v1 ehp=<25..400> adr=<0..1000> rs=<0|1>`.
+
+Authority follows lobby membership, not the native role field, which can still
+say host (or nothing) during a join transition:
+
+* **A lobby was requested** (`JoinLobby` with a lobby id; that call is
+  asynchronous, so this is "we are a client", not proof of membership): the
+  host's published string is the only source. Until it arrives the stock
+  numbers apply; the local file is never used, so a visitor cannot override the
+  host and a pending join cannot leak local values.
+* **This process confirmed ownership** of a lobby by successfully writing the
+  `nioh3p_rules` key (Steam rejects lobby-data writes from non-owners; the
+  `CreateLobby` return value is only an API call handle and proves nothing):
+  the local file applies. Publishing is attempted when a `CreateLobby` call
+  was made, and ownership is recorded only on a successful write.
+* **Neither** (solo play, no session): the stock numbers apply; the three keys
+  have no effect outside a lobby session.
+
+Invalid strings are rejected whole (four fixed tokens, strict decimal, range
+checked) and are never echoed into the log. Leaving the lobby clears the
+joined, owned and published state.
+
+The native code points, re-checked against `text.dis`:
+
+* `0x7c7eb0` character status recalc. The function reads the character from
+  `status[0]`, always rewrites `status+0x18` with the freshly computed maximum
+  at `0x1407c8696`, and clamps `status+0x20` down to it. Bit 1 of
+  `*(u32*)(*(void**)(char+0xe90)+4)` gates the player/companion scaling block
+  (`shr $1; and $1` at `0x1407c8611`), the same test the detour uses. Scaling
+  the written maximum therefore cannot compound: every call recomputes it from
+  the base data. The detour additionally excludes the four static party slots
+  at `0x18a0490` (stride `0x18`, field +0 = character) and the two assist
+  contexts at `manager+0x660+0x58/+0xa8`, so no player in a four-player session
+  is ever scaled.
+* `0x8c1bbe..0x8c1bf5` inline continuous assist drain. The block zeroes each
+  gauge when it is at most `0xa6` (166) and otherwise subtracts 166; when the
+  current gauge (`+0xc`) is already non-positive it jumps straight to the
+  resume point `0x8c1bf6`, so the pending reserve (`+0x14`) is *not* drained
+  while the current gauge is empty. The executable stub reproduces that
+  control flow with the configured step; only RAX and RCX are clobbered, and
+  neither is read before being rewritten at the resume point. A stub that
+  drained the pending reserve in the empty-gauge case would eat the revive
+  reserve the native gauge-empty failure depends on; this was fixed here.
+* `0x884b60` manager respawn state machine. `+0x5f0` is the state: 0 idle,
+  1 setup (the handler ends by writing state 2), 2 pending timer, 3 timer then
+  teleport from the point at `+0x600` (position float4) and `+0x610` (angle),
+  ending in state 4, and 4 timer then state 0. `+0x614` is the point id; a
+  negative value means a position-based point (native self-recovery body
+  position), which is the only case the rule touches.
+* `0x87de00` native shrine setter. The lookup is a map-style tree: head =
+  `*(void**)(manager+0x50)`; role 0 searches that tree only, every other role
+  tries `*(void**)(manager+0x60)` first and falls back to `+0x50`. Node layout:
+  left +0, parent +8, right +0x10, nil byte +0x19, key u32 +0x20, payload
+  +0x30. On a hit it writes the position to `manager+0x600`, the angle to
+  `+0x610`, state 1 to `+0x5f0`, the position marker `-1` to `+0x614` and
+  `0x101` to `+0x618`; a miss in both trees returns at `0x14087df6f` without
+  writing anything. The id-based sibling at `0x87df80` instead stores its id
+  argument at `+0x614`.
+
+The respawn rule calls `0x87de00` once per pending position-based respawn,
+before the state machine runs. Repeating the call on the state-2 update would
+reset the pending timer to state 1 every tick and the respawn would never
+complete, so a latch allows exactly one replacement per cycle (cleared in
+state 0, state 3+ or when the point id is not negative). Because a pending
+state-1 respawn already has state 1 and `+0x614 == -1` before the call, that
+pair proves nothing. The detour therefore performs the setter's own tree
+lookup (readable walk, same key and role order) immediately before the call
+and only claims a replacement on a hit; a miss is a no-op and keeps the body
+position, logged once. The verifier must not expect `+0x614` to equal the
+shrine id: the setter always writes `-1` there.
+
+Cross-branch API: the rules branch calls
+`int nioh3p_world_last_shrine(uint32_t *id)`, defined by the shared-world
+branch. Commit 70e75b3 there tightens it to return 1 only while the published
+id still equals the live native checkpoint at `manager+0x114`, otherwise 0.
+The rules detour treats 0 as "use `manager+0x114`", so a stale id can never
+leak across missions. Both sides use the same manager+0x114 value the stock
+death action consumes.
+
+Residual limits, stated so they are not mistaken for proof:
+
+* **Unproven:** the hook installer's timing versus enemy spawns. The detours
+  install only when their plaintext prologues are present; enemies whose last
+  recalculation happened before installation keep stock HP for that mission.
+  The log line `rules: native hooks status=%d respawn=%d drain=%d` states the
+  final install state but has not been correlated with a live mission.
+* **Unproven:** that the host publishes before any client reaches gameplay.
+  Publication needs a native `SetLobbyData` call after `CreateLobby`; the
+  client requests and reads the value at the `JoinLobby` call and then polls
+  every 250 ms. Whether that always completes before the first frame has not
+  been observed live. A client that joins a mission already in progress adopts
+  the host value mid-mission: enemies whose last recalculation predates the
+  adoption keep stock HP for that mission, while the drain step and the
+  respawn rule apply from adoption on.
+* **Unproven:** that a live `0x87d820`-style self-recovery cycle exposes
+  `+0x614 < 0` in states 1/2 on every client; the tree-hit log is the probe.
+* The three detours are inert at the stock values (100 / 100 / 0): the status
+  hook posts no change, the drain stub reproduces the stock clamp, and the
+  respawn detour only forwards to the trampoline. This is checked from the
+  code, not from a live default-config run.
+
+Live acceptance probes (all four processes, `trace=0`; a probe result, not a
+proof of the features above):
+
+1. Host `enemy_hp_percent=50`, visitor default: host log shows
+   `rules: host rules "v1 ehp=50 adr=100 rs=0" published in lobby <id> (ownership confirmed)`
+   and each visitor `rules: host value "v1 ehp=50 adr=100 rs=0" accepted`.
+   Enemy damage then kills at roughly half stock HP on every client; expect
+   `rules: enemy HP <base> -> <half>` lines and at most four
+   `player/party HP left` notes, with no party member scaled.
+2. Host `assist_drain_percent=0`: the continuous drain stops; a teammate revive
+   and the gauge-empty failure still work; with `=200` the current gauge falls
+   about twice as fast and the pending reserve still stops draining at empty.
+3. Host `respawn_at_shrine=1`, four players, Tokoyo: die away from a shrine and
+   choose self-recovery (BackSpace hold). Expect
+   `rules: self-recovery respawn point -> shrine <id> (world accessor|manager+0x114, node found, native 0x87de00)`
+   and the character reappearing at that shrine instead of the body. A death
+   after visiting no shrine logs `no used shrine; body position kept`; a shrine
+   id missing from both role trees logs `is not in the role tree; body position
+   kept`. A teammate rescue is unchanged.
+4. Visitor with a non-default local file in the host's session: its values are
+   never published or applied; only `rules: host value ... accepted` counts.
+   Solo play with a non-default file must stay stock (no
+   `rules: host rules ... published`, no scaling).

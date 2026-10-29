@@ -73,10 +73,157 @@ with a 14-byte absolute jump. They install at boot, when no session exists.
    increment flag `0x47`. Slot 1 keeps the counter in step with the host.
    Later companions follow the host and slot 1.
 
-The log shows `game tokoyo: 2/2 companion hook(s) installed` at boot, then
+The log shows `game tokoyo: N/N companion hook(s) installed` at boot (`N`
+includes the shared-world hooks below), then
 `game tokoyo: packet N also sent to companion slot S` on the host and
 `game tokoyo: companion slot S leaves the shared wait counter to slot 1` on
 the later companions.
+
+## Shared world: Kodama and shrine menus
+
+Added on `feature/shared-world-interactions`. The hooks install in the same
+prologue-hook table and act only in a co-op session with at least three
+connected members (session-root slot records `root+slot*0xa8+0xe8 == 2`;
+closed slots hold 3 and must not count). Both the Torii Gate companion path and
+the shrine-visitor path qualify. Solo and stock two-player missions keep every
+native gate. No new `nioh3p.ini` key is added.
+
+### Kodama
+
+The stock path is already mostly correct and is kept:
+
+- `Mission::SetStrayKodama` `0x140948e50` accepts role 0, or role 1 when
+  `manager+0x660` is set (Tokoyo); a shrine visitor is rejected by that native
+  role gate. It finds the selected gadget in the map at `manager+0x40`, checks
+  the local save with `0x1408ef1b0` and calls the native insertion
+  `0x140905bc0`. It sends no packet.
+- `0x140905bc0` appends the collection ID to `save+0x15c2e4/+0x15c2e8`
+  (maximum 512, duplicate check). The save object is per client.
+- `Gadget::CreateStrayKodama` `0x140896560` has no co-op role gate; the
+  mission script decides which placements exist on each client.
+
+The hook therefore does not replace the native decision. Only for the client
+the native role gate rejects (role 1 while `manager+0x660` is clear: the
+shrine visitor) it checks the selected Kodama in the gadget map (key low
+32 = `0x44c`, collection ID at `DataGadget+0xb4`), checks this client's save
+with the same linear scan, and only if the ID is absent repeats the native
+insertion `0x140905bc0(save, id)` immediately before the call. The host and a
+Tokoyo visitor keep the original order and the pure native path. The
+insertion is guarded by its plaintext prologue bytes (first 16 bytes:
+`41 54 48 83 ec 40 4c 63 89 e4 c2 15 00 4c 8b e1`), because executable
+memory alone does not prove the function on a machine with encrypted code
+pages. That ordering matches the native accept path, which inserts first and
+then runs the completion tail (`0x1408edb60` writing the per-mission result
+to script VM+0x328): on the reject path the tail would otherwise compute
+from the pre-insertion save. `0x140905bc0` marks the save dirty itself:
+`movb $1,(save)` at `0x140905dd2`, the same dirty byte the shrine setter
+`0x1408ff270` writes at `0x1408ff283`. It never writes another client's save
+and sends no packet. The build logs which path credited the save.
+
+### Shrine
+
+`Mission::IsYashiroActive` `0x1409488a0` returns false when `manager+0x626`
+is set. The game sets that latch while co-op is active, which is why the host
+loses the Pray prompt as soon as a companion is present. In Tokoyo it also
+returns false when `manager+0x662` is set. That byte is set by the event
+handler at `0x1407bf723`; **[INFERENCE]** `Gadget::SetYashiroOnlineDoneAccess`
+(`0x140899120`) is what marks the shrine used and leads to it, but the event-id
+path from that binding to the handler was not traced.
+
+The hook requires the selected interaction object (kind 2),
+`richdata+0x1a82 != 0` and `manager+0x629 != 0`, then clears
+`manager+0x626` (and `manager+0x662` only when `manager+0x660` says Tokoyo,
+because the native predicate reads `0x662` only in that case) only for the
+duration of the native `IsYashiroActive` call and restores them immediately.
+The binding writes its
+answer into the script argument, so letting the native code compute the answer
+is what makes the mission script see true; returning 1 from the detour alone
+would not. The real `Mission::YashiroOpenMenu` `0x140949620` is still what
+opens the menu; the proxy adds no prompt or replacement menu. A separate hook
+logs that the menu weakref at `manager+0xa90` was published, for the live
+probe only.
+
+### Checkpoint for respawn
+
+`Mission::YashiroAccessFunction` `0x140949360` already calls
+`0x1408ff270(save, shrine id)` in every mode. That sets bit `1 << id` in
+`save+0x15682c` and marks the save dirty. Only the non-Tokoyo branch also
+stores the ID in `manager+0x114`; the Tokoyo branch skips it.
+
+The hook records the ID after the native call only when the selected gadget is
+unchanged, the ID is not `-1` and the native visited bit (masked to the five
+shift bits exactly as `0x8ff270` does) is now set. It does not require the
+access flag afterwards: the native call and the visited bit already prove the
+shrine was used. It then mirrors the native non-Tokoyo store
+`manager+0x114 = id` and publishes it through:
+
+    int nioh3p_world_last_shrine(uint32_t *id);
+
+The function returns 1 when a shrine was accepted and the published ID still
+equals the live native checkpoint `manager+0x114` — exactly what the stock
+death action would consume right now — and 0 otherwise. That equality is not
+a freshness proof: shrine IDs repeat across missions (0 and 1), and whether
+the game resets `manager+0x114` on mission change is untested. If the native
+field is stale after a mission change, this accessor is stale with it, by
+design. It is game-thread written and poll-safe.
+The stock death action at `0xa84a8b` reads
+`manager+0x114` and calls `0x14087de00(manager, id)`. Verified in the
+disassembly: that setter walks the trees at `manager+0x60`/`manager+0x50`
+keyed by the ID, and on a hit stores the position at `manager+0x600`, the
+angle at `+0x610`, sets `+0x5f0=1`, writes the position marker `+0x614=-1`
+and `+0x618=0x0101`; on a tree miss it writes nothing. The marker `-1` is
+what distinguishes this setter from the ID-based sibling `0x87df80`, which
+stores its ID at `+0x614` instead — nothing in this branch writes `+0x614`.
+It is not a full respawn or enemy reset. This branch does not call any
+respawn function.
+
+### Limits and live proof still required
+
+- The hooks only activate with three or more connected session slots, in either
+  co-op mode. They do not change ordinary single-player or two-player behaviour.
+- `IsYashiroActive` clears `manager+0x626` (and `manager+0x662` in Tokoyo)
+  only around the native call and restores them immediately, after the
+  shrine's own gates have passed. Observed call context: between the latch
+  reads at `0x140948914`/`0x14094892f` the native body runs only the binding
+  glue `0x140ddf4e0`/`0x140ddfd00`, neither of which references the latches,
+  and every other reader and writer of `0x626`/`0x662` in text.dis is
+  game-thread mission/script code. The window is a few game-thread
+  instructions on one thread; a concurrent reader on another thread could
+  still observe zero. Nothing is left cleared.
+- `0x140905bc0` marks the save dirty itself (`save[0]=1` at `0x140905dd2`),
+  like every other save-field setter; the game's normal save points still own
+  persistence. The live test must prove that a visitor's credit survives a
+  return to the hub and a relaunch.
+- The `manager+0x114` freshness question is open: after finishing a mission
+  where a shrine was used, read `manager+0x114` at the next mission's start.
+  If the game clears or moves it, `nioh3p_world_last_shrine` correctly
+  reports none until a new shrine is used; if the game leaves the old ID and
+  the next mission reuses it, both stay stale together and the consumer sees
+  what the native respawn path sees. Record which happens.
+- `manager+0x662` has no clearing write in the whole binary (seven
+  references: five reads, the setter at `0x1407bf723`). The predicate survives
+  that by clearing it around the native call. The Tokoyo host assist branch in
+  `YashiroAccessFunction` pays out only when `0x662` is clear
+  (`jne 0x140949554` at `0x1409494c6`), so later uses still do not refill
+  assist. Resetting that latch permanently is not done here.
+- Nothing in this section is live-proven yet.
+
+Live scenarios for the parent:
+
+1. Four players in one Tokoyo mission, each with a different local save. Visit
+   the same Kodama with A, then B, then C. Every client must still see it until
+   its own collection and the log must show either the native path or the
+   `0x905bc0` fallback once per client. `save+0x15c2e4` must grow only on the
+   client that collected, and B/C must keep A's older IDs.
+2. At one shrine with all four present, hold E on each client. Each must get
+   the real menu, close it and get it again. The log must show
+   `world: shrine N usable in co-op` and `world: shrine N menu opened` on every
+   client, repeatedly.
+3. Pray once on each client, then read `manager+0x114` and
+   `nioh3p_world_last_shrine` on each: both must be the same shrine ID, and
+   `save+0x15682c` must have the bit. Kill a character and check which native
+   path the death uses (`0xa84a8b` or the `0xd6b2xx` packet branch). Only the
+   former consumes `manager+0x114`.
 
 ## Useful state (read-only, `tools/rig/rig.py state`)
 
@@ -166,8 +313,8 @@ xrefs. Addresses have to come from a live pointer or a packet.
 
 | Feature | Search target | What one session has to provide |
 | --- | --- | --- |
-| Kodama for everyone | `Character::InteractionStrayKodama`, `Gadget::RequestStrayKodama`, `Gadget::CreateStrayKodama` | the packet produced when a visitor picks one up, and whether the flag travels as raw 71 |
-| Shrines for everyone | the Pray prompt predicate; no class name found, so start from the shader/UI string and the interact radius | whether a visitor's pray sends anything, and what the host does with it |
+| Kodama for everyone | `Mission::SetStrayKodama` `0x140948e50`, insertion `0x140905bc0`, `Mission::HasStrayKodama` `0x140947f60` | mechanism implemented in "Shared world"; live test must show one save count/ID set grows only on the collecting client and every other client keeps seeing its own uncollected Kodama |
+| Shrines for everyone | `Mission::IsYashiroActive` `0x1409488a0`, `YashiroOpenMenu` `0x140949620`, `YashiroAccessFunction` `0x140949360` | live test must open the real menu repeatedly on all four clients and show `manager+0x114` / `nioh3p_world_last_shrine` carry the same accepted shrine ID |
 | Assist gauge and revive | `CoopHeaderGauge@Menu` (`0x14129b3f8`), `CoopPlayerGauge@Menu`, `TokoyoCoopGauge@Menu` (`0x14129b3f8` is the gauge; see classmap for the other two) | one death in a three-player party: which raw id carries it, and what `sel`/`allow` do around it |
 | Enemy scaling | the mission-setup reader of the party size; member records are at `root + slot*0xa8` | enemy HP at 2, 3 and 4 players, read with `rig.py state` or a memory poller |
 | Rejoin | `0x140d7b234` and `root+0x39c`, plus the `integer_82` equality filter | done: the probe shows the allowance is not consumed per admission, so this is the mission-start limit, not the counter |
@@ -365,30 +512,178 @@ HP `[data+0x20]` (script getters `Character::GetHostHpRate` and `GetHpRate`
 use the same fields). The assigner accepts a character when `+0xef0 != -1`,
 `+0x430 != 0`, `data != NULL` and `[data+0x10] != 1`.
 
-## Prep screen and lobby: what is known (not implemented)
+## Companion information card and the profile window: correction (static, 2026-10-28)
 
-- The profile packet (id 77, 128 bytes) fills one block at `root+0x4c` and
-  sets `root+0xcc`. The state machine `0xd7d8a0` and the reset `0xd7ca00` work
-  on a larger structure that starts there (`+0x84` phase, `+0x8c`, `+0x98`,
-  `+0x99`). Nothing in the 0x4c..0xcb window is per member, so with three
-  visitors the last arrival wins on every client.
-- The session facade is slot-indexed, but the Torii menus pick one slot. Member
-  records are `root + slot*0xa8`; `0xd7a0d0(root, rel)` maps a relative index
-  (0 = own slot, k = the k-th other member) to a slot, `0xd7af60(root, slot,
-  mask)` tests `mask` in the flag word at record `+0x104` (0x80 ready, 0x100
-  start) and `0xd7b020` the word at `+0xfc`. The callers (`0xd62c10`,
-  `0xd5f2b0`, `0xd5f150`) choose the slot as "the other one of host and
-  partner" (`own == 0 ? 1 : 0`), so the menus read slot 0 and slot 1 only.
-  Fanout of packets 74, 75, 76 and 17 to slots 2 and 3 is in the proxy; the
-  menus themselves still show one partner.
-- Menu classes involved: `TokoyoCoopMenu@Menu` (`0x14129bf28`, update
-  `0xd2d900`), `TokoyoCoopMatching@Menu` (`0x14129b968`, state update
-  `0xd29ed0`), `TokoyoCoopPartner@Menu` (`0x14129c9e0`, a thin holder: update
-  `0xd2fe80` waits for `0xc82f50` on `[0x14189f400+0x7d8]`),
-  `TokoyoCoopOnlineStatus@Menu` (`0x14129c4e0`, shows the local online state
-  and a countdown, not a member list).
-- A per-member display needs a live capture of the host's prep screen with
-  three companions connected (screenshots of each menu state, and the profile
-  window and `root+0x4e8` read at the same time) before any hook is written.
-  A hook that stores per-sender profiles without a consumer would change
-  nothing on screen, so none is shipped.
+Read from the merged image dump only; nothing here was observed live. It
+replaces three earlier guesses in this file: that the `root+0x4c` window is what
+the "Companion information" panel shows, that `root+0x4e8` selects which
+companion it shows, and that per-sender profile storage would fix the panel.
+
+**The `root+0x4c..0xcb` window is mission-compatibility data, not a card.**
+Packet 77 (128 bytes, `0xd6c0e6`) is built by `0x8f34d0` / `0x8eeac0` and sent
+by `0xd62a30` to every other member (`target 4`) when `root+0xcc == 0`. The
+layout the consumers read is: `0x74` bytes of per-mission state (cleared by the
+loop in `0x8f34d0`, queried per mission id by `0x8f3d90` and `0x8f3fc0`), a
+u32 minimum level at `+0x78` and a u32 maximum level at `+0x7c` (read by
+`0xd2c6e0`, which narrows the host's own range to the partner's). The one
+accessor is `0xd5ddf0()`: `&root[+0x4c]` when `root+0xcc == 1`, else NULL.
+Its callers are the mission list builders `0xd2b410` (random mission pick),
+`0xd396a0` (list filter), `0xd2c6e0` (level range), `0xd2ca30`, `0xd2d900`
+and the matching state machine `0xd29ed0`. With three visitors the host's
+window holds only the last sender's data, so the mission filter and the level
+range follow one companion. That is a rules question (intersection of all
+companions), not a display one.
+
+**`root+0x4e8` is a dialog result, not a companion selector.** `0xd7c940`
+stores it; its only writers are `0xd63190`, called from the Matching menu
+(`0xd29ad0`, state 7) and from `0xc93760` with `[param+0xa4]`, the index the
+player chose in a confirmation dialog. `0xd5e900` tests it for "waiting for the
+answer" (`root[0]==1 && root[4]==2 && sel<0`).
+
+**Where a companion's name and card come from.**
+- Member names: `0xd5d920(relative index)` maps the index with `0xd7a0d0` and
+  returns the NUL-terminated name at `root + slot*0xa8 + 0x10f` (`0xd7a090`).
+  The mission HUD uses it with `[character+0xef0]` (`0xc21240`).
+- Session members: `0xd66c60()+0xa8` is the lobby session object; `0xd72640
+  (session, index)` returns a member, `0xd72a10(member)` its name, `0xd72b60`
+  the local index. `0xd5a020` is the local name and `0xd59fc0(index)` a
+  member's.
+- The card is `PlayerOnlineState@Menu` (`0x141279ac8`). `0xc6c080(card, parent,
+  slot, anim)` stores `slot` at `card+0x70`, `anim` at `+0x74` and runs the
+  refresh `0xc6c180`. With `+0x70 == 0` it prints the local name (`0xd5d280`);
+  otherwise it prints the name of **session member 1** - the immediate in
+  `0xc6c4fb` is `mov $1,%ecx; call 0xd59fc0` and does not use `+0x70` - and
+  reads the party character `0x755dc0(+0x70)` for level and title.
+- The container `0xc83bc0(holder, slot, parent)` (holder is `[0x14189f400+0x7d8]`)
+  stores `slot` at `+0x74`, resolves the character with `0x755dc0(slot)` and
+  data `[char+0x240]`, picks a card variant from `+0x70` and calls `0xc6c080`
+  with that slot. Its caller `0xd2fda0` passes the constant `1`: the
+  `lea 0x1(%r8),%edx` at `0xd2fdd4`. So the native card is hard-wired to party
+  slot 1 and session member 1, for a host and for a visitor alike.
+
+
+### The member index mapping is now proven (live + static, 2026-10-28)
+
+`0xd7a0d0(root, k)` is the game's own party-slot -> session-member map. Read
+out byte for byte it is: `k == 0` returns `root[0x3c8]`; `k > root[0x3c8]`
+returns `k`; otherwise `k - 1`. `root[0x3c8]` (u8) is the local player's own
+absolute session index. So for party slot `k` in 1..3 the session member that
+carries that companion is `m(k) = (k <= S) ? k - 1 : k` with `S = root[0x3c8]`.
+
+Three independent confirmations:
+
+- Live roots from the four-client prep run: the host's `root[0x3c8] = 0`
+  (`b-root.bin`), the first visitor's `= 1` (`a-root.bin`).
+- The HUD row name getter `0xc1ead0(char)` feeds `char+0xef0` (the character's
+  party slot) straight into `0xd5d920`, i.e. the same map.
+- The formula reproduces every row name the three-player mission run printed
+  (docs above, 2026-10-26): host b (S=0) saw rows C and A, visitor a (S=1) saw
+  B and C, visitor c (S=2) saw B and A.
+
+The mission HUD also uses this path for the row names; the root name records
+(`root + k*0xa8 + 0x10f`) were still all zero in the prep snapshots, so they
+are filled in mission only. The card name instead reads the session member
+array pointer (`[0xd66c60()+0xc0]`, stride 0xd0, UTF-8 name at +0x10), which
+has names in prep too. The member count is NOT the u32 at manager+0xf4 (it
+read 0 on all four live clients): the count is u32[session+0xc0] on the
+CSessionP2p object at `[mgr+0xa8]` - the bound of the game's own name-index
+scan `0xd72bb0` (`cmp %ebx,0xc0(%rcx)`, text.dis 3851335). `0xd72640` has no
+bounds check, so any member index must be derived from that count, never
+passed raw.
+
+### Live prep observations (four LAN clients, 2026-10-28)
+
+- `0x755dc0` party array (`0x1418a0490`): slots 0/1 hold characters, slots 2/3
+  NULL, although all four Steam clients sat in the same lobby. The party array
+  tracks admitted companions, not Steam lobby members; slots 2/3 must not be
+  relied on in prep (`a-party.bin`/`b-party.bin`).
+- The panel holder (`[0x14189f400+0x7d8]`, element id 0xfb at `+0x8`, live
+  0x6dfcce60) with the panel open: `+0x60 = 2`, `+0x70 = 0` (status variant),
+  `+0x74 = 1` (party slot) - `b-holder-open.bin`.
+- `root+0x3c0 == 0xE` in prep while the screen still counts down (parent's
+  screenshot: 16 s). `0xE` there is therefore NOT a mission marker. It is the
+  gate the connected-slot predicate `0xd7af80` requires
+  (`cmpl $0xe,0x3c0(%rcx)`), i.e. a lobby/prep phase value; the connected bits
+  (record `+0x104` bit 0) were 0 for every record in both root snapshots, so
+  at that instant the root records did not reflect the Steam lobby members.
+- The panel the menu opens is the full status window (Core/Battle stats, 3D
+  preview), the container's variant 0; the small `PlayerOnlineState` card is
+  variant 4 and needs `[0x14189f420]+0x18 != 0` (0xc83c94..0xc83ca6 forces
+  variant 0 when that byte is 0). No live surface with the card variant has
+  been captured yet.
+
+### The prep roster is now implemented (not live-proven)
+
+**Where the native multiline text actually lives.** The matching/prep menus
+draw their help box through one shared per-frame updater, `0xd2ce40`: four
+text lines on the sprite at `this+0x68`, text slot ids from the dword tables
+`0x178d2a0` (texts `0xb`, `0xc`, `0xd`, `0xe`) and `0x178d2b0` (per-line dim
+flags `0x6`-`0x9`). Texts are hash-set with `0xddaee0(sprite, slot, hash)`;
+raw text goes through `0xddaf90(sprite, slot, utf16, len)` - the same setter
+the companion card uses - and the per-line attributes are
+`0xddbf00(sprite, flagSlot, dimmed)` and `0xddb2c0(sprite, textSlot, colour)`
+with the colour dwords at `0x126977c` (active) / `0x12697a0` (dimmed). The
+multiline mechanism is multiple positioned slots, not `\n`. The
+bottom-right companion name (`0xd2c520`) is instead an immediate-mode draw
+(`0xacde50`, position inside the draw system) and also hardcodes member 1 -
+not usable for a roster.
+
+**What the proxy does.** `0xd2ce40` is inline-hooked (23-byte prologue,
+RIP-relative compare rewritten absolute in the trampoline). The detour runs
+the stock pass first, then applies three gates before it touches any text:
+`max_players >= 3`; the Tokoyo coop mode byte (`0x14191de34`) equal to 1; and
+the mission loader phase (`[manager+0x5d0]`) strictly below the in-mission
+value 0xC - a positive pre-mission bound, since the mode byte is 1 in the
+mission too and `root+0x3c0 == 0xE` holds in both prep and mission. Menus
+outside the preparing companion session keep their stock help box. Inside the
+gate, when the member count (u32[session+0xc0] on the CSessionP2p object at
+`[mgr+0xa8]` - live-proven on a four-client mission; the u32 at `mgr+0xf4` is
+not the count, it read 0 on all four clients) is 3 or 4, help lines 2-4 are
+rewritten with the roster: the connected companions' session names, the
+companion count prefixed to the first line ("3 Nioh-LAN-A"). Members come
+from the game's global session member array pointer (`[0x17900b0+0xc0]`,
+stride 0xd0, UTF-8 name at +0x10 - the array `0xd72640` dereferences),
+skipping the local member (index `root[0x3c8]`).
+Names are untrusted: bounded to 0x40 bytes, control/newline bytes dropped
+before conversion, and the converted line filtered again for C0/C1 controls;
+conversion and formatting use the game's own helpers (`0xddf4c0`, code page
+65001; `0x7e6ee0` with a constant `"%d %ls"`-style format - the name is never
+used as a format). Line 1 (the per-menu-item help) stays stock, and with
+fewer than three members the whole box is stock. All five game helpers the
+detour calls are signature-checked once at first use; every pointer is
+readability-guarded. No input, no invented characters, no overlay. The log
+records counts only - never names or platform ids.
+
+**Card panel experiments: removed.** The panel-slot paging experiment on the
+container `0xc83bc0` and the card name-index call patch at `0xc6c4fb` are both
+gone, along with the `call_patch`/gate installer fields and the near-module
+stub allocator they needed. Neither was ever exercised live: the prep party
+array keeps slots 2/3 NULL, so a paged or renamed slot-2/3 card is not
+reachable in the actual preparation screen, and no card-variant-4 surface was
+ever captured. The stock Companion information window is untouched and still
+shows the first companion; the roster in the help box is the surface that
+shows all connected names. The static facts above (the `0xc6c4fb` and
+`0xd2fdd4` hardcodes, the `m(k)` mapping) remain valid documentation for any
+future card work.
+
+Open (needs live capture before this is proven):
+
+- The phase gate (mode 1, loader phase < 0xC) is only as good as the observed
+  values: prep 0, mission 0xC. If any other in-session screen sits between
+  them with its own help box, that box would show the roster too - the
+  capture should note which menus ran while mode 1 / phase < 0xC held.
+- Whether the card variant (4) ever shows in a captureable surface, and
+  whether party slots 2/3 fill after the Ginchiyo admission or only in the
+  mission.
+
+Live probe for the roster: with 3-4 clients in the Tokoyo preparation
+(mode 1, loader 0, root+0x3c0 0xE), the prep help box lines 2-4 should list
+the companions with the count on the first roster line, and the log gets one
+count-only line per roster change (`help roster: N companion(s) ...`). With
+one or two players, in other menus, and after mission entry (loader 0xC), the
+box must be stock.
+
+The roster above deliberately reads the session member array instead of the
+party array: the session array carries every connected member's name from the
+moment the lobby exists, while the party array only carries admitted
+companions (slots 2/3 NULL in the observed prep run).
