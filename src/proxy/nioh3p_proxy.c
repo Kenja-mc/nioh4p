@@ -5485,7 +5485,7 @@ static void *det_HudRow(void *self, int id, int index)
  * latch manager+0x626 is set (and in Tokoyo also when manager+0x662 is set).
  * An earlier note blamed 0x626 for the host losing the Pray prompt as soon as
  * a visitor arrives, but the HUD-only 4P sample (2026-10-28) had 0x626 = 0
- * with three members connected and still no prompt, so 0x626 is not always
+ * with four members connected and still no prompt, so 0x626 is not always
  * set in co-op and neither latch explains that sample; the research
  * diagnostics below exist to find the real cause. [INFERENCE] 0x662 is the
  * "shrine used" latch
@@ -5802,10 +5802,18 @@ int nioh3p_world_last_shrine(uint32_t *id)
  * (Mission::IsYashiroActive 0x9488a0 and the unresolved predicate 0x949090).
  * Purely diagnostic: it reads game memory behind readable() checks, never
  * writes, and logs one line only when the observation tuple changes, so a
- * per-frame prompt check cannot flood the log. `answer` is the value the
- * native function returned to its caller, or WORLD_RESEARCH_NA on the entry
- * observation. */
+ * per-frame prompt check cannot flood the log; a hard cap silences even an
+ * oscillating tuple. `native_return` is the raw word the native function
+ * returned in eax. text.dis does NOT establish that this word is the Lua
+ * boolean: the completion glue 0x140ddfd00 pushes the answer byte into the
+ * VM through 0x1404603b0 and merely does `incl 0x10c(%frame)`, and the
+ * function's return value is the movzwl of that same frame+0x10c word
+ * (rsp+0x13c in IsYashiroActive, rsp+0x17c in 0x949090, whose traced body
+ * never calls the glue at all). Treat it as a return descriptor/counter, not
+ * as proof that the predicate answered true or false. WORLD_RESEARCH_NA
+ * marks the entry observation, where no return exists yet. */
 #define WORLD_RESEARCH_NA (-2)
+#define WORLD_RESEARCH_LOG_MAX 64u
 typedef struct {
     uintptr_t obj;          /* *0x14191e290, 0 when absent/unreadable */
     uint32_t kind;          /* obj+4 word, 0xffffffff when unreadable */
@@ -5817,17 +5825,20 @@ typedef struct {
     int32_t active629;      /* manager+0x629 */
     int32_t tokoyo660;      /* manager+0x660 */
     int32_t done662;        /* manager+0x662 */
-    int32_t answer;         /* native return value, WORLD_RESEARCH_NA at entry */
-    uint32_t seen;          /* excluded from the change compare */
+    int32_t native_return;  /* eax of the native call, WORLD_RESEARCH_NA at
+                             * entry; not established as the Lua boolean */
+    uint32_t seen;          /* bookkeeping, excluded from the compare */
+    uint32_t logged;        /* change lines emitted (hard cap) */
+    uint32_t capped;        /* suppression notice emitted */
 } WorldResearchObs;
 
 static void world_research_observe(const char *site, WorldResearchObs *prev,
-                                   int32_t answer)
+                                   int32_t native_return)
 {
     WorldResearchObs cur;
     uint8_t *m;
     memset(&cur, 0, sizeof cur);
-    cur.answer = answer;
+    cur.native_return = native_return;
     {
         uint8_t *const *slot = (uint8_t *const *)(g_base + WORLD_SELECTED_RVA);
         uint8_t *obj = readable(slot, sizeof *slot) ? *slot : NULL;
@@ -5864,15 +5875,34 @@ static void world_research_observe(const char *site, WorldResearchObs *prev,
         prev->access == cur.access && prev->role == cur.role &&
         prev->coop626 == cur.coop626 && prev->active629 == cur.active629 &&
         prev->tokoyo660 == cur.tokoyo660 && prev->done662 == cur.done662 &&
-        prev->answer == cur.answer)
+        prev->native_return == cur.native_return)
         return;
-    *prev = cur;
-    prev->seen = 1;
+    /* Carry the bookkeeping across, then hard-bound the output: past
+     * WORLD_RESEARCH_LOG_MAX changes one notice is logged and this site/stage
+     * goes quiet, so even a tuple alternating every frame is bounded. Each
+     * call site keeps its own state for its own enter and result stages. */
+    {
+        uint32_t logged = prev->logged;
+        uint32_t capped = prev->capped;
+        *prev = cur;
+        prev->seen = 1;
+        prev->logged = logged + 1;
+        prev->capped = capped;
+        if (logged >= WORLD_RESEARCH_LOG_MAX) {
+            if (!capped) {
+                prev->capped = 1;
+                LOG("world-research: %s change log capped at %u lines, "
+                    "suppressing further changes", site,
+                    (unsigned)WORLD_RESEARCH_LOG_MAX);
+            }
+            return;
+        }
+    }
     LOG("world-research: %s obj=%p kind=%u rich=%p id=%u access=%d role=%d "
-        "coop626=%d active629=%d tokoyo660=%d done662=%d answer=%d",
+        "coop626=%d active629=%d tokoyo660=%d done662=%d native_return=%d",
         site, (void *)cur.obj, cur.kind, (void *)cur.rich, cur.shrine_id,
         cur.access, cur.role, cur.coop626, cur.active629, cur.tokoyo660,
-        cur.done662, cur.answer);
+        cur.done662, cur.native_return);
 }
 #endif
 
@@ -5919,8 +5949,8 @@ static int det_IsYashiroActive_impl(void *arg)
             static uint32_t logged_id = 0xffffffffu;
             if (logged_id != s.id) {
                 logged_id = s.id;
-                LOG("world: shrine %u usable in co-op (coop=0 done=0, result=1)",
-                    s.id);
+                LOG("world: shrine %u usable in co-op (coop=0 done=0, native_return=%d)",
+                    s.id, native);
             }
         }
         return native;
@@ -5949,7 +5979,7 @@ static int det_IsYashiroActive_impl(void *arg)
         static uint32_t logged_id = 0xffffffffu;
         if (logged_id != s.id) {
             logged_id = s.id;
-            LOG("world: shrine %u usable in co-op (cleared coop=%u done=%u tokoyo=%u, result=%d)",
+            LOG("world: shrine %u usable in co-op (cleared coop=%u done=%u tokoyo=%u, native_return=%d)",
                 s.id, coop, done, (unsigned)m[WORLD_MGR_TOKOYO], native);
         }
     }
@@ -5960,8 +5990,9 @@ static int det_IsYashiroActive_impl(void *arg)
  * manager/selected-shrine state at entry (before any gate, so a client
  * outside the 3+ co-op gate - the observed HUD-only 4P sample with
  * manager+0x626 = 0 - still reports what the native predicate saw) and the
- * answer the native call handed back, then returns the detour's result
- * unchanged. */
+ * raw word the native call returned in eax (the frame+0x10c descriptor the
+ * completion glue increments; text.dis does not establish it as the Lua
+ * boolean), then returns the detour's result unchanged. */
 static int det_IsYashiroActive(void *arg)
 {
     static WorldResearchObs entry_prev;
@@ -6426,11 +6457,12 @@ static void det_HelpRoster(void *self)
  * in text.dis and .text contains no direct call to the address, so it is
  * reached the way the other yashiro bindings are (script frame in rcx, the
  * entry glue 0x140ddf4e0 at 0x1409490b4, frame base rsp+0x70). The detour is
- * observation-only: it always calls the original and returns its answer
- * unchanged. The native body returns movzwl 0x17c(%rsp) - a word inside its
- * own script frame - and unlike IsYashiroActive it shows no 0x140ddfd00
- * completion call, so which path writes that word on which call is untraced;
- * the log records only what callers actually received. */
+ * observation-only: it always calls the original and returns its return word
+ * unchanged. That word is movzwl 0x17c(%rsp) - the frame+0x10c field of its
+ * own script frame - and unlike IsYashiroActive the traced body shows no
+ * 0x140ddfd00 completion call, so nothing in text.dis establishes what writes
+ * it or whether it is ever the Lua boolean; the log records it verbatim as
+ * native_return and proves nothing about the predicate's answer. */
 static int det_YashiroPredicate(void *arg)
 {
     static WorldResearchObs entry_prev;

@@ -131,7 +131,7 @@ path from that binding to the handler was not traced.
 An earlier revision of this note said the game sets `manager+0x626` whenever
 co-op is active, "which is why the host loses the Pray prompt as soon as a
 companion is present". The 2026-10-28 HUD-only 4P run disproves that: on a
-4P `Deep in Shadows` client (checkpoint `manager+0x114 = 1`, three connected
+4P `Deep in Shadows` client (checkpoint `manager+0x114 = 1`, four connected
 members) facing the starting shrine and `E1.6` produced no prompt, and the
 observed flags were `0x626 = 0`, `0x629 = 1`, `0x660 = 1`, `0x662 = 0`. So
 `0x626` is not always set in co-op, what writes it was never traced, and in
@@ -162,7 +162,7 @@ probe only.
 Added on `feature/shared-world-interactions` to explain the no-prompt sample
 above. Both hooks are compiled only with `NIOH3P_RESEARCH` and do nothing at
 `trace=0`; they observe and never write game state, and every detour returns
-the original's answer unchanged.
+the original's return word unchanged.
 
 **Hook contract**
 
@@ -175,19 +175,26 @@ Both prologues were validated instruction-boundary by instruction-boundary
 against `text.dis`; no branch in either body re-enters the replaced bytes, and
 `0x949090` ends at `0x14094935a` (`ret`, then `int3` padding to
 `YashiroAccessFunction` at `0x140949360`). The predicate's body returns
-`movzwl 0x17c(%rsp)` — a word inside its own script frame (`rsp+0x70`) — and
-unlike `IsYashiroActive` shows no `0x140ddfd00` completion call, so which path
-writes that word on which call is untraced; the log records only what callers
-received. `IsYashiroActive` returns the answer word its `0x140ddfd00` call
-wrote (`movzwl 0x13c(%rsp)` at `0x140948950`).
+`movzwl 0x17c(%rsp)` — the frame+0x10c field of its own script frame
+(`rsp+0x70`). **Neither function's returned word is established as the Lua
+boolean.** `IsYashiroActive` returns `movzwl 0x13c(%rsp)` at `0x140948950`,
+and `0x140ddfd00` — the completion glue it calls at `0x14094894b` — reads the
+computed answer byte (`movzbl (%rdx)`, here `rsp+0x20`), pushes it into the
+VM through `0x1404603b0`, and only does `incl 0x10c(%frame)` afterwards; the
+returned word is that same incremented frame+0x10c counter/descriptor. The
+traced body of `0x949090` never calls the glue at all, so nothing in
+`text.dis` establishes what writes its word or whether it is ever a boolean.
+The log therefore records the raw word as `native_return` and it proves
+nothing by itself about the predicate's true/false answer; the Lua-visible
+answer is what the glue pushes through `0x1404603b0`.
 
 **Observation points**: `IsYashiroActive` entry (before every gate, so a
 client outside the 3+ co-op gate still reports what the native predicate saw)
 and result (after the hook restored the latches, so the flags are the real
-ones); `0x949090` entry and result the same way. `answer = -2` on an entry
-line means "no answer yet".
+ones); `0x949090` entry and result the same way. `native_return = -2` on an
+entry line means "no return observed yet".
 
-**Log line** (`world-research: <site> obj=… kind=… rich=… id=… access=… role=… coop626=… active629=… tokoyo660=… done662=… answer=…`):
+**Log line** (`world-research: <site> obj=… kind=… rich=… id=… access=… role=… coop626=… active629=… tokoyo660=… done662=… native_return=…`):
 
 - `obj` — `*(0x14191e290)`, the current interaction object pointer; `0`
   absent/unreadable.
@@ -201,12 +208,16 @@ line means "no answer yet".
 - `role` — `manager+0x5b0`; `-1` without a manager. `coop626` `active629`
   `tokoyo660` `done662` — `manager+0x626/0x629/0x660/0x662`, `-1` without a
   manager.
-- `answer` — the native function's return value as the caller (the mission
-  script) received it; `-2` marks the entry observation.
+- `native_return` — the raw word the native function returned in eax (see the
+  return-semantics note above: a frame+0x10c descriptor/counter, not
+  established as the Lua boolean, and not proof the predicate answered true
+  or false); `-2` marks the entry observation.
 
-Every field is read behind `readable()` checks; a line is logged only when the
-whole tuple changes, so a per-frame prompt check adds at most one line per
-distinct state. In the no-prompt sample the expected entry line is
+Every field is read behind `readable()` checks. Each call site keeps separate
+change state for its own enter and result stages, and each stage is hard
+bounded: after 64 change lines one suppression notice is logged and the stage
+goes quiet, so even a tuple alternating every frame cannot flood the log. In
+the no-prompt sample the expected entry line is
 `obj=0x14b8a40 kind=2 rich=0 id=0xffffffff access=-1 … coop626=0 active629=1
 tokoyo660=1 done662=0`, which would localise the failure to the null
 `richdata` during the script call rather than the co-op latches.
