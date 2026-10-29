@@ -2241,11 +2241,20 @@ Opening visitor a's pause menu cleared the extra element's flags to
 `0x01000000`, so the callback did run. The separate container still had both
 visibility bytes set to 1 and stayed painted over the menu
 (`shots/hud6e-pause-cleanup-a.png`).
-The current hide helper also hides that container. Every empty, released,
-and menu-hidden row uses the same helper. This change still needs live proof.
+Candidate `e6343d15` also hides that container. Every empty, released, and
+menu-hidden row uses the same helper. It passed the six harness runs.
+In a four-player LAN run, all four pause menus hid the extra row and closing
+the menus restored it (`shots/hude6-corrected-pause-a.png`,
+`shots/hude6-visibility-cycle-{b,c,d}.png`).
+All four clients later reached the native failure menu without a leftover row
+(`shots/hude6-cave-party-observer-a.png`, `shots/hude6-cave-route-camera.png`,
+`shots/hude6-failed-cleanup-{c,d}.png`).
+Without restarting the processes, the group then entered `Deep in the Shadows`.
+All four clients rebuilt three distinct companion rows
+(`shots/hude6-second-mission-live-{b,a,c,d}.png`).
 
 Still needed: partial damage and healing on each companion, Ki behavior, a
-completed mission exit and second mission, and character departure/rebinding.
+successful mission exit, and character departure/rebinding.
 The fall-recovery observation is not proof of combat rescue or shrine respawn.
 
 The experimental row remains off by default. Do not infer that the normal
