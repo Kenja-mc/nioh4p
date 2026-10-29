@@ -123,12 +123,26 @@ and sends no packet. The build logs which path credited the save.
 ### Shrine
 
 `Mission::IsYashiroActive` `0x1409488a0` returns false when `manager+0x626`
-is set. The game sets that latch while co-op is active, which is why the host
-loses the Pray prompt as soon as a companion is present. In Tokoyo it also
-returns false when `manager+0x662` is set. That byte is set by the event
-handler at `0x1407bf723`; **[INFERENCE]** `Gadget::SetYashiroOnlineDoneAccess`
+is set, and in Tokoyo also when `manager+0x662` is set. `0x662` is set by the
+event handler at `0x1407bf723`; **[INFERENCE]** `Gadget::SetYashiroOnlineDoneAccess`
 (`0x140899120`) is what marks the shrine used and leads to it, but the event-id
 path from that binding to the handler was not traced.
+
+An earlier revision of this note said the game sets `manager+0x626` whenever
+co-op is active, "which is why the host loses the Pray prompt as soon as a
+companion is present". The 2026-10-28 HUD-only 4P run disproves that: on a
+4P `Deep in Shadows` client (checkpoint `manager+0x114 = 1`, three connected
+members) facing the starting shrine and `E1.6` produced no prompt, and the
+observed flags were `0x626 = 0`, `0x629 = 1`, `0x660 = 1`, `0x662 = 0`. So
+`0x626` is not always set in co-op, what writes it was never traced, and in
+that sample neither `0x626` nor `0x662` explains the missing prompt. The
+native predicate also returns `0x629` unchanged when the selected object is
+absent, not kind 2, or its `obj+0x380` richdata pointer is null, so a stale
+or empty selection (`0x14191e290` pointing at object `0x14b8a40` with
+`obj+0x380 = 0` was observed outside the binding window; that does not prove
+the richdata state during the script call) is equally consistent with the
+no-prompt sample. Which condition actually caused it is exactly what the
+research diagnostics below are meant to answer.
 
 The hook requires the selected interaction object (kind 2),
 `richdata+0x1a82 != 0` and `manager+0x629 != 0`, then clears
@@ -142,6 +156,60 @@ would not. The real `Mission::YashiroOpenMenu` `0x140949620` is still what
 opens the menu; the proxy adds no prompt or replacement menu. A separate hook
 logs that the menu weakref at `manager+0xa90` was published, for the live
 probe only.
+
+### Research-only shrine diagnostics (`NIOH3P_RESEARCH` + `trace=1`)
+
+Added on `feature/shared-world-interactions` to explain the no-prompt sample
+above. Both hooks are compiled only with `NIOH3P_RESEARCH` and do nothing at
+`trace=0`; they observe and never write game state, and every detour returns
+the original's answer unchanged.
+
+**Hook contract**
+
+| site | bytes replaced (n) | relocation |
+|---|---|---|
+| `Mission::IsYashiroActive` `0x9488a0` | existing hook, 14 bytes (`sub $0x158,%rsp; mov cookie,%rax`), unchanged | existing `world_reloc_cookie` rebuild |
+| new: native shrine interaction predicate `0x949090` (name unresolved; `text.dis` has no direct call to the address, so it is reached like the other yashiro bindings) | 17 bytes: `40 53` push %rbx, `57` push %rdi, `48 81 ec a8 01 00 00` sub $0x1a8,%rsp, `48 8b 05 f7 ee ea 00` mov cookie,%rax | `relocate_world_predicate`: the first 10 bytes verbatim, then a `movabs` of the same security-cookie slot `0x1417f7f98`; execution resumes at `0x9490a1` (`xor %rsp,%rax`) |
+
+Both prologues were validated instruction-boundary by instruction-boundary
+against `text.dis`; no branch in either body re-enters the replaced bytes, and
+`0x949090` ends at `0x14094935a` (`ret`, then `int3` padding to
+`YashiroAccessFunction` at `0x140949360`). The predicate's body returns
+`movzwl 0x17c(%rsp)` — a word inside its own script frame (`rsp+0x70`) — and
+unlike `IsYashiroActive` shows no `0x140ddfd00` completion call, so which path
+writes that word on which call is untraced; the log records only what callers
+received. `IsYashiroActive` returns the answer word its `0x140ddfd00` call
+wrote (`movzwl 0x13c(%rsp)` at `0x140948950`).
+
+**Observation points**: `IsYashiroActive` entry (before every gate, so a
+client outside the 3+ co-op gate still reports what the native predicate saw)
+and result (after the hook restored the latches, so the flags are the real
+ones); `0x949090` entry and result the same way. `answer = -2` on an entry
+line means "no answer yet".
+
+**Log line** (`world-research: <site> obj=… kind=… rich=… id=… access=… role=… coop626=… active629=… tokoyo660=… done662=… answer=…`):
+
+- `obj` — `*(0x14191e290)`, the current interaction object pointer; `0`
+  absent/unreadable.
+- `kind` — word at `obj+4`; `0xffffffff` when unreadable. The shrine predicates
+  require `2`.
+- `rich` — the raw pointer at `obj+0x380` (the value the native body reads);
+  `0` means the field is absent, unreadable or genuinely null — exactly the
+  stale-selection case the sample showed.
+- `id` — `rich+0x1a68` shrine id; `0xffffffff` when unreadable or `rich` is 0.
+- `access` — byte `rich+0x1a82`; `-1` when unreadable.
+- `role` — `manager+0x5b0`; `-1` without a manager. `coop626` `active629`
+  `tokoyo660` `done662` — `manager+0x626/0x629/0x660/0x662`, `-1` without a
+  manager.
+- `answer` — the native function's return value as the caller (the mission
+  script) received it; `-2` marks the entry observation.
+
+Every field is read behind `readable()` checks; a line is logged only when the
+whole tuple changes, so a per-frame prompt check adds at most one line per
+distinct state. In the no-prompt sample the expected entry line is
+`obj=0x14b8a40 kind=2 rich=0 id=0xffffffff access=-1 … coop626=0 active629=1
+tokoyo660=1 done662=0`, which would localise the failure to the null
+`richdata` during the script call rather than the co-op latches.
 
 ### Checkpoint for respawn
 

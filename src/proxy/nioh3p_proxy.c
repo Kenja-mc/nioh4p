@@ -5482,9 +5482,13 @@ static void *det_HudRow(void *self, int id, int index)
  * packet.
  *
  * Shrine: Mission::IsYashiroActive (0x9488a0) returns false when the co-op
- * latch manager+0x626 is set while co-op is active, which is why the host loses
- * the Pray prompt as soon as a visitor arrives. In Tokoyo it also returns false
- * when manager+0x662 is set; [INFERENCE] that byte is the "shrine used" latch
+ * latch manager+0x626 is set (and in Tokoyo also when manager+0x662 is set).
+ * An earlier note blamed 0x626 for the host losing the Pray prompt as soon as
+ * a visitor arrives, but the HUD-only 4P sample (2026-10-28) had 0x626 = 0
+ * with three members connected and still no prompt, so 0x626 is not always
+ * set in co-op and neither latch explains that sample; the research
+ * diagnostics below exist to find the real cause. [INFERENCE] 0x662 is the
+ * "shrine used" latch
  * behind Gadget::SetYashiroOnlineDoneAccess (the event handler at 0x1407bf723
  * sets it, but the event-id path from 0x899120 was not traced), and text.dis
  * contains no write that clears it (seven references: five reads, that one
@@ -5738,6 +5742,19 @@ static unsigned relocate_world_kodama(uint8_t *out)
                                    0x48, 0x81, 0xec, 0x48, 0x01, 0x00, 0x00};
     return world_reloc_cookie(out, head, sizeof head);
 }
+#ifdef NIOH3P_RESEARCH
+/* Native shrine interaction predicate 0x949090 (name unresolved in text.dis):
+ * push rbx; push rdi; sub rsp,0x1a8; mov cookie,%rax. The replaced prologue
+ * is 17 bytes; only the cookie load is RIP-relative (to 0x1417f7f98, the same
+ * security-cookie slot every other world hook rebuilds), and no branch in the
+ * function body re-enters the replaced bytes. */
+static unsigned relocate_world_predicate(uint8_t *out)
+{
+    static const uint8_t head[] = {0x40, 0x53, 0x57, 0x48, 0x81, 0xec,
+                                   0xa8, 0x01, 0x00, 0x00};
+    return world_reloc_cookie(out, head, sizeof head);
+}
+#endif
 
 static int (*g_world_active_orig)(void *);
 static int (*g_world_access_orig)(void *);
@@ -5745,6 +5762,7 @@ static int (*g_world_kodama_orig)(void *);
 static int (*g_world_menu_orig)(void *);
 #ifdef NIOH3P_RESEARCH
 static int (*g_world_has_orig)(void *);
+static int (*g_world_pred_orig)(void *);
 #endif
 
 /* Last shrine id accepted by Mission::YashiroAccessFunction on this client.
@@ -5779,7 +5797,86 @@ int nioh3p_world_last_shrine(uint32_t *id)
     return 1;
 }
 
-static int det_IsYashiroActive(void *arg)
+#ifdef NIOH3P_RESEARCH
+/* RESEARCH-ONLY observation of the two native shrine predicates
+ * (Mission::IsYashiroActive 0x9488a0 and the unresolved predicate 0x949090).
+ * Purely diagnostic: it reads game memory behind readable() checks, never
+ * writes, and logs one line only when the observation tuple changes, so a
+ * per-frame prompt check cannot flood the log. `answer` is the value the
+ * native function returned to its caller, or WORLD_RESEARCH_NA on the entry
+ * observation. */
+#define WORLD_RESEARCH_NA (-2)
+typedef struct {
+    uintptr_t obj;          /* *0x14191e290, 0 when absent/unreadable */
+    uint32_t kind;          /* obj+4 word, 0xffffffff when unreadable */
+    uintptr_t rich;         /* obj+0x380 raw value, 0 when unreadable */
+    uint32_t shrine_id;     /* rich+0x1a68, 0xffffffff when unreadable */
+    int32_t access;         /* rich+0x1a82 byte, -1 when unreadable */
+    int32_t role;           /* manager+0x5b0, -1 without a manager */
+    int32_t coop626;        /* manager+0x626 */
+    int32_t active629;      /* manager+0x629 */
+    int32_t tokoyo660;      /* manager+0x660 */
+    int32_t done662;        /* manager+0x662 */
+    int32_t answer;         /* native return value, WORLD_RESEARCH_NA at entry */
+    uint32_t seen;          /* excluded from the change compare */
+} WorldResearchObs;
+
+static void world_research_observe(const char *site, WorldResearchObs *prev,
+                                   int32_t answer)
+{
+    WorldResearchObs cur;
+    uint8_t *m;
+    memset(&cur, 0, sizeof cur);
+    cur.answer = answer;
+    {
+        uint8_t *const *slot = (uint8_t *const *)(g_base + WORLD_SELECTED_RVA);
+        uint8_t *obj = readable(slot, sizeof *slot) ? *slot : NULL;
+        uint8_t *rich = NULL;
+        cur.obj = (uintptr_t)obj;
+        if (obj && readable(obj, 6))
+            cur.kind = *(const uint16_t *)(obj + 4);
+        else
+            cur.kind = 0xffffffffu;
+        if (obj && readable(obj, 0x388))
+            rich = *(uint8_t **)(obj + 0x380);
+        cur.rich = (uintptr_t)rich;
+        if (rich) {
+            if (readable(rich + WORLD_SHRINE_ID, 4))
+                cur.shrine_id = *(const uint32_t *)(rich + WORLD_SHRINE_ID);
+            else
+                cur.shrine_id = 0xffffffffu;
+            cur.access = readable(rich + WORLD_SHRINE_ACC, 1) ?
+                         rich[WORLD_SHRINE_ACC] : -1;
+        } else {
+            cur.shrine_id = 0xffffffffu;
+            cur.access = -1;
+        }
+    }
+    m = world_manager();
+    cur.role      = m ? m[WORLD_MGR_ROLE]      : -1;
+    cur.coop626   = m ? m[WORLD_MGR_COOP_ON]   : -1;
+    cur.active629 = m ? m[WORLD_MGR_SHRINE_ON] : -1;
+    cur.tokoyo660 = m ? m[WORLD_MGR_TOKOYO]    : -1;
+    cur.done662   = m ? m[WORLD_MGR_COOP_DONE] : -1;
+    if (prev->seen &&
+        prev->obj == cur.obj && prev->kind == cur.kind &&
+        prev->rich == cur.rich && prev->shrine_id == cur.shrine_id &&
+        prev->access == cur.access && prev->role == cur.role &&
+        prev->coop626 == cur.coop626 && prev->active629 == cur.active629 &&
+        prev->tokoyo660 == cur.tokoyo660 && prev->done662 == cur.done662 &&
+        prev->answer == cur.answer)
+        return;
+    *prev = cur;
+    prev->seen = 1;
+    LOG("world-research: %s obj=%p kind=%u rich=%p id=%u access=%d role=%d "
+        "coop626=%d active629=%d tokoyo660=%d done662=%d answer=%d",
+        site, (void *)cur.obj, cur.kind, (void *)cur.rich, cur.shrine_id,
+        cur.access, cur.role, cur.coop626, cur.active629, cur.tokoyo660,
+        cur.done662, cur.answer);
+}
+#endif
+
+static int det_IsYashiroActive_impl(void *arg)
 {
     WorldShrine s;
     uint8_t *m;
@@ -5858,6 +5955,29 @@ static int det_IsYashiroActive(void *arg)
     }
     return native;
 }
+#ifdef NIOH3P_RESEARCH
+/* RESEARCH-ONLY wrapper around the shrine-active detour: it observes the
+ * manager/selected-shrine state at entry (before any gate, so a client
+ * outside the 3+ co-op gate - the observed HUD-only 4P sample with
+ * manager+0x626 = 0 - still reports what the native predicate saw) and the
+ * answer the native call handed back, then returns the detour's result
+ * unchanged. */
+static int det_IsYashiroActive(void *arg)
+{
+    static WorldResearchObs entry_prev;
+    static WorldResearchObs result_prev;
+    int r;
+    if (!g_cfg.trace)
+        return det_IsYashiroActive_impl(arg);
+    world_research_observe("yashiro-active enter", &entry_prev,
+                           WORLD_RESEARCH_NA);
+    r = det_IsYashiroActive_impl(arg);
+    world_research_observe("yashiro-active result", &result_prev, r);
+    return r;
+}
+#else
+#define det_IsYashiroActive det_IsYashiroActive_impl
+#endif
 
 static int det_YashiroAccess(void *arg)
 {
@@ -6301,6 +6421,30 @@ static void det_HelpRoster(void *self)
             companions, shown);
     }
 }
+#ifdef NIOH3P_RESEARCH
+/* Hook of the native shrine interaction predicate 0x949090. The name is not
+ * in text.dis and .text contains no direct call to the address, so it is
+ * reached the way the other yashiro bindings are (script frame in rcx, the
+ * entry glue 0x140ddf4e0 at 0x1409490b4, frame base rsp+0x70). The detour is
+ * observation-only: it always calls the original and returns its answer
+ * unchanged. The native body returns movzwl 0x17c(%rsp) - a word inside its
+ * own script frame - and unlike IsYashiroActive it shows no 0x140ddfd00
+ * completion call, so which path writes that word on which call is untraced;
+ * the log records only what callers actually received. */
+static int det_YashiroPredicate(void *arg)
+{
+    static WorldResearchObs entry_prev;
+    static WorldResearchObs result_prev;
+    int r;
+    if (!g_cfg.trace)
+        return g_world_pred_orig(arg);
+    world_research_observe("shrine-predicate enter", &entry_prev,
+                           WORLD_RESEARCH_NA);
+    r = g_world_pred_orig(arg);
+    world_research_observe("shrine-predicate result", &result_prev, r);
+    return r;
+}
+#endif
 
 static InlineHook g_inline_hooks[] = {
     {HUD_ROW_CTOR_RVA, 19, "hud row", (void *)det_HudRow, (void **)&g_hud_row_ctor,
@@ -6328,6 +6472,9 @@ static InlineHook g_inline_hooks[] = {
     {0x947f60, 23, "kodama lookup", (void *)det_HasStrayKodama, (void **)&g_world_has_orig,
      {0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20,
       0x57, 0x48, 0x81, 0xec, 0x50, 0x01, 0x00, 0x00}, NULL},
+    {0x949090, 17, "shrine predicate", (void *)det_YashiroPredicate, (void **)&g_world_pred_orig,
+     {0x40, 0x53, 0x57, 0x48, 0x81, 0xec, 0xa8, 0x01, 0x00, 0x00,
+      0x48, 0x8b, 0x05, 0xf7, 0xee, 0xea, 0x00}, relocate_world_predicate},
 #endif
     {HELP_UPDATE_RVA, 23, "help roster", (void *)det_HelpRoster,
      (void **)&orig_help_update,
