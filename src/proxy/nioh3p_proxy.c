@@ -1860,10 +1860,11 @@ static int steam_repair(void)
 }
 
 /* CreateLobby returns only an API call handle, never proof that this process
- * owns a lobby. The flag is a hint that lets rules_publish try the rule key;
- * ownership is confirmed only when our own SetLobbyData for that key
- * succeeds (Steam rejects lobby data writes from non-owners). */
-static volatile LONG g_rules_create_requested;
+ * owns a lobby. The handle is kept as a publication hint; ownership is
+ * confirmed only when our own SetLobbyData for the rule key succeeds (Steam
+ * rejects lobby data writes from non-owners). The hint is rules state, so it
+ * is recorded through the rules lock like every other transition. */
+static void rules_note_create_request(void);
 static uint64_t EOS_CALL det_SteamCreateLobby(void *self, int lobby_type, int max_members)
 {
     SITE_NOTE("SteamCreateLobby");
@@ -1879,9 +1880,9 @@ static uint64_t EOS_CALL det_SteamCreateLobby(void *self, int lobby_type, int ma
     PFN_SteamCreateLobby o = (PFN_SteamCreateLobby)g_steam[0].orig;
     uint64_t call = o ? o(self, lobby_type, max_members) : 0;
     /* Nonzero is an API call handle, not a created lobby; it only enables the
-     * publication attempt. rules_publish sets g_rules_owned_lobby on success. */
+     * publication attempt. A successful rule-key write records ownership. */
     if (call)
-        InterlockedExchange(&g_rules_create_requested, 1);
+        rules_note_create_request();
     LOG("Steam CreateLobby -> call %llu", (unsigned long long)call);
     return call;
 }
@@ -1908,7 +1909,7 @@ static void install_game_metadata_guard(void);
  * Steam-side entry points that need them. */
 static void rules_publish(void *self, uint64_t lobby);
 static void rules_join_lobby(void *self, uint64_t lobby);
-static void rules_left_lobby(void);
+static void rules_left_lobby(uint64_t lobby);
 
 /* Lobby *data* is what a joining client filters on: if the host advertises a
  * two-slot session, a third player's client never lists it as joinable. */
@@ -1977,8 +1978,13 @@ static uint64_t EOS_CALL det_SteamJoinLobby(void *self, uint64_t lobby)
     LOG("Steam JoinLobby: lobby=%llu", (unsigned long long)lobby);
     PFN_SteamJoinLobby o = (PFN_SteamJoinLobby)g_steam[7].orig;
     uint64_t call = o ? o(self, lobby) : 0;
-    if (lobby)
+    /* Without a forward pointer or a call handle the join never reached Steam,
+     * so there is no client lobby to record; the previous authority stands. */
+    if (lobby && call)
         rules_join_lobby(self, lobby);
+    else if (lobby)
+        LOG("Steam JoinLobby: lobby=%llu got no call handle; rule authority unchanged",
+            (unsigned long long)lobby);
     LOG("Steam JoinLobby -> call %llu", (unsigned long long)call);
 #ifdef NIOH3P_RESEARCH
     if (g_cfg.trace)
@@ -2047,7 +2053,7 @@ static void EOS_CALL det_SteamLeaveLobby(void *self, uint64_t lobby)
     PFN_SteamLeaveLobby o = (PFN_SteamLeaveLobby)g_steam[11].orig;
     if (o)
         o(self, lobby);
-    rules_left_lobby();
+    rules_left_lobby(lobby);
 }
 
 #ifdef NIOH3P_RESEARCH
@@ -3110,18 +3116,38 @@ typedef struct {
     int respawn_shrine;     /* 0/1 */
 } Rules;
 
-static Rules g_rules_host;
-static volatile LONG g_rules_host_seq;     /* seqlock, odd while writing */
-static volatile LONG g_rules_host_ok;
-static volatile LONG64 g_rules_join_lobby;
-static void *volatile g_rules_join_self;
-static volatile LONG64 g_rules_owned_lobby;      /* SetLobbyData(RULES_KEY) ok */
-static volatile LONG64 g_rules_published_lobby;
+/* Lobby authority is one record set behind one lock. The game thread changes
+ * it from the Steam detours and the rules worker reads and refines it; a
+ * native query is always performed outside the lock, and its result is
+ * committed only while the generation and lobby id captured before the query
+ * are still current. The lock never spans a Steam call, logging or
+ * rules_apply. */
+typedef struct {
+    uint64_t join;          /* lobby named by the last JoinLobby request */
+    uint64_t owned;         /* lobby whose rule key this process wrote */
+    uint64_t published;     /* lobby id of the last accepted rule-key write */
+    void *join_self;        /* matchmaking interface captured at the request */
+    Rules host;             /* host value read for the join lobby */
+    DWORD request_ms;       /* last RequestLobbyData, poll throttle */
+    DWORD probe_ms;         /* last membership probe */
+    unsigned generation;    /* bumped by every record transition */
+    int create_hint;        /* a CreateLobby call handle was returned */
+    int host_ok;            /* host holds an accepted host value */
+    int member;             /* GetLobbyOwner(join) != 0 */
+} RulesState;
+
+static SRWLOCK g_rules_lock = SRWLOCK_INIT;
+static RulesState g_rules;
+/* Membership is probed once per second. GetLobbyOwner returns k_steamIDNil
+ * when this process is not in the lobby, which is the only positive evidence
+ * that a requested join completed. The request id is kept while that evidence
+ * is missing: it grants nothing, and a later successful join can still confirm
+ * and recover the host values already read for it. */
+#define RULES_MEMBER_PROBE_MS 1000
 static volatile LONG g_assist_drain_step = 166;  /* machine stub reads this */
 static volatile LONG g_rules_last_role = -2;
 static volatile LONG g_rules_bad_host_logged;
 static volatile LONG g_rules_pub_fail_logged;
-static DWORD g_rules_request_ms;
 /* Cached copies of the effective rules, written only by rules_apply. The
  * native detours read these first, so the stock path costs one load. */
 static volatile LONG g_rules_enemy_pct = 100;
@@ -3156,41 +3182,62 @@ static void rules_local(Rules *r)
     r->respawn_shrine = g_cfg.respawn_at_shrine;
 }
 
-/* Authority follows lobby membership, not the native role field: that field
- * can still say host (or nothing) while a join is in flight. A joined lobby
- * makes this process a client for the rule set until it leaves, and until the
- * host value arrives the stock numbers apply - never the local file, so a
- * visitor cannot override the host and a pending join cannot leak local
- * values. The local file is used only for a lobby this process confirmed it
- * owns by publishing the rule key. With neither, solo play keeps stock. */
+/* Short snapshot; the returned copy is the only state the caller may use. */
+static void rules_snapshot(RulesState *out)
+{
+    AcquireSRWLockShared(&g_rules_lock);
+    *out = g_rules;
+    ReleaseSRWLockShared(&g_rules_lock);
+}
+
+static void rules_note_create_request(void)
+{
+    AcquireSRWLockExclusive(&g_rules_lock);
+    g_rules.create_hint = 1;
+    ReleaseSRWLockExclusive(&g_rules_lock);
+}
+
+/* Record resets; the caller holds the exclusive lock and bumps generation. */
+static void rules_clear_join_locked(void)
+{
+    Rules none;
+    rules_stock(&none);
+    g_rules.join = 0;
+    g_rules.join_self = 0;
+    g_rules.member = 0;
+    g_rules.host = none;
+    g_rules.host_ok = 0;
+}
+
+static void rules_clear_owned_locked(void)
+{
+    g_rules.owned = 0;
+    g_rules.published = 0;
+    g_rules.create_hint = 0;
+}
+
+/* Authority follows actual lobby membership, not the native role field and not
+ * lobby metadata alone: the role field can still say host (or nothing) while a
+ * join is in flight, and any process can read another lobby's data without
+ * being in that lobby. The local file applies only to a lobby this process
+ * owns, which only a successful rule-key write proves. A requested lobby
+ * contributes the host's published value only while GetLobbyOwner reports this
+ * process as a member; a pending, failed or ended join keeps the stock
+ * numbers. The request id is retained while unproven because it grants nothing
+ * and a slow join can still become a membership later. */
 static void rules_effective(Rules *r)
 {
-    uint64_t joined = (uint64_t)InterlockedCompareExchange64(&g_rules_join_lobby, 0, 0);
-    uint64_t owned = (uint64_t)InterlockedCompareExchange64(&g_rules_owned_lobby, 0, 0);
-    if (owned && (!joined || joined == owned)) {
+    RulesState st;
+    rules_snapshot(&st);
+    if (st.owned) {
         rules_local(r);
         return;
     }
-    if (!joined) {
+    if (!st.join || !st.member || !st.host_ok) {
         rules_stock(r);
         return;
     }
-    if (!g_rules_host_ok) {
-        rules_stock(r);
-        return;
-    }
-    for (int tries = 0; tries < 4; tries++) {
-        LONG s1 = g_rules_host_seq;
-        if (s1 & 1)
-            continue;
-        Rules copy = g_rules_host;
-        __asm__ volatile("" ::: "memory");
-        if (g_rules_host_seq == s1) {
-            *r = copy;
-            return;
-        }
-    }
-    rules_stock(r);
+    *r = st.host;
 }
 
 static int rules_drain_step(int pct)
@@ -3265,11 +3312,67 @@ static void *steam_mm_method(void *self, unsigned vtable_index, int table_index)
     return *slot;
 }
 
+/* Membership evidence for the requested lobby. GetLobbyOwner returns
+ * k_steamIDNil when this process is not in the lobby, so a nonzero owner means
+ * the asynchronous JoinLobby completed. The virtual method writes its CSteamID
+ * result through the caller-owned buffer after `this`. */
+static int rules_member_of(void *self, uint64_t lobby)
+{
+    void *fn = steam_mm_method(self, 35, 12);  /* ISteamMatchmaking::GetLobbyOwner */
+    if (!fn)
+        return 0;
+    uint64_t out[2] = { 0, 0 };
+    typedef uint64_t *(EOS_CALL *GetOwner)(void *, uint64_t *, uint64_t);
+    uint64_t *r = ((GetOwner)fn)(self, out, lobby);
+    return r && *r ? 1 : 0;
+}
+
+/* Probe the retained request once per second. GetLobbyOwner is the only
+ * positive membership evidence, so a nil answer keeps the id and its host
+ * value but grants nothing: effectiveness stays stock until a later probe
+ * confirms. There is no synthetic expiry, so a slow join that does complete
+ * still applies the host value. The native query runs outside the lock and is
+ * committed only for the same generation and lobby. */
+static void rules_join_probe(void)
+{
+    RulesState st;
+    rules_snapshot(&st);
+    if (!st.join)
+        return;
+    DWORD now = GetTickCount();
+    if (now - st.probe_ms < RULES_MEMBER_PROBE_MS)
+        return;
+    int was = st.member;
+    int first = st.probe_ms == 0;
+    int member = rules_member_of(st.join_self, st.join);
+    int committed = 0;
+    AcquireSRWLockExclusive(&g_rules_lock);
+    if (g_rules.generation == st.generation && g_rules.join == st.join) {
+        g_rules.member = member;
+        g_rules.probe_ms = now;
+        committed = 1;
+    }
+    ReleaseSRWLockExclusive(&g_rules_lock);
+    if (!committed)
+        return;
+    if (member && !was)
+        LOG("rules: lobby %llu membership confirmed; host rules apply",
+            (unsigned long long)st.join);
+    else if (!member && was)
+        LOG("rules: lobby %llu membership ended; stock rules kept, request retained",
+            (unsigned long long)st.join);
+    else if (!member && first)
+        LOG("rules: lobby %llu membership not confirmed yet; stock rules kept, request retained",
+            (unsigned long long)st.join);
+}
+
 static void rules_publish(void *self, uint64_t lobby)
 {
-    if (!lobby || !self || !g_rules_create_requested)
+    if (!lobby || !self)
         return;
-    if ((uint64_t)InterlockedCompareExchange64(&g_rules_published_lobby, 0, 0) == lobby)
+    RulesState st;
+    rules_snapshot(&st);
+    if (!st.create_hint || st.published == lobby)
         return;
     Rules r;
     rules_local(&r);
@@ -3281,26 +3384,53 @@ static void rules_publish(void *self, uint64_t lobby)
         return;
     typedef int (EOS_CALL *SetData)(void *, uint64_t, const char *, const char *);
     int ok = ((SetData)fn)(self, lobby, RULES_KEY, value);
-    if (ok) {
-        /* Steam accepts lobby-data writes only from the owner, so this is the
-         * ownership proof the CreateLobby API handle cannot give. */
-        InterlockedExchange64(&g_rules_published_lobby, (LONG64)lobby);
-        InterlockedExchange64(&g_rules_owned_lobby, (LONG64)lobby);
-        LOG("rules: host rules \"%s\" published in lobby %llu (ownership confirmed)",
-            value, (unsigned long long)lobby);
-    } else if (InterlockedCompareExchange(&g_rules_pub_fail_logged, 1, 0) == 0) {
-        LOG("rules: cannot publish host rules in lobby %llu (not the owner)",
-            (unsigned long long)lobby);
+    if (!ok) {
+        if (InterlockedCompareExchange(&g_rules_pub_fail_logged, 1, 0) == 0)
+            LOG("rules: cannot publish host rules in lobby %llu (not the owner)",
+                (unsigned long long)lobby);
+        return;
     }
+    /* Steam accepts lobby-data writes only from the owner, so a successful
+     * write is the ownership proof the CreateLobby API handle cannot give.
+     * It also supersedes a pending or failed join of another lobby. */
+    uint64_t dropped = 0;
+    int committed = 0;
+    AcquireSRWLockExclusive(&g_rules_lock);
+    if (g_rules.generation == st.generation && g_rules.create_hint) {
+        g_rules.owned = lobby;
+        g_rules.published = lobby;
+        if (g_rules.join && g_rules.join != lobby) {
+            dropped = g_rules.join;
+            rules_clear_join_locked();
+        }
+        g_rules.generation++;
+        committed = 1;
+    }
+    ReleaseSRWLockExclusive(&g_rules_lock);
+    if (!committed) {
+        LOG("rules: rule-key write to lobby %llu not recorded; authority changed meanwhile",
+            (unsigned long long)lobby);
+        return;
+    }
+    LOG("rules: host rules \"%s\" published in lobby %llu (ownership confirmed)",
+        value, (unsigned long long)lobby);
+    if (dropped)
+        LOG("rules: lobby %llu is ours; dropped pending join of lobby %llu",
+            (unsigned long long)lobby, (unsigned long long)dropped);
 }
 
 /* Read the host's published rules from the lobby this process asked to join.
  * Called from the JoinLobby detour (that call is asynchronous, so membership
- * is not yet confirmed there) and again from the 250 ms worker until the value
- * arrives. A client that never receives it plays the stock numbers. */
+ * is not yet proven there) and again from the 250 ms worker until the value
+ * arrives. The value is only cached; rules_effective applies it after the
+ * membership probe confirms. The Steam calls run outside the rules lock. */
 static void rules_poll_host(void *self, uint64_t lobby)
 {
     if (!self || !lobby)
+        return;
+    RulesState st;
+    rules_snapshot(&st);
+    if (st.join != lobby)
         return;
     void *get = steam_mm_method(self, 19, 3);  /* GetLobbyData */
     if (get) {
@@ -3309,13 +3439,18 @@ static void rules_poll_host(void *self, uint64_t lobby)
         if (v && *v) {
             Rules r;
             if (rules_parse(v, &r)) {
-                InterlockedIncrement(&g_rules_host_seq);
-                g_rules_host = r;
-                __asm__ volatile("" ::: "memory");
-                InterlockedIncrement(&g_rules_host_seq);
-                InterlockedExchange(&g_rules_host_ok, 1);
-                rules_apply();
-                LOG("rules: host value \"%s\" accepted", v);
+                int committed = 0;
+                AcquireSRWLockExclusive(&g_rules_lock);
+                if (g_rules.generation == st.generation && g_rules.join == lobby) {
+                    g_rules.host = r;
+                    g_rules.host_ok = 1;
+                    committed = 1;
+                }
+                ReleaseSRWLockExclusive(&g_rules_lock);
+                if (committed) {
+                    rules_apply();
+                    LOG("rules: host value \"%s\" accepted", v);
+                }
             } else if (InterlockedCompareExchange(&g_rules_bad_host_logged, 1, 0) == 0) {
                 LOG("rules: host value is invalid; stock rules kept");
             }
@@ -3323,9 +3458,16 @@ static void rules_poll_host(void *self, uint64_t lobby)
         }
     }
     DWORD now = GetTickCount();
-    if (now - g_rules_request_ms < 2000)
+    int request = 0;
+    AcquireSRWLockExclusive(&g_rules_lock);
+    if (g_rules.generation == st.generation && g_rules.join == lobby &&
+        now - g_rules.request_ms >= 2000) {
+        g_rules.request_ms = now;
+        request = 1;
+    }
+    ReleaseSRWLockExclusive(&g_rules_lock);
+    if (!request)
         return;
-    g_rules_request_ms = now;
     void *req = steam_mm_method(self, 28, 8);  /* RequestLobbyData */
     if (req) {
         typedef int (EOS_CALL *ReqData)(void *, uint64_t);
@@ -3336,49 +3478,67 @@ static void rules_poll_host(void *self, uint64_t lobby)
 static void rules_join_lobby(void *self, uint64_t lobby)
 {
     /* The lobby argument is the requested id; JoinLobby itself returns only an
-     * API call handle, so this records "we are a client here" for rule
-     * authority, not a completed join. */
-    g_rules_join_self = self;
-    InterlockedExchange64(&g_rules_join_lobby, (LONG64)lobby);
-    InterlockedExchange(&g_rules_host_ok, 0);
-    uint64_t owned = (uint64_t)InterlockedCompareExchange64(&g_rules_owned_lobby, 0, 0);
-    if (owned != lobby) {
-        /* Joining someone else's session: drop the creator state and any
-         * cached publication so nothing of ours is used or re-sent. */
-        InterlockedExchange64(&g_rules_owned_lobby, 0);
-        InterlockedExchange64(&g_rules_published_lobby, 0);
-    }
-    LOG("rules: join requested for lobby %llu; reading host rules",
+     * API call handle (the detour records nothing without one), so this is
+     * "we asked to be a client here", not proven membership. The worker probes
+     * and only a positive answer lets the host value apply. */
+    AcquireSRWLockExclusive(&g_rules_lock);
+    if (g_rules.owned != lobby)
+        rules_clear_owned_locked();  /* joining another session: ownership gone */
+    rules_clear_join_locked();       /* also drops the previous host value */
+    g_rules.join = lobby;
+    g_rules.join_self = self;
+    g_rules.probe_ms = 0;
+    g_rules.generation++;
+    ReleaseSRWLockExclusive(&g_rules_lock);
+    LOG("rules: join requested for lobby %llu; membership not yet proven",
         (unsigned long long)lobby);
     /* Ask for the data and take it now, not up to a full worker tick later. */
     rules_poll_host(self, lobby);
 }
 
-static void rules_left_lobby(void)
+/* Only the record that names this exact lobby is cleared. The game also calls
+ * LeaveLobby for a failed join and for old ids during a transition; neither
+ * may erase the lobby this process is currently using. */
+static void rules_left_lobby(uint64_t lobby)
 {
-    InterlockedExchange64(&g_rules_join_lobby, 0);
-    InterlockedExchange(&g_rules_host_ok, 0);
-    InterlockedExchange64(&g_rules_owned_lobby, 0);
-    InterlockedExchange64(&g_rules_published_lobby, 0);
-    InterlockedExchange(&g_rules_create_requested, 0);
-    g_rules_join_self = 0;
+    uint64_t joined, owned;
+    int clear_join, clear_owned;
+    AcquireSRWLockExclusive(&g_rules_lock);
+    joined = g_rules.join;
+    owned = g_rules.owned;
+    clear_join = lobby && joined == lobby;
+    clear_owned = lobby && owned == lobby;
+    if (clear_join)
+        rules_clear_join_locked();
+    if (clear_owned)
+        rules_clear_owned_locked();
+    if (clear_join || clear_owned)
+        g_rules.generation++;
+    ReleaseSRWLockExclusive(&g_rules_lock);
+    LOG("rules: LeaveLobby %llu: join %llu %s, owned %llu %s",
+        (unsigned long long)lobby,
+        (unsigned long long)joined, clear_join ? "cleared" : "kept",
+        (unsigned long long)owned, clear_owned ? "cleared" : "kept");
 }
 
 static void rules_tick(void)
 {
+    RulesState st;
+    rules_snapshot(&st);
     rules_apply();
     int role = game_role();
     if (role != g_rules_last_role) {
         g_rules_last_role = role;
         rules_apply();       /* role can flip between ticks */
         LOG("rules: role %d, host rules %s, assist drain step %ld",
-            role, g_rules_host_ok ? "received" : "absent",
+            role, st.host_ok ? "received" : "absent",
             (long)g_assist_drain_step);
     }
-    uint64_t lobby = (uint64_t)InterlockedCompareExchange64(&g_rules_join_lobby, 0, 0);
-    if (!lobby || g_rules_host_ok)
+    rules_join_probe();
+    rules_snapshot(&st);
+    if (!st.join || st.host_ok)
         return;
-    rules_poll_host(g_rules_join_self, lobby);
+    rules_poll_host(st.join_self, st.join);
 }
 
 static DWORD WINAPI rules_worker(LPVOID unused)

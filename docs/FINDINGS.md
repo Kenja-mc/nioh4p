@@ -2272,25 +2272,80 @@ Three host-authoritative settings (`enemy_hp_percent`, `assist_drain_percent`,
 `respawn_at_shrine`) are published once in the host's lobby data under
 `nioh3p_rules` as `v1 ehp=<25..400> adr=<0..1000> rs=<0|1>`.
 
-Authority follows lobby membership, not the native role field, which can still
-say host (or nothing) during a join transition:
+Authority follows actual lobby membership, not the native role field (which
+can still say host, or nothing, during a join transition) and not lobby
+metadata alone (any process can read another lobby's data without being in
+it). The state is one record set behind one SRW lock, keyed by lobby id:
 
-* **A lobby was requested** (`JoinLobby` with a lobby id; that call is
-  asynchronous, so this is "we are a client", not proof of membership): the
-  host's published string is the only source. Until it arrives the stock
-  numbers apply; the local file is never used, so a visitor cannot override the
-  host and a pending join cannot leak local values.
-* **This process confirmed ownership** of a lobby by successfully writing the
-  `nioh3p_rules` key (Steam rejects lobby-data writes from non-owners; the
-  `CreateLobby` return value is only an API call handle and proves nothing):
-  the local file applies. Publishing is attempted when a `CreateLobby` call
-  was made, and ownership is recorded only on a successful write.
+* **Request record** `J`: the lobby a forwarded `JoinLobby` call returned a
+  call handle for (`JoinLobby` is asynchronous, so the request alone proves
+  nothing). The request is kept while unproven because it grants nothing; a
+  later successful join can still confirm and use the host value read for it.
+* **Membership flag** `M`: `GetLobbyOwner(J)` returned a nonzero owner, which
+  Valve's `ISteamMatchmaking` contract defines as "this process is in the
+  lobby" (`k_steamIDNil` when it is not). Only `J` with `M` lets the cached
+  host value apply.
+* **Ownership record** `O`: the lobby whose `nioh3p_rules` key this process
+  wrote successfully. Steam rejects lobby-data writes from non-owners, so the
+  write is the ownership proof; the `CreateLobby` return value is only an API
+  call handle and proves nothing. `O` selects the local file and outranks `J`.
 * **Neither** (solo play, no session): the stock numbers apply; the three keys
   have no effect outside a lobby session.
 
+Effective rules are: `O` set → local file; else `J` set **and** `M` **and** an
+accepted host value → that value; otherwise stock. A pending, failed or ended
+join therefore leaves stock in effect even if the lobby's metadata was read,
+and the local file never leaks to a client.
+
+Transitions (only the record naming the event's lobby is touched; identity
+transitions bump a generation counter under the exclusive lock, so a native
+query started before one of them cannot commit after it):
+
+| event | request `J` / flag `M` | ownership `O` |
+|---|---|---|
+| `CreateLobby` returns a nonzero call handle | unchanged | unchanged; sets the publication hint only |
+| `JoinLobby(L)` not forwarded or returns a zero call handle | unchanged (rejected before recording; logged) | unchanged |
+| `JoinLobby(L)` forwarded | `J=L`, `M=0`, cached host value dropped | if `O != L`: `O=0`, published and hint cleared |
+| `SetLobbyData` while the hint is set, rule-key write accepted | if `J` named another lobby it is cleared with its cached host value | `O=lobby`, published |
+| `SetLobbyData` write rejected | unchanged | unchanged |
+| `LeaveLobby(L)` with `J == L` | `J=0` (`M` and cached host value dropped) | unchanged |
+| `LeaveLobby(L)` with `O == L` | unchanged | `O=0`, published and hint cleared |
+| `LeaveLobby(L)` naming neither record (old id, failed-join cleanup) | unchanged | unchanged |
+| worker probe, `GetLobbyOwner(J)` nonzero | `M=1` | unchanged |
+| worker probe, `GetLobbyOwner(J)` nil | `M=0`; `J` and the cached host value are retained | unchanged |
+
+The probe runs once per second. There is no synthetic expiry: a slow but valid
+join must be able to become a membership and apply the host value, while a
+request that never completes simply keeps stock. A visitor whose host never
+publishes, or publishes an invalid string, also keeps stock. Reliability of
+the record set comes from the lock, not from retry or timeout layers: a native
+query (rule-key write, `GetLobbyData`, `GetLobbyOwner`) always runs outside the
+lock, and its result is committed only while the generation and lobby id
+captured before the query are still current. The lock never spans a Steam call,
+logging or `rules_apply`.
+
 Invalid strings are rejected whole (four fixed tokens, strict decimal, range
-checked) and are never echoed into the log. Leaving the lobby clears the
-joined, owned and published state.
+checked) and are never echoed into the log.
+
+Evidence lines for the lifecycle cases (none of the following has been
+observed live yet):
+
+* Host `B` after a failed or pending join of `A`: the host log shows
+  `rules: host rules "..." published in lobby B (ownership confirmed)` and
+  `rules: lobby B is ours; dropped pending join of lobby A`, then
+  `rules: host value "..." accepted` on each visitor with the same string. All
+  of them must apply one rule set; no later `leave`/`join` line may
+  reintroduce `A`.
+* Stale `LeaveLobby(A)` after hosting `B`: the log line
+  `rules: LeaveLobby A: join 0 kept, owned B kept` must appear, and the same
+  process must keep `B`'s local values (no new publish, no stock fallback for
+  the host) while its visitors keep the accepted `B` value.
+* Failed join with no `LeaveLobby`: `rules: lobby A membership not confirmed
+  yet; stock rules kept, request retained` and stock numbers, with no `A`
+  value applied; a later membership must log `rules: lobby A membership
+  confirmed; host rules apply`.
+* Unforwarded join: `Steam JoinLobby: lobby=A got no call handle; rule
+  authority unchanged` with no new `join requested` line.
 
 The native code points, re-checked against `text.dis`:
 
