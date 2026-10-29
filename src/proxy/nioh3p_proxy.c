@@ -2843,9 +2843,43 @@ __attribute__((naked)) static void game_metadata_assign_guard(void)
     );
 }
 
-static void install_game_metadata_guard(void)
+/* Publish a complete branch without exposing a partially written instruction.
+ * The caller prepares its trampoline and any target state before this call. */
+static int publish_code16(uint8_t *site, const uint8_t *expected,
+                          const uint8_t *patch, const char *name)
 {
     typedef struct { uint64_t lo, hi; } Pair16;
+    if ((uintptr_t)site & 15) {
+        LOG("game patch: %s is not 16-byte aligned; not installed", name);
+        return 0;
+    }
+    Pair16 want, have;
+    memcpy(&want, expected, sizeof want);
+    memcpy(&have, patch, sizeof have);
+    DWORD old;
+    if (!VirtualProtect(site, 16, PAGE_EXECUTE_READWRITE, &old)) {
+        LOG("game patch: cannot write %s (err %lu)", name, GetLastError());
+        return 0;
+    }
+    unsigned char ok;
+    __asm__ volatile(
+        "lock cmpxchg16b %1\n\t"
+        "sete %0"
+        : "=q"(ok), "+m"(*(Pair16 *)site), "+a"(want.lo), "+d"(want.hi)
+        : "b"(have.lo), "c"(have.hi)
+        : "cc", "memory");
+    if (ok)
+        FlushInstructionCache(GetCurrentProcess(), site, 16);
+    if (!VirtualProtect(site, 16, PAGE_EXECUTE_READ, &old))
+        LOG("game patch: cannot restore execute protection for %s (err %lu)",
+            name, GetLastError());
+    if (!ok)
+        LOG("game patch: %s changed during install; not installed", name);
+    return ok;
+}
+
+static void install_game_metadata_guard(void)
+{
     static int attempted;
     if (attempted || !g_game_create_param_hook.nslots)
         return;
@@ -2885,37 +2919,10 @@ static void install_game_metadata_guard(void)
     patch[2] = patch[3] = patch[4] = patch[5] = 0;
     memcpy(patch + 6, &target, sizeof target);
     memcpy(patch + 14, site + 14, 2);
-    Pair16 want, have;
-    memcpy(&want.lo, expected, 8);
-    memcpy(&want.hi, expected + 8, 8);
-    memcpy(&have.lo, patch, 8);
-    memcpy(&have.hi, patch + 8, 8);
-    DWORD old;
-    /* Keep the page executable for the whole write window: other game threads
-     * may be running code anywhere in this 4 KB page, and a non-executable
-     * page faults (DEP) there. The page is RWX only for the cmpxchg16b and the
-     * flush, then explicitly RX again. */
-    if (!VirtualProtect(site, sizeof patch, PAGE_EXECUTE_READWRITE, &old)) {
-        LOG("game metadata guard: cannot make publisher writable (err %lu)", GetLastError());
-        return;
-    }
     g_game_metadata_resume = g_base + 0x5ffea2;
     g_game_metadata_next = g_base + 0x5fff63;
-    unsigned char ok;
-    __asm__ volatile(
-        "lock cmpxchg16b %1\n\t"
-        "sete %0"
-        : "=q"(ok), "+m"(*(Pair16 *)site)
-        : "a"(want.lo), "d"(want.hi), "b"(have.lo), "c"(have.hi)
-        : "cc", "memory");
-    if (ok)
-        FlushInstructionCache(GetCurrentProcess(), site, sizeof patch);
-    if (!VirtualProtect(site, sizeof patch, PAGE_EXECUTE_READ, &old))
-        LOG("game metadata guard: cannot restore execute protection (err %lu)", GetLastError());
-    if (!ok) {
-        LOG("game metadata guard: publisher bytes changed during install; not installed");
+    if (!publish_code16(site, expected, patch, "metadata guard"))
         return;
-    }
     LOG("game metadata guard: exact self-assignment keeps the existing attribute buffer");
 }
 
@@ -6345,7 +6352,12 @@ static void abs_jmp(uint8_t *at, const void *to)
 static int inline_install(InlineHook *h)
 {
     uint8_t *site = g_base + h->rva;
-    if (!readable(site, h->n) || memcmp(site, h->bytes, h->n))
+    if (h->n < 14 || h->n > sizeof h->bytes || ((uintptr_t)site & 15)) {
+        LOG("game tokoyo: unsupported branch span for %s", h->name);
+        return -1;
+    }
+    SIZE_T span = h->n < 16 ? 16 : h->n;
+    if (!readable(site, span) || memcmp(site, h->bytes, h->n))
         return 0;
     uint8_t *tramp = VirtualAlloc(NULL, 64, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     DWORD old;
@@ -6355,7 +6367,7 @@ static int inline_install(InlineHook *h)
     }
     unsigned body = h->relocate ? h->relocate(tramp) : h->n;
     if (!h->relocate)
-        memcpy(tramp, site, h->n);
+        memcpy(tramp, h->bytes, h->n);
     abs_jmp(tramp + body, site + h->n);
     if (!VirtualProtect(tramp, 64, PAGE_EXECUTE_READ, &old)) {
         LOG("game tokoyo: cannot seal the %s trampoline (err %lu)", h->name, GetLastError());
@@ -6363,23 +6375,19 @@ static int inline_install(InlineHook *h)
         return -1;
     }
     FlushInstructionCache(GetCurrentProcess(), tramp, 64);
-    uint8_t patch[24];
-    memset(patch, 0x90, h->n);
+    uint8_t expected[16], patch[16];
+    memcpy(expected, site, sizeof expected);
+    memcpy(expected, h->bytes, h->n < 16 ? h->n : 16);
+    memcpy(patch, expected, sizeof patch);
     abs_jmp(patch, h->detour);
-    /* Take the site writable before publishing the trampoline: when the
-     * protection change fails the hook is retried, so *orig must not point at
-     * a trampoline for a site that never jumps, and it must not leak. */
-    if (!VirtualProtect(site, h->n, PAGE_EXECUTE_READWRITE, &old)) {
-        LOG("game tokoyo: cannot write %s (err %lu)", h->name, GetLastError());
+    /* Bytes 14 onward stay native. The detour jumps past the complete
+     * replayed prologue, so padding them with separate stores is unnecessary. */
+    *h->orig = tramp;
+    if (!publish_code16(site, expected, patch, h->name)) {
+        *h->orig = NULL;
         VirtualFree(tramp, 0, MEM_RELEASE);
         return -1;
     }
-    *h->orig = tramp;
-    memcpy(site, patch, h->n);
-    FlushInstructionCache(GetCurrentProcess(), site, h->n);
-    if (!VirtualProtect(site, h->n, PAGE_EXECUTE_READ, &old))
-        LOG("game tokoyo: cannot restore execute protection at %#x (err %lu)",
-            h->rva, GetLastError());
     return 1;
 }
 
@@ -6389,9 +6397,10 @@ static int inline_install(InlineHook *h)
  *             data and the mission scaling, then clamps current HP. We scale
  *             the freshly computed maximum and a full current value, never the
  *             stored maximum, so a later recalc cannot compound the factor.
- *   0x8c1bbe  the inline continuous assist drain (166 per update). The stub
- *             below replaces only that block; every pause/delay/failure and all
- *             revive/recovery code after 0x8c1bf6 stays native.
+ *   0x8c1bc5  the inline continuous assist drain (166 per update). A rel32
+ *             branch replaces only the stock comparison inside one aligned
+ *             atomic publication window. Gates before it and revive/recovery
+ *             code after 0x8c1bf6 stay native.
  *   0x884b60  the manager respawn state machine. When a position-based
  *             respawn is pending, an opt-in Tokoyo rule replaces the point
  *             through the native shrine setter 0x87de00 before the state
@@ -6413,8 +6422,8 @@ static int character_is_player(const uint8_t *ch)
 
 /* Defined once in the shared-world feature. Returns 1 only while the shrine
  * this client last activated still equals the live checkpoint at
- * manager+0x114; 0 means "no trusted id", and the caller then uses that same
- * manager field, so a stale id cannot leak into the next mission. */
+ * manager+0x114; 0 makes the caller use that same native field. Matching
+ * repeating ids does not establish freshness across mission changes. */
 extern int nioh3p_world_last_shrine(uint32_t *id);
 
 /* The assist block at manager+0x660 owns the local character at +0x58 and the
@@ -6659,21 +6668,58 @@ static uint8_t *build_assist_stub(uint8_t *p, void *resume)
     return p;   /* one past the stub: install uses (end - mem) for flushing */
 }
 
-/* 1 installed, 0 not plaintext yet, -1 failed. Only success is cached: a
- * transient allocation or protection failure must be retried by the worker. */
+static uint8_t *alloc_rel32(const uint8_t *site, SIZE_T size)
+{
+    SYSTEM_INFO system;
+    GetSystemInfo(&system);
+    const uintptr_t from = (uintptr_t)site + 5;
+    uintptr_t low = from > INT32_MAX ? from - INT32_MAX : 0;
+    uintptr_t high = from + INT32_MAX;
+    if (low < (uintptr_t)system.lpMinimumApplicationAddress)
+        low = (uintptr_t)system.lpMinimumApplicationAddress;
+    if (high > (uintptr_t)system.lpMaximumApplicationAddress)
+        high = (uintptr_t)system.lpMaximumApplicationAddress;
+    const uintptr_t granularity = system.dwAllocationGranularity;
+    for (uintptr_t cursor = low; cursor < high; ) {
+        MEMORY_BASIC_INFORMATION region;
+        if (!VirtualQuery((const void *)cursor, &region, sizeof region))
+            break;
+        uintptr_t end = (uintptr_t)region.BaseAddress + region.RegionSize;
+        if (end <= cursor)
+            break;
+        if (region.State == MEM_FREE) {
+            uintptr_t candidate = (cursor + granularity - 1) & ~(granularity - 1);
+            if (candidate < end && candidate < high &&
+                size <= end - candidate && size <= high - candidate) {
+                uint8_t *mem = VirtualAlloc((void *)candidate, size,
+                    MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+                if (mem)
+                    return mem;
+            }
+        }
+        cursor = end;
+    }
+    return NULL;
+}
+
+/* Only the five-byte cmp at 0x8c1bc5 changes. Its enclosing aligned window
+ * is published atomically; threads past the cmp still see intact stock code.
+ * Returns 1 installed, 0 not plaintext yet, -1 failed. Only success is cached. */
 static int install_assist_drain(void)
 {
     static int state;
-    static const uint8_t expected[14] = {
-        0x8b, 0x46, 0x0c, 0x85, 0xc0, 0x7e, 0x31,
-        0x3d, 0xa6, 0x00, 0x00, 0x00, 0x7e, 0x0a,
+    static const uint8_t expected[16] = {
+        0x0c, 0x85, 0xc0, 0x7e, 0x31, 0x3d, 0xa6, 0x00,
+        0x00, 0x00, 0x7e, 0x0a, 0x05, 0x5a, 0xff, 0xff,
     };
     if (state)
         return state;
-    uint8_t *site = g_base + 0x8c1bbe;
-    if (!readable(site, sizeof expected) || memcmp(site, expected, sizeof expected))
+    uint8_t *window = g_base + 0x8c1bc0;
+    if (!readable(window, sizeof expected) ||
+        memcmp(window, expected, sizeof expected))
         return 0;
-    uint8_t *mem = VirtualAlloc(NULL, 128, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    uint8_t *site = window + 5;
+    uint8_t *mem = alloc_rel32(site, 128);
     if (!mem)
         return -1;
     uint8_t *end = build_assist_stub(mem, g_base + 0x8c1bf6);
@@ -6683,18 +6729,18 @@ static int install_assist_drain(void)
         return -1;
     }
     FlushInstructionCache(GetCurrentProcess(), mem, (SIZE_T)(end - mem));
-    uint8_t patch[14];
-    abs_jmp(patch, mem);
-    if (!VirtualProtect(site, sizeof patch, PAGE_EXECUTE_READWRITE, &old)) {
+    uint8_t patch[16];
+    memcpy(patch, expected, sizeof patch);
+    patch[5] = 0xe9;
+    int32_t relative = (int32_t)((int64_t)(uintptr_t)mem -
+                                (int64_t)(uintptr_t)(site + 5));
+    memcpy(patch + 6, &relative, sizeof relative);
+    if (!publish_code16(window, expected, patch, "assist drain")) {
         VirtualFree(mem, 0, MEM_RELEASE);
         return -1;
     }
-    memcpy(site, patch, sizeof patch);
-    FlushInstructionCache(GetCurrentProcess(), site, sizeof patch);
-    if (!VirtualProtect(site, sizeof patch, PAGE_EXECUTE_READ, &old))
-        LOG("rules: cannot restore execute protection at 0x8c1bbe (err %lu)", GetLastError());
     state = 1;
-    LOG("rules: assist drain intercepted at 0x8c1bbe (stock step 166)");
+    LOG("rules: assist drain intercepted at 0x8c1bc5 (stock step 166, atomic rel32)");
     return 1;
 }
 

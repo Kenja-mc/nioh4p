@@ -2320,6 +2320,16 @@ The native code points, re-checked against `text.dis`:
   writing anything. The id-based sibling at `0x87df80` instead stores its id
   argument at `+0x614`.
 
+Native entry branches use one aligned `cmpxchg16b` publication, preserving
+the original bytes after the 14-byte jump. Trampolines are ready before the
+branch becomes visible. The drain block starts at unaligned `0x8c1bbe`, so it
+instead replaces the five-byte comparison at `0x8c1bc5` with a near relative
+jump. Only those five bytes change inside the aligned window at `0x8c1bc0`;
+the earlier empty-gauge gate and all other native bytes stay intact.
+The stub allocation must be within rel32 reach. Failure leaves stock code
+untouched and reports an installation failure. Live publication and drain
+behavior still need proof on this candidate.
+
 The respawn rule calls `0x87de00` once per pending position-based respawn,
 before the state machine runs. Repeating the call on the state-2 update would
 reset the pending timer to state 1 every tick and the respawn would never
@@ -2336,9 +2346,9 @@ Cross-branch API: the rules branch calls
 `int nioh3p_world_last_shrine(uint32_t *id)`, defined by the shared-world
 branch. Commit 70e75b3 there tightens it to return 1 only while the published
 id still equals the live native checkpoint at `manager+0x114`, otherwise 0.
-The rules detour treats 0 as "use `manager+0x114`", so a stale id can never
-leak across missions. Both sides use the same manager+0x114 value the stock
-death action consumes.
+The rules detour treats 0 as "use `manager+0x114`". Both sides therefore use
+the native checkpoint field. A matching id is not a mission-generation check:
+ids repeat, and the native field's reset across mission changes is untested.
 
 Residual limits, stated so they are not mistaken for proof:
 
