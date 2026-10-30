@@ -2253,9 +2253,23 @@ Without restarting the processes, the group then entered `Deep in the Shadows`.
 All four clients rebuilt three distinct companion rows
 (`shots/hude6-second-mission-live-{b,a,c,d}.png`).
 
-Still needed: partial damage and healing on each companion, Ki behavior, a
-successful mission exit, and character departure/rebinding.
-The fall-recovery observation is not proof of combat rescue or shrine respawn.
+Candidate `68be2037` refreshes all four names in preparation without cursor
+input. In the private LAN rig, all four clients enter a mission with three
+companion bars. A departed player's row disappears from the remaining screens.
+Native abort and failure clear the HUD, and mission re-entry rebuilds it.
+The stock status card and results panel remain limited.
+
+With `max_players=4`, `hud_row3=1` and no gameplay add-ons, host B healed
+1377 to 1651 through native shortcut `1`. The elixir count fell from 7 to 6.
+All three visitor screens showed only B's third companion row refilling.
+Evidence: `shots/row3on-elixir-{before,after}-{b,a,c,d}.png`.
+Visitor A's later bounded approach produced no wound and is not a healing pass.
+
+Still needed: individual damage and healing for A/C/D, Ki behavior, a
+successful mission completion, and departure/rebinding coverage.
+Earlier native render-lock stalls remain unresolved despite clean bounded controls.
+These private LAN runs do not prove four authenticated Steam accounts.
+Fall recovery is not proof of combat rescue or shrine respawn.
 
 The experimental row remains off by default. Do not infer that the normal
 configuration has the same fault from this test.
@@ -2266,11 +2280,51 @@ game processes were still running after the movement check. The host showed
 two companion health rows. The run did not test damage, revival, mission
 completion, or four distinct Steam accounts.
 
-## Lobby gameplay rules: enemy HP, assist drain, self-recovery shrine
+## Lobby gameplay rules and gameplay add-ons
 
 Three host-authoritative settings (`enemy_hp_percent`, `assist_drain_percent`,
 `respawn_at_shrine`) are published once in the host's lobby data under
 `nioh3p_rules` as `v1 ehp=<25..400> adr=<0..1000> rs=<0|1>`.
+
+The values are supplied by optional add-on DLLs, not by `nioh3p.ini` keys.
+When the proxy is active (`hook_eos=1` and a supported game build), the core
+loads five fixed names from the game root's `DLLMods` directory:
+`nioh4p-shrines`, `nioh4p-kodama`, `nioh4p-enemy-health`,
+`nioh4p-assist-gauge` and `nioh4p-shrine-respawn`. Only the last three supply
+a setting, each from the ini next to its DLL
+(`<game>\DLLMods\nioh4p-<name>.ini`, section `[nioh4p]`):
+`enemy_hp_percent` (25..400), `assist_drain_percent` (0..1000) and
+`respawn_at_shrine` (0..1). The module resolves its ini from its own loaded
+path, so a per-DLL override must sit next to that DLL; without an ini the
+compiled defaults apply. The core starts from stock 100/100/0
+and accepts a field only from a module whose descriptor passed validation; a
+missing DLL, an invalid ini, or `enabled=0` in that module leaves its field at
+stock, so with all three absent a host publishes `v1 ehp=100 adr=100 rs=0`.
+The shipped `nioh4p-shrine-respawn.ini` defaults `respawn_at_shrine=1`, which
+is this process's local value when it owns the lobby; a session still takes
+the host's published value.
+
+Each module reads its ini once in `Nioh4pAddonInit`, so a change takes effect
+on the next launch.
+
+Validation is ABI 1, exact descriptor size and id, an `enabled` flag of 0 or 1,
+a bounded local value, at most 16 hooks with 14..24 prologue bytes, 16-byte
+aligned and unique RVAs, and no RVA overlap with another accepted module.
+`Nioh4pAddonInit` runs on the core worker, may only return a static
+descriptor, and must not install a hook or start a thread. Accepted modules
+stay loaded for the process lifetime; when any module is accepted, one core
+metadata worker installs every hook and custom patch later, each only after
+its plaintext prologue matches.
+There is no per-module worker and no cross-DLL API between add-ons (each
+exports only `Nioh4pAddonInit`); each effective change reaches every
+subscribing module through one `rules_changed` callback (borrowed, called
+outside the session lock), and each such module copies only its own field into
+an atomic cache. After startup only the core's 250 ms rules worker delivers
+these callbacks; native Steam callbacks update the locked record and never an
+add-on cache. The loader logs `addons: <name> accepted (...)` and the worker
+logs `addons: <name> ready|INCOMPLETE: n/N native hooks, custom patch
+...`; `addons: core only; no optional gameplay hooks registered` means no
+module registered anything.
 
 Authority follows actual lobby membership, not the native role field (which
 can still say host, or nothing, during a join transition) and not lobby
@@ -2288,14 +2342,15 @@ it). The state is one record set behind one SRW lock, keyed by lobby id:
 * **Ownership record** `O`: the lobby whose `nioh3p_rules` key this process
   wrote successfully. Steam rejects lobby-data writes from non-owners, so the
   write is the ownership proof; the `CreateLobby` return value is only an API
-  call handle and proves nothing. `O` selects the local file and outranks `J`.
+  call handle and proves nothing. `O` selects the local values and outranks
+  `J`.
 * **Neither** (solo play, no session): the stock numbers apply; the three keys
   have no effect outside a lobby session.
 
-Effective rules are: `O` set → local file; else `J` set **and** `M` **and** an
-accepted host value → that value; otherwise stock. A pending, failed or ended
-join therefore leaves stock in effect even if the lobby's metadata was read,
-and the local file never leaks to a client.
+Effective rules are: `O` set → local values; else `J` set **and** `M` **and**
+an accepted host value → that value; otherwise stock. A pending, failed or
+ended join therefore leaves stock in effect even if the lobby's metadata was
+read, and the local values never leak to a client.
 
 Transitions (only the record naming the event's lobby is touched; identity
 transitions bump a generation counter under the exclusive lock, so a native
@@ -2337,7 +2392,7 @@ observed live yet):
   of them must apply one rule set; no later `leave`/`join` line may
   reintroduce `A`.
 * Stale `LeaveLobby(A)` after hosting `B`: the log line
-  `rules: LeaveLobby A: join 0 kept, owned B kept` must appear, and the same
+  `rules: LeaveLobby A: join A cleared, owned B kept` must appear, and the same
   process must keep `B`'s local values (no new publish, no stock fallback for
   the host) while its visitors keep the accepted `B` value.
 * Failed join with no `LeaveLobby`: `rules: lobby A membership not confirmed
@@ -2347,27 +2402,121 @@ observed live yet):
 * Unforwarded join: `Steam JoinLobby: lobby=A got no call handle; rule
   authority unchanged` with no new `join requested` line.
 
-The native code points, re-checked against `text.dis`:
+### Add-on ownership and proof status
 
-* `0x7c7eb0` character status recalc. The function reads the character from
-  `status[0]`, always rewrites `status+0x18` with the freshly computed maximum
-  at `0x1407c8696`, and clamps `status+0x20` down to it. Bit 1 of
-  `*(u32*)(*(void**)(char+0xe90)+4)` gates the player/companion scaling block
-  (`shr $1; and $1` at `0x1407c8611`), the same test the detour uses. Scaling
-  the written maximum therefore cannot compound: every call recomputes it from
-  the base data. The detour additionally excludes the four static party slots
-  at `0x18a0490` (stride `0x18`, field +0 = character) and the two assist
-  contexts at `manager+0x660+0x58/+0xa8`, so no player in a four-player session
-  is ever scaled.
+Each native site has exactly one owning module; no module reaches into another
+module's hook or cache. The shared world helpers are header-only and `static`,
+so every DLL carries its own copy: they share offsets, not state.
+`NIOH3P_RESEARCH` builds add observation-only hooks; a player build installs
+none of those sites.
+
+| module | native site | implemented behavior | proof |
+|---|---|---|---|
+| `nioh4p-shrines` | `0x9488a0` `Mission::IsYashiroActive` | in a 3+ party, clears `manager+0x626` for the native body, and `manager+0x662` only while Tokoyo `manager+0x660` is set, then restores both; the script answer is written by the native completion glue | code-verified; no live proof of a usable Pray prompt |
+| `nioh4p-kodama` | `0x948e50` `Mission::SetStrayKodama` | in a 3+ party, for a shrine visitor (role 1, `manager+0x660` clear) whose local save lacks the selected Kodama, runs the native insertion `0x905bc0(save, id)` before the binding when its prologue is plaintext; host and Tokoyo visitor stay on the native path | code-verified; collection, visibility and persistence unproven |
+| `nioh4p-enemy-health` | `0x7c7eb0` status recalc | scales the fresh maximum and preserves wounds; excludes players, party members, the local player's side and unreadable sides | actual-DLL arithmetic and side-boundary tests pass; native scaled-mission behavior remains unproven |
+| `nioh4p-assist-gauge` | patch at `0x8c1bc5` inside the aligned `0x8c1bc0` window | replaces the stock compare with a rel32 branch to a generated stub, which drains by `round(166 * pct / 100)` and reproduces the stock empty-gauge gates; no hook descriptor | code-verified; no live proof |
+| `nioh4p-shrine-respawn` | `0x949360` access, `0x884b60` state machine | in a 3+ party, mirrors `manager+0x114` after the native access call; when configured `max_players` is at least 3 and Tokoyo `manager+0x660` is set with the rule on, also replaces one pending body-position recovery through `0x87de00` | code-verified; no live shrine respawn observed |
+
+Research-only sites are `0x949620` (`Mission::YashiroOpenMenu`) and `0x949090`
+(`Mission::YashiroAccessBonusAmurita`, name from the script-binding table at
+image `0x120eaa0`) in `nioh4p-shrines`, and `0x947f60`
+(`Mission::HasStrayKodama`) in `nioh4p-kodama`. The last two observe only with
+`trace=1`; the menu site logs when the binding runs with a readable non-null
+weak slot, in a research build only.
+
+"Code-verified" means the site, patch and control flow were read from the
+module source and `text.dis`; it does not mean the feature was observed in a
+game.
+
+The C return word is not the script answer. `0x9488a0`'s answer byte is pushed
+into the script frame by the completion glue `0x140ddfd00` at `0x140948941`;
+the function's own return is the `movzwl` of that frame's `+0x10c` counter.
+`0x949090` is the bonus-Amrita action binding, not a predicate: its traced body
+never calls the completion glue, so it pushes no Lua boolean, and its return
+word is its own frame counter. A logged `native_return=1` is a result count of
+1, not "true".
+
+`0x949620` closes existing UI windows and stores the selected shrine
+gadget in the `manager+0xa90` weak-reference slot; the menu opens through the
+task dispatch `0x140bf55c0` in the same body, so a populated slot or a
+"binding ran" log does not prove a menu opened. The Pray prompt is gated by
+the native interaction-area/target pipeline; a missing prompt is not evidence
+that these bindings answered wrongly.
+
+The native code points, re-checked against `text.dis` and the module sources:
+
+* `0x7c7eb0` character status recalc reads the character from `status[0]`.
+  It writes the fresh maximum to `status+0x18` at `0x1407c8696`.
+  It then clamps `status+0x20` down to that maximum.
+  The multiplier uses this fresh maximum, so repeated calls do not compound it.
+
+  The old detour mistook a wound for full health after that native clamp.
+  At 200%, a wound above the unscaled maximum could become full HP.
+  The corrected detour saves wounded current HP before the native call.
+  It preserves that value up to the scaled maximum.
+  It keeps the existing full-health initialization path.
+
+  `tools/smoketest.sh enemy-health` loads the actual DLL and replays the native
+  clamp through its hook descriptor. The same test executable produced:
+
+  | Player DLL | Passed | Failed |
+  |---|---:|---:|
+  | Before `31e67fa5` | 7 | 4 |
+  | Corrected `cb8c4947` | 11 | 0 |
+
+  Both player and research builds pass through the smoke command.
+  The tests cover wounds, death, repeated calls and changes to the maximum.
+  They do not establish native actor classification or multiplayer gameplay.
+
+  Live read-only comparison found the data bit set on all four party players.
+  Ginchiyo had flags `0x01820038`, with that bit clear.
+  The data bit and four party slots therefore did not protect the escort.
+  At 200%, the unchanged DLL scaled the captured escort maximum5292→10584.
+  Its wounded current HP remained588.
+
+  `Character::SetSide` binds to `0x140893880`.
+  It calls `0x140963400`, which writes `*(u32*)(*(void**)(char+0xa8)+0x10)`.
+  `Shot::IsPlayerSide` at `0x1409376e0` compares this field with local party slot0.
+  The live local player and escort both had side0.
+  Two recovered enemy records had side1.
+  The corrected detour requires a readable side different from the local player's side.
+  An unknown actor or local side keeps native HP.
+  The existing data-bit, four-party-slot and assist-context exclusions remain.
+
+  The same expanded fixture ran before and after the side guard:
+
+  | Player DLL | Passed | Failed |
+  |---|---:|---:|
+  | Before `cb8c4947` | 11 | 4 |
+  | Corrected `11b26eb4` | 15 | 0 |
+
+  The failures covered the escort, missing or unreadable actor sides, and an unready local side.
+  Both build flavors pass these15 cases through `tools/smoketest.sh enemy-health`.
+  All six core smoke cases also pass.
+  This proves the detour boundary with owned fixture memory, not an installed gameplay session.
+  Native scaling, additional actor sides and host-rule changes still need live proof.
 * `0x8c1bbe..0x8c1bf5` inline continuous assist drain. The block zeroes each
   gauge when it is at most `0xa6` (166) and otherwise subtracts 166; when the
   current gauge (`+0xc`) is already non-positive it jumps straight to the
   resume point `0x8c1bf6`, so the pending reserve (`+0x14`) is *not* drained
   while the current gauge is empty. The executable stub reproduces that
-  control flow with the configured step; only RAX and RCX are clobbered, and
-  neither is read before being rewritten at the resume point. A stub that
-  drained the pending reserve in the empty-gauge case would eat the revive
-  reserve the native gauge-empty failure depends on; this was fixed here.
+  control flow with the configured step; at step 0 it jumps straight to the
+  resume point and leaves both gauges untouched. Only RAX and RCX are
+  clobbered, and neither is read before being rewritten at the resume point. A
+  stub that drained the pending reserve in the empty-gauge case would eat the
+  revive reserve the native gauge-empty failure depends on; this was fixed
+  here.
+* `0x949360` `Mission::YashiroAccessFunction` checkpoint recording. The native
+  body calls `0x8ff270(save, shrine id)` for every mode, which sets the visited
+  bit (`save+0x15682c`, `1 << (id & 31)`) and marks the save dirty. The
+  non-Tokoyo branch also stores the id in `manager+0x114`, but the Tokoyo
+  branch skips that store. After the native call, and only in a 3+ party with
+  the same shrine still selected, `nioh4p-shrine-respawn` mirrors the id into
+  `manager+0x114` when that shrine's visited bit is readable and set and the
+  field differs. This is the field the stock death action at `0xa84a8b` passes
+  to `0x87de00`, so it is the only checkpoint authority; there is no exported
+  accessor and no second cached copy.
 * `0x884b60` manager respawn state machine. `+0x5f0` is the state: 0 idle,
   1 setup (the handler ends by writing state 2), 2 pending timer, 3 timer then
   teleport from the point at `+0x600` (position float4) and `+0x610` (angle),
@@ -2391,8 +2540,8 @@ instead replaces the five-byte comparison at `0x8c1bc5` with a near relative
 jump. Only those five bytes change inside the aligned window at `0x8c1bc0`;
 the earlier empty-gauge gate and all other native bytes stay intact.
 The stub allocation must be within rel32 reach. Failure leaves stock code
-untouched and reports an installation failure. Live publication and drain
-behavior still need proof on this candidate.
+untouched and reports an installation failure. Publication and drain
+behavior still need live proof.
 
 The respawn rule calls `0x87de00` once per pending position-based respawn,
 before the state machine runs. Repeating the call on the state-2 update would
@@ -2406,21 +2555,19 @@ and only claims a replacement on a hit; a miss is a no-op and keeps the body
 position, logged once. The verifier must not expect `+0x614` to equal the
 shrine id: the setter always writes `-1` there.
 
-Cross-branch API: the rules branch calls
-`int nioh3p_world_last_shrine(uint32_t *id)`, defined by the shared-world
-branch. Commit 70e75b3 there tightens it to return 1 only while the published
-id still equals the live native checkpoint at `manager+0x114`, otherwise 0.
-The rules detour treats 0 as "use `manager+0x114`". Both sides therefore use
-the native checkpoint field. A matching id is not a mission-generation check:
-ids repeat, and the native field's reset across mission changes is untested.
+The checkpoint mirror and the respawn rule are in the same module, which
+exports only `Nioh4pAddonInit`; no other module keeps a last-shrine copy. The
+access hook can write `manager+0x114`; `det_respawn_state` reads that field
+directly. A matching id is not a mission-generation check: ids repeat, and
+whether the native field resets across a mission change is untested.
 
 Residual limits, stated so they are not mistaken for proof:
 
-* **Unproven:** the hook installer's timing versus enemy spawns. The detours
-  install only when their plaintext prologues are present; enemies whose last
-  recalculation happened before installation keep stock HP for that mission.
-  The log line `rules: native hooks status=%d respawn=%d drain=%d` states the
-  final install state but has not been correlated with a live mission.
+* **Unproven:** the hook installer's timing versus enemy spawns. The worker
+  installs a hook only while its plaintext prologue is present; enemies whose
+  last recalculation happened before installation keep stock HP for that
+  mission. The final per-module `addons: <name> ready|INCOMPLETE: ...` line
+  states the install result but has not been correlated with a live mission.
 * **Unproven:** that the host publishes before any client reaches gameplay.
   Publication needs a native `SetLobbyData` call after `CreateLobby`; the
   client requests and reads the value at the `JoinLobby` call and then polls
@@ -2429,33 +2576,96 @@ Residual limits, stated so they are not mistaken for proof:
   the host value mid-mission: enemies whose last recalculation predates the
   adoption keep stock HP for that mission, while the drain step and the
   respawn rule apply from adoption on.
-* **Unproven:** that a live `0x87d820`-style self-recovery cycle exposes
-  `+0x614 < 0` in states 1/2 on every client; the tree-hit log is the probe.
-* The three detours are inert at the stock values (100 / 100 / 0): the status
-  hook posts no change, the drain stub reproduces the stock clamp, and the
-  respawn detour only forwards to the trampoline. This is checked from the
-  code, not from a live default-config run.
+* **Unproven:** that a live self-recovery cycle reaches the state machine at
+  `0x884b60` with state 1 or 2 and `+0x614 < 0` on every client; the
+  "node found" log is the only in-process probe, and it does not prove the
+  respawn completed.
+* At the stock triple (100 / 100 / 0) the enemy detour posts no change and
+  the drain stub emits the stock 166 step; the respawn rule replaces no point.
+  The access mirror is not gated by `respawn_at_shrine`: an installed
+  `nioh4p-shrine-respawn` still mirrors the checkpoint in a 3+ party. All of
+  this is checked from the code, not from a live run. `respawn_at_shrine=0` is
+  documented as keeping the shipped body-position respawn, which also has no
+  live observation yet.
+
+Before the run, confirm each process log has the add-on lines for the modules
+under test: `addons: <name> accepted (...)` at load and
+`addons: <name> ready: n/N native hooks, custom patch ...` after installation.
+`INCOMPLETE`, `installation failed`, or
+`addons: core only; no optional gameplay hooks registered` means that site is
+not installed, so a negative observation says nothing about the feature. A
+rejected or self-disabled module logs
+`addons: <name> initialization or ABI rejected; no hooks registered` or
+`addons: <name> disabled by its own config; no hooks registered`.
 
 Live acceptance probes (all four processes, `trace=0`; a probe result, not a
 proof of the features above):
 
-1. Host `enemy_hp_percent=50`, visitor default: host log shows
+1. Host sets `enemy_hp_percent=50` in `DLLMods\nioh4p-enemy-health.ini`, and
+   the visitor keeps 100: host log shows
    `rules: host rules "v1 ehp=50 adr=100 rs=0" published in lobby <id> (ownership confirmed)`
    and each visitor `rules: host value "v1 ehp=50 adr=100 rs=0" accepted`.
-   Enemy damage then kills at roughly half stock HP on every client; expect
-   `rules: enemy HP <base> -> <half>` lines and at most four
-   `player/party HP left` notes, with no party member scaled.
-2. Host `assist_drain_percent=0`: the continuous drain stops; a teammate revive
-   and the gauge-empty failure still work; with `=200` the current gauge falls
-   about twice as fast and the pending reserve still stops draining at empty.
-3. Host `respawn_at_shrine=1`, four players, Tokoyo: die away from a shrine and
-   choose self-recovery (BackSpace hold). Expect
-   `rules: self-recovery respawn point -> shrine <id> (world accessor|manager+0x114, node found, native 0x87de00)`
-   and the character reappearing at that shrine instead of the body. A death
-   after visiting no shrine logs `no used shrine; body position kept`; a shrine
-   id missing from both role trees logs `is not in the role tree; body position
-   kept`. A teammate rescue is unchanged.
-4. Visitor with a non-default local file in the host's session: its values are
-   never published or applied; only `rules: host value ... accepted` counts.
-   Solo play with a non-default file must stay stock (no
-   `rules: host rules ... published`, no scaling).
+   Enemy damage then kills at roughly half stock HP on each client that runs
+   `nioh4p-enemy-health`; expect
+   `enemy-health: enemy HP <base> -> <scaled> (<pct>%, current <cur> -> <new>)`
+   lines and at most four per process
+   `enemy-health: player/party HP left at <max>/<cur> (player data flag)`
+   notes, with no party member scaled.
+2. Host sets `assist_drain_percent=0` in `DLLMods\nioh4p-assist-gauge.ini`;
+   after
+   `assist-gauge: drain intercepted at 0x8c1bc5 (stock step 166, atomic rel32)`
+   the continuous drain stops; a teammate revive and the gauge-empty failure
+   still work. With `=200` the step is 332 and the current gauge falls about
+   twice as fast; the pending reserve still stops draining at empty.
+3. Host sets `respawn_at_shrine=1` in `DLLMods\nioh4p-shrine-respawn.ini` and
+   runs four players, Tokoyo, with
+   `nioh4p-shrine-respawn` on each client under test: die away from a shrine
+   and choose self-recovery (BackSpace hold). Expect
+   `shrine-respawn: self-recovery respawn point -> shrine <id> (manager+0x114, node found, native 0x87de00)`
+   and the character reappearing at that shrine instead of the body. A client
+   without the module keeps the body position. A death after visiting no
+   shrine logs
+   `shrine-respawn: self-recovery pending but no used shrine; body position kept`;
+   a shrine id missing from both role trees logs
+   `shrine-respawn: shrine <id> is not in the role tree; body position kept`;
+   an undecrypted setter logs
+   `shrine-respawn: shrine setter 0x87de00 is not plaintext yet; body position kept`.
+   A teammate rescue is unchanged. The log does not prove the respawn
+   completed.
+4. Visitor with non-default add-on values in the host's session: its values are
+   never published or applied; only `rules: host value ... accepted` counts,
+   and that value changes behavior only where the visitor also has the
+   corresponding module installed. Solo play with non-default values must stay
+   stock (no `rules: host rules ... published`, no scaling).
+
+### Kodama collection probe
+
+Prerequisite: a save where the target placement is uncollected. The source
+saves used on this rig hold 21 Kodama, and in mission 370
+(`Deep in the Shadows`) all eight stray-Kodama placements are already
+collected in them, so such a save cannot show a visible uncollected Kodama or
+a new insertion. Start from a save with an uncollected placement; a `trace=1`
+research build lists the loaded mission's placements as
+`kodama-research: map: Kodama <id> save=0`.
+
+Run a 3+ party in that mission and have the shrine visitor (role 1,
+`manager+0x660` clear) collect the placement, with that visitor's log as the
+local record:
+
+* A plaintext `0x905bc0` insertion logs
+  `kodama: Kodama <id> credited through 0x905bc0`, and that client's save count
+  (`save+0x15c2e4`) grows by one. The insertion deduplicates, marks the save
+  dirty, sends no packet, and never touches another player's save.
+* Without that log, `trace=1` research builds report the local outcome as
+  `credited on this client`, `already collected before the binding`,
+  `not collected after the binding`, or `save unreadable after the binding`.
+  No line means the hook did not run, its prologue was not plaintext yet, or
+  the identical outcome was already logged.
+* If a native collection event credits every client (each save gains the id),
+  record that as the observed result: native party-wide credit is a valid
+  outcome, and the test does not require the other clients to stay
+  uncredited. The fallback exists only for the shrine visitor's native
+  rejection.
+
+Reload the same save after the run and compare the collection id list and
+count; a count that does not survive reload is not persistence evidence.

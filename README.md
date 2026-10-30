@@ -1,41 +1,47 @@
-# nioh3p
+# nioh4p
 
-nioh3p is an experimental co-op mod for Nioh: Complete Edition on Steam. It raises the player limit from two to three or four. Every player needs the same mod and game build.
+Three- and four-player co-op for Nioh: Complete Edition on Steam.
+Every player needs the same game build and core mod.
 
-Three players played a mission together over Steam. A local test also brought three and four players into a mission through the Torii Gate. Finishing a mission and reviving a companion are not yet proven. The result screen names only one companion. A four-player test showed only two companion health bars, even with the experimental third row enabled. Other co-op modes remain untested.
-
-## Get the mod
-
-The [release candidate](https://github.com/Kenja-mc/nioh4p/releases/tag/v1.1.0-rc2) includes Torii Gate support. The older player zip in `dist/` predates that support. Read the instructions inside the package for the build you install. The current candidate instructions are also in [package/README.md](package/README.md).
-
-The mod targets the supported Steam game build and was tested under Proton. On an unsupported executable, the mod logs that it is inactive and leaves the game unmodified. Windows play is not established by the local Proton tests.
+This source build is still under test. Four local instances entered one Torii
+Gate mission and showed three companion bars on every screen. Four-account
+Steam play, mission completion, and the optional gameplay changes remain unproven.
+Released packages can differ from this source. Follow the instructions inside your package.
 
 ## Install and play
 
-1. Back up each player's saves and close Nioh.
-2. In Steam, right-click Nioh: Complete Edition. Choose Manage, then Browse local files.
-3. If `dinput8.dll` already exists there, back it up before installing the mod. It belongs to another mod.
-4. Copy `dinput8.dll` and `nioh3p.ini` from the same package into the folder beside `nioh.exe`.
-5. Start Nioh from Steam on every player's computer.
+1. Back up your saves and close Nioh.
+2. In Steam, open Nioh's local files.
+3. Copy `dinput8.dll` and `nioh3p.ini` from the core package beside `nioh.exe`.
+   If another mod uses `dinput8.dll`, read the [plugin instructions](package/README.md#install-the-core-as-a-plugin) first.
+4. For four players, set these values in every player's `nioh3p.ini`:
 
-On Linux or Steam Deck, use the same steps. If `nioh3p.log` does not appear, add `WINEDLLOVERRIDES="dinput8=n,b" %command%` to the game's Steam launch options.
+   ```ini
+   [nioh3p]
+   max_players=4
+   hud_row3=1
+   ```
 
-The default is three players, including the host. For four players, set `max_players=4` in every player's `nioh3p.ini` before starting the game. Keep the search filters at their default values.
+5. Start the game from Steam on every computer.
+6. Open Torii Gate, then Yokai Realm with a Companion.
+7. Let the host search first. Let the visitors search before the preparation countdown ends.
 
-For the Torii Gate, all players choose Yokai Realm with a Companion, Without Conditions, and Secret Word Off. The host searches first. The visitors search while the host is still recruiting. Each visitor must set the story-progress limit at or above the host's progress. This search is not private. The [player instructions](package/README.md) cover the full sequence, the shrine path, and troubleshooting.
+Use a mission that everyone can access. Keep Secret Word Off for this test.
+Without Conditions is not a private search. Read the [full player instructions](package/README.md) before joining.
 
-## Safety and removal
+On Linux or Steam Deck, if the mod does not load, use this Steam launch option:
 
-The mod is unsigned. Antivirus tools can flag DLLs that change game memory. Do not disable protection or exclude the game folder. If antivirus blocks the mod, stop and report the detection name. The mod does not open saves or make its own network connections, but the game still writes saves. See [safety details](docs/SAFETY.md).
+```sh
+WINEDLLOVERRIDES="dinput8=n,b" %command%
+```
 
-The mod writes `nioh3p.log` and `nioh3p.prev.log` in the game folder by default. Logs can contain lobby IDs, search settings, and file paths. Review them before sharing.
+Optional add-ons separate shrine use, Kodama collection, enemy health, assist-gauge drain, and shrine recovery from the core.
+Install only the add-ons that your group wants. Their live behavior is still under test.
 
-To remove the mod, close the game and delete its `dinput8.dll`, `nioh3p.ini`, and `nioh3p*.log` files. If you backed up another mod's DLL, restore that file.
+The mod is unsigned. If antivirus blocks it, keep protection enabled and report the detection.
+Review logs before sharing them. They can contain lobby IDs and file paths.
+To uninstall, close Nioh and remove only the mod files that you installed.
 
-## Build and launch on Linux
-
-From the repository root, run `tools/package.sh` to build a player zip. It writes `dist/nioh3p-player.zip` and replaces an existing zip at that path. Run `./install.sh` to build and install the mod on this machine. Set `NIOH_DIR` if the game is not in the default Steam folder. The installer backs up a different existing `nioh3p.ini` and refuses to overwrite another mod's DLL.
-
-Run `./install.sh uninstall` to remove the installed mod files. It leaves logs in place. `./play.sh` starts the game through Steam. `./play.sh status` shows the installed state and launch options. `./play.sh stock` removes the mod, and `./play.sh mod` installs it again.
-
-For source and research guidance, see [AGENTS.md](AGENTS.md).
+[Releases](https://github.com/Kenja-mc/nioh4p/releases) ·
+[Safety](docs/SAFETY.md) ·
+[Source and test guidance](AGENTS.md)

@@ -84,6 +84,16 @@ XDG_RUNTIME_DIR="$HOME/nioh3p-test/run-a" GAMESCOPE_WAYLAND_DISPLAY=gamescope-0 
 
 Use the Wayland display that gamescope prints if it is not `gamescope-0`. Xwayland's XTest pointer input here uses client-window coordinates, not the offset of the window on the root. The input helper holds keys across game frames. Nioh's polled input missed an instantaneous down/up.
 
+The current cloned keyboard map uses `1` for the upper item shortcut and `L` for native self-revival.
+`Up` did not consume an elixir in the live four-player control.
+Native Confirm `E` passed the title movie and opened Continue when the old Return sequence did not.
+Read the game's Key Configuration before applying these bindings to another setup.
+
+For healing proof, capture wounded HP, recovered HP and the consumed item's count.
+Wait for the use animation to finish before reading the result.
+The four-player control showed host HP745→1651 and elixirs7→6.
+This control omitted the private third HUD row, so it does not prove that row's healing display.
+
 References: [gamescope's Steam launch examples](https://github.com/ValveSoftware/gamescope#examples)
 and [Proton runtime options](https://github.com/ValveSoftware/Proton#runtime-config-options).
 

@@ -93,10 +93,12 @@ again.
    reports malicious activity.
 4. Read the import table with any PE viewer. All imports come from
    `KERNEL32.dll`.
-5. Read the source, if you have the source package. `src/proxy/nioh3p_proxy.c`
-   is one C file. The functions that change the game are
-   `game_create_param_set`, `install_game_metadata_guard` and
-   `install_game_visitor_allowance`. The program check is in `DllMain`.
+5. Read the source, if you have the source package. The core lives in the
+   `src/proxy/` modules described by `src/proxy/nioh3p_internal.h`. The
+   functions that change the game are `game_create_param_set`,
+   `install_game_metadata_guard` and `install_game_visitor_allowance`
+   (`src/proxy/gamepatch.c`). The program check is in `DllMain`
+   (`src/proxy/main.c`).
 
 ## About the antivirus warning
 

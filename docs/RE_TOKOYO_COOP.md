@@ -691,78 +691,94 @@ passed raw.
   variant 0 when that byte is 0). No live surface with the card variant has
   been captured yet.
 
-### The prep roster is now implemented (not live-proven)
+### Preparation roster
 
-**Where the native multiline text actually lives.** The matching/prep menus
-draw their help box through one shared per-frame updater, `0xd2ce40`: four
-text lines on the sprite at `this+0x68`, text slot ids from the dword tables
-`0x178d2a0` (texts `0xb`, `0xc`, `0xd`, `0xe`) and `0x178d2b0` (per-line dim
-flags `0x6`-`0x9`). Texts are hash-set with `0xddaee0(sprite, slot, hash)`;
-raw text goes through `0xddaf90(sprite, slot, utf16, len)` - the same setter
-the companion card uses - and the per-line attributes are
-`0xddbf00(sprite, flagSlot, dimmed)` and `0xddb2c0(sprite, textSlot, colour)`
-with the colour dwords at `0x126977c` (active) / `0x12697a0` (dimmed). The
-multiline mechanism is multiple positioned slots, not `\n`. The
-bottom-right companion name (`0xd2c520`) is instead an immediate-mode draw
-(`0xacde50`, position inside the draw system) and also hardcodes member 1 -
-not usable for a roster.
+The roster uses the native ready-action description, not the action labels or
+the companion status card. The action updater `0xd2ce40` owns labels
+`0xb`..`0xe` and their dim flags. It remains unmodified.
 
-**What the proxy does.** `0xd2ce40` is inline-hooked (23-byte prologue,
-RIP-relative compare rewritten absolute in the trampoline). The detour runs
-the stock pass first, then applies three gates before it touches any text:
-`max_players >= 3`; the Tokoyo coop mode byte (`0x14191de34`) equal to 1; and
-the mission loader phase (`[manager+0x5d0]`) strictly below the in-mission
-value 0xC - a positive pre-mission bound, since the mode byte is 1 in the
-mission too and `root+0x3c0 == 0xE` holds in both prep and mission. Menus
-outside the preparing companion session keep their stock help box. Inside the
-gate, when the member count (u32[session+0xc0] on the CSessionP2p object at
-`[mgr+0xa8]` - live-proven on a four-client mission; the u32 at `mgr+0xf4` is
-not the count, it read 0 on all four clients) is 3 or 4, help lines 2-4 are
-rewritten with the roster: the connected companions' session names, the
-companion count prefixed to the first line ("3 Nioh-LAN-A"). Members come
-from the game's global session member array pointer (`[0x17900b0+0xc0]`,
-stride 0xd0, UTF-8 name at +0x10 - the array `0xd72640` dereferences),
-skipping the local member (index `root[0x3c8]`).
-Names are untrusted: bounded to 0x40 bytes, control/newline bytes dropped
-before conversion, and the converted line filtered again for C0/C1 controls;
-conversion and formatting use the game's own helpers (`0xddf4c0`, code page
-65001; `0x7e6ee0` with a constant `"%d %ls"`-style format - the name is never
-used as a format). Line 1 (the per-menu-item help) stays stock, and with
-fewer than three members the whole box is stock. All five game helpers the
-detour calls are signature-checked once at first use; every pointer is
-readability-guarded. No input, no invented characters, no overlay. The log
-records counts only - never names or platform ids.
+#### Native update and description
 
-**Card panel experiments: removed.** The panel-slot paging experiment on the
-container `0xc83bc0` and the card name-index call patch at `0xc6c4fb` are both
-gone, along with the `call_patch`/gate installer fields and the near-module
-stub allocator they needed. Neither was ever exercised live: the prep party
-array keeps slots 2/3 NULL, so a paged or renamed slot-2/3 card is not
-reachable in the actual preparation screen, and no card-variant-4 surface was
-ever captured. The stock Companion information window is untouched and still
-shows the first companion; the roster in the help box is the surface that
-shows all connected names. The static facts above (the `0xc6c4fb` and
-`0xd2fdd4` hardcodes, the `m(k)` mapping) remain valid documentation for any
-future card work.
+The preparation class vtable at `0x14129bf28` contains destructor `0xd2aa80`,
+open `0xd2b5e0`, close `0xd2b360`, and frame update `0xd2d900` at `+0x18`.
+The update dispatches on `self+0x60`. State 2 reaches `0xd2dc3d` and calls
+description builder `0xd2e1f0` each frame at `0xd2dca1`.
 
-Open (needs live capture before this is proven):
+The builder updates widget `self+0x88` through virtual method `+0x30`.
+It then checks dirty method `+0x148`, unless its forced argument is set.
+Selection getter `+0x50` returns action index 0 for the ready action.
+Only that action reaches the localized long-text write at `0xd2e341`.
+The other actions keep their native description hashes.
 
-- The phase gate (mode 1, loader phase < 0xC) is only as good as the observed
-  values: prep 0, mission 0xC. If any other in-session screen sits between
-  them with its own help box, that box would show the roster too - the
-  capture should note which menus ran while mode 1 / phase < 0xC held.
-- Whether the card variant (4) ever shows in a captureable surface, and
-  whether party slots 2/3 fill after the Ginchiyo admission or only in the
-  mission.
+The raw setter is `0xddaf90(sprite, slot, utf16, charsIncludingNul)`.
+The sprite is `self+0x68` and the description slot is `0xf`.
+The call opcode is at `0xd2e341`; its rel32 operand is at
+`0xd2e342`..`0xd2e345`. The aligned patch window starts at `0xd2e340`.
 
-Live probe for the roster: with 3-4 clients in the Tokoyo preparation
-(mode 1, loader 0, root+0x3c0 0xE), the prep help box lines 2-4 should list
-the companions with the count on the first roster line, and the log gets one
-count-only line per roster change (`help roster: N companion(s) ...`). With
-one or two players, in other menus, and after mission entry (loader 0xC), the
-box must be stock.
+`0xd2ce40` is not a frame callback. In state 2, its call at `0xd2dc6d`
+requires the one-shot flag `0x141b46fc8`. Function `0xd2aea0` sets that flag
+and `0xd2dc8c` clears it. A hook there missed later member changes.
 
-The roster above deliberately reads the session member array instead of the
-party array: the session array carries every connected member's name from the
-moment the lobby exists, while the party array only carries admitted
-companions (slots 2/3 NULL in the observed prep run).
+#### Current hooks
+
+`install_prep_roster` redirects the raw call through a nearby thunk.
+It checks the 16-byte patch window, setter prologue, and UTF-8 converter
+prologue before publishing the call change.
+
+The frame hook replaces the first 14 bytes of `0xd2d900`.
+Its trampoline copies `mov r11,rsp; push rbp; push rdi; push r14;
+lea rbp,[r11-0x108]`. These instructions use no RIP-relative address.
+The existing atomic 16-byte publisher preserves the next two native bytes.
+The detour forwards both arguments and preserves the native return value.
+Its ready flag is published only after the raw call hook is installed.
+
+`det_PrepHelpText` caches the actual localized ready text, bounded to 256
+UTF-16 units including its NUL, and the sprite that owns it.
+`det_PrepUpdate` runs the native frame once. It checks state 2 and re-reads
+the sprite and widget after that call, because the native code can close them.
+On a changed member set with the ready action selected, it sends the cached
+stock text directly through the roster renderer.
+It does not call the description builder again or repeat widget updates.
+Other selections retain their native help. Returning to ready uses the
+normal native description path. The active sprite is cleared after the
+detour; invalid context clears the rendered-member cache.
+
+#### Members and text bounds
+
+The gates require `max_players >= 3`, Tokoyo mode
+`[0x14191de34] == 1`, and loader phase `[manager+0x5d0] < 0xC`.
+The mode byte and `root+0x3c0 == 0xE` also hold in the mission, so they do
+not establish preparation by themselves.
+
+The session manager is at `base+0x17900b0`. Its member-array pointer is at
+`+0xc0`, record stride is `0xd0`, and each UTF-8 name starts at `+0x10`.
+The capacity at `CSession+0xc0` includes empty slots. The renderer counts
+nonempty names within that capacity, bounded to four slots, and skips the
+local index at `root+0x3c8` when listing companions.
+The party array cannot supply the prep roster: slots 2 and 3 were NULL in
+the observed four-player preparation screen.
+
+Names are bounded to 63 bytes. ASCII controls are removed before native
+UTF-8 conversion through `0xddf4c0`; C0/C1 and U+2028/U+2029 are removed
+after conversion. Each name is limited to 16 UTF-16 units with a
+surrogate-safe ellipsis. The combined buffer holds 384 units.
+The prefix counts all joined players, including the local player.
+Logs record counts, not names or platform IDs.
+
+#### Evidence and acceptance
+
+Build e7470c4d showed correct roster text after manual cursor refresh.
+Build c3e43358 admitted all four LAN players but failed automatic refresh:
+B/C kept stock text, A kept a three-player count and omitted D, and D showed
+four players. The `c3-initial-prep-*` and `c3-settled-prep-*` captures preserve
+that failure. All four then showed three bars in `c3-core-four-hud-*`.
+
+Build 68be2037 moves refresh to `0xd2d900` and keeps raw cached-text rendering.
+Its build and all six isolated harness cases pass. All four initial native
+LAN preparation screens showed the correct count and three peer names without
+cursor refresh (`frame68-initial-prep-{b,c,a,d}.png`). Action labels stayed
+native. All four entered the mission with three companion bars and no roster
+overlay (`frame68-four-hud-*`). The other-action help attempt reached the
+mission transition before capture, so it proves no menu behavior.
+Other-action help, departure refresh and the exit screen still need captures.
+The native companion information card still shows only its first companion.

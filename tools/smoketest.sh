@@ -5,8 +5,9 @@
 #   tools/smoketest.sh proxy   # harness: DLL load, dinput8 forwarding, EOS hook+clamp
 #   tools/smoketest.sh game    # copy of nioh.exe: VMProtect unpack + runtime image dump
 #   tools/smoketest.sh ownership # CopyInfo result survives until caller release
+#   tools/smoketest.sh enemy-health # wounded HP across native recalculation
 #
-# Env: NIOH3P_TRACE (default 1 for proxy/ownership, 0 for game),
+# Env: NIOH3P_TRACE (default 1 for proxy/ownership, 0 for game/enemy-health),
 #      NIOH3P_DUMP (dump_image, default 1, game only),
 #      NIOH3P_DUMP_EVERY (dump_every_s, default 8, game only).
 # The run uses build/research/dinput8.dll when the effective trace is 1 or a
@@ -54,11 +55,15 @@ case "$MODE" in
     EFFECTIVE_TRACE="${NIOH3P_TRACE:-1}"
     EFFECTIVE_DUMP=0
     ;;
+  enemy-health)
+    EFFECTIVE_TRACE="${NIOH3P_TRACE:-0}"
+    EFFECTIVE_DUMP=0
+    ;;
   game)
     EFFECTIVE_TRACE="${NIOH3P_TRACE:-0}"
     EFFECTIVE_DUMP="${NIOH3P_DUMP:-1}"
     ;;
-  *) echo "usage: $0 proxy|game|ownership" >&2; exit 2 ;;
+  *) echo "usage: $0 proxy|game|ownership|enemy-health" >&2; exit 2 ;;
 esac
 if [ "$EFFECTIVE_TRACE" = "1" ] ||
    { [ "$MODE" = "game" ] && [ "$EFFECTIVE_DUMP" != "0" ]; }; then
@@ -121,6 +126,12 @@ case "$MODE" in
     copy "$ROOT/build/eos-ownership/EOSSDK-Win64-Shipping.dll" "$SMOKE/game/"
     TARGET="$SMOKE/game/testgame.exe"
     ;;
+  enemy-health)
+    copy "$ROOT/build/enemy-health/testgame.exe" "$SMOKE/game/"
+    copy "$(dirname "$DLL")/addons/nioh4p-enemy-health.dll" "$SMOKE/game/"
+    copy "$ROOT/package/addons/nioh4p-enemy-health.ini" "$SMOKE/game/"
+    TARGET="$SMOKE/game/testgame.exe"
+    ;;
   game)
     copy "$GAME/nioh.exe" "$SMOKE/game/"
     copy "$GAME/EOSSDK-Win64-Shipping.dll" "$SMOKE/game/"
@@ -135,7 +146,7 @@ case "$MODE" in
         ln -s "$GAME/sound" "$SMOKE/game/sound" || { echo "cannot link $GAME/sound" >&2; exit 1; }
     TARGET="$SMOKE/game/nioh.exe"
     ;;
-  *) echo "usage: $0 proxy|game|ownership" >&2; exit 2 ;;
+  *) echo "usage: $0 proxy|game|ownership|enemy-health" >&2; exit 2 ;;
 esac
 
 echo "--- running $TARGET under Proton (prefix $SMOKE/pfx) ---"
