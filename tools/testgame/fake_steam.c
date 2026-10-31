@@ -41,6 +41,7 @@ static int (*sc_filter_calls)(void);
 static int (*sc_list_calls)(void);
 static int (*sc_invite_calls)(void);
 static int (*sc_memberdata_calls)(void);
+static int (*sc_members_calls)(void);
 
 /* steamclient is what actually owns the interface object and its vtable */
 static void load_sc(void)
@@ -61,6 +62,7 @@ static void load_sc(void)
     sc_list_calls = (int (*)(void))GetProcAddress(g_sc, "nioh3p_sc_list_calls");
     sc_invite_calls = (int (*)(void))GetProcAddress(g_sc, "nioh3p_sc_invite_calls");
     sc_memberdata_calls = (int (*)(void))GetProcAddress(g_sc, "nioh3p_sc_memberdata_calls");
+    sc_members_calls = (int (*)(void))GetProcAddress(g_sc, "nioh3p_sc_members_calls");
 }
 
 void *__stdcall SteamInternal_FindOrCreateUserInterface(void *user, const char *version)
@@ -127,6 +129,11 @@ __declspec(dllexport) int nioh3p_test_slots_calls(void)
 {
     load_sc();
     return sc_slots_calls ? sc_slots_calls() : 0;
+}
+__declspec(dllexport) int nioh3p_test_members_calls(void)
+{
+    load_sc();
+    return sc_members_calls ? sc_members_calls() : 0;
 }
 __declspec(dllexport) const char *nioh3p_test_last_value(void)
 {

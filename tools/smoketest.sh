@@ -25,7 +25,30 @@ STEAM="$HOME/.local/share/Steam"
 MODE="${1:-proxy}"
 SMOKE="${SMOKE_DIR:-$HOME/.cache/nioh3p/smoke}"
 
-mkdir -p "$SMOKE/game" "$SMOKE/pfx"
+# Every fixture copy is checked. `set -e` is deliberately off (the script must
+# report Proton's exit code), so an unchecked cp left the previous run's file in
+# place and the harness then passed or failed the wrong binary.
+require_file() {
+    [ -f "$1" ] || { echo "stale or missing fixture: $1" >&2; exit 1; }
+}
+
+copy() {
+    require_file "$1"
+    cp -f -- "$1" "$2" || { echo "cannot copy $1 to $2" >&2; exit 1; }
+}
+
+# Two DLLs of the game are optional: copy them when the game has them, drop a
+# stale copy when it does not, so the fixture never mixes game versions.
+copy_optional() {
+    if [ -f "$1" ]; then
+        copy "$1" "$2/"
+    else
+        echo "-- optional $1 absent, not copied"
+        rm -f -- "$2/$(basename "$1")"
+    fi
+}
+
+mkdir -p "$SMOKE/game" "$SMOKE/pfx" || { echo "cannot create $SMOKE" >&2; exit 1; }
 case "$MODE" in
   proxy|ownership)
     EFFECTIVE_TRACE="${NIOH3P_TRACE:-1}"
@@ -47,8 +70,8 @@ else
 fi
 [ -f "$DLL" ] || { echo "$DLL missing; run ./build.sh first" >&2; exit 1; }
 echo "--- using $DLL ($DLL_KIND build) ---"
-cp -f "$DLL" "$SMOKE/game/"
-cp -f "$ROOT/nioh3p.ini" "$SMOKE/game/"
+copy "$DLL" "$SMOKE/game/"
+copy "$ROOT/nioh3p.ini" "$SMOKE/game/"
 # The harness modes exercise the full research instrumentation by default; the
 # game run defaults to player mode with image dumps, as tools/quiet.sh game does.
 # The shipped ini keeps the stock search filters (both drop_* keys are 0), so the
@@ -87,26 +110,29 @@ export PROTON_LOG_DIR="$SMOKE"
 
 case "$MODE" in
   proxy)
-    cp -f "$ROOT/build/smoke/testgame.exe" "$SMOKE/game/"
-    cp -f "$GAME/EOSSDK-Win64-Shipping.dll" "$SMOKE/game/"
-    cp -f "$ROOT/build/smoke/steam_api64.dll" "$SMOKE/game/"
-    cp -f "$ROOT/build/smoke/steamclient64.dll" "$SMOKE/game/"
+    copy "$ROOT/build/smoke/testgame.exe" "$SMOKE/game/"
+    copy "$GAME/EOSSDK-Win64-Shipping.dll" "$SMOKE/game/"
+    copy "$ROOT/build/smoke/steam_api64.dll" "$SMOKE/game/"
+    copy "$ROOT/build/smoke/steamclient64.dll" "$SMOKE/game/"
     TARGET="$SMOKE/game/testgame.exe"
     ;;
   ownership)
-    cp -f "$ROOT/build/eos-ownership/testgame.exe" "$SMOKE/game/"
-    cp -f "$ROOT/build/eos-ownership/EOSSDK-Win64-Shipping.dll" "$SMOKE/game/"
+    copy "$ROOT/build/eos-ownership/testgame.exe" "$SMOKE/game/"
+    copy "$ROOT/build/eos-ownership/EOSSDK-Win64-Shipping.dll" "$SMOKE/game/"
     TARGET="$SMOKE/game/testgame.exe"
     ;;
   game)
-    cp -f "$GAME/nioh.exe" "$SMOKE/game/"
-    cp -f "$GAME/EOSSDK-Win64-Shipping.dll" "$SMOKE/game/"
-    cp -f "$GAME/steam_api64.dll" "$SMOKE/game/"
-    cp -f "$GAME/GfeSDK.dll" "$SMOKE/game/" 2>/dev/null
-    cp -f "$GAME/AnselSDK64.dll" "$SMOKE/game/" 2>/dev/null
-    [ -e "$SMOKE/game/archive" ] || ln -s "$GAME/archive" "$SMOKE/game/archive"
-    [ -e "$SMOKE/game/movie" ]   || ln -s "$GAME/movie"   "$SMOKE/game/movie"
-    [ -e "$SMOKE/game/sound" ]   || ln -s "$GAME/sound"   "$SMOKE/game/sound"
+    copy "$GAME/nioh.exe" "$SMOKE/game/"
+    copy "$GAME/EOSSDK-Win64-Shipping.dll" "$SMOKE/game/"
+    copy "$GAME/steam_api64.dll" "$SMOKE/game/"
+    copy_optional "$GAME/GfeSDK.dll" "$SMOKE/game"
+    copy_optional "$GAME/AnselSDK64.dll" "$SMOKE/game"
+    [ -e "$SMOKE/game/archive" ] ||
+        ln -s "$GAME/archive" "$SMOKE/game/archive" || { echo "cannot link $GAME/archive" >&2; exit 1; }
+    [ -e "$SMOKE/game/movie" ] ||
+        ln -s "$GAME/movie" "$SMOKE/game/movie" || { echo "cannot link $GAME/movie" >&2; exit 1; }
+    [ -e "$SMOKE/game/sound" ] ||
+        ln -s "$GAME/sound" "$SMOKE/game/sound" || { echo "cannot link $GAME/sound" >&2; exit 1; }
     TARGET="$SMOKE/game/nioh.exe"
     ;;
   *) echo "usage: $0 proxy|game|ownership" >&2; exit 2 ;;
@@ -127,12 +153,19 @@ fi
 rc=$?
 echo "--- proton exit=$rc ---"
 echo "=== nioh3p.log ==="
-[ -f "$SMOKE/game/nioh3p.log" ] && cat "$SMOKE/game/nioh3p.log" || echo "(no log produced)"
+if [ -e "$SMOKE/game/nioh3p.log" ] && [ ! -r "$SMOKE/game/nioh3p.log" ]; then
+    echo "!! nioh3p.log exists but cannot be read: $SMOKE/game/nioh3p.log" >&2
+    rc=1
+elif [ -f "$SMOKE/game/nioh3p.log" ]; then
+    cat "$SMOKE/game/nioh3p.log"
+else
+    echo "(no log produced)"
+fi
 echo "=== artifacts ==="
 if ls "$SMOKE/game"/nioh3p_image_* >/dev/null 2>&1; then
-    mkdir -p "$SMOKE/dumps"
+    mkdir -p "$SMOKE/dumps" || { echo "cannot create $SMOKE/dumps" >&2; exit 1; }
     for f in "$SMOKE/game"/nioh3p_image_*; do
-        cp -f "$f" "$SMOKE/dumps/"
+        cp -f -- "$f" "$SMOKE/dumps/" || { echo "cannot copy $f" >&2; exit 1; }
     done
     ls -la "$SMOKE/dumps" | tail -5
     echo "(kept in $SMOKE/dumps)"

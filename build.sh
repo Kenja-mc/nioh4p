@@ -14,6 +14,18 @@
 set -euo pipefail
 
 cd "$(dirname "$0")"
+
+# Only --harness is accepted, and only as the sole argument. An unknown or extra
+# argument used to fall through the "[ $1 = --harness ] || exit 0" line at the
+# end: ./build.sh --harnes printed nothing and exited 0.
+HARNESS=0
+case "${1:-}" in
+"") ;;
+--harness) HARNESS=1 ;;
+*) echo "usage: $0 [--harness]" >&2; exit 2 ;;
+esac
+[ $# -le 1 ] || { echo "usage: $0 [--harness]" >&2; exit 2; }
+
 mkdir -p build
 
 ZIG_BIN="${ZIG:-}"
@@ -80,7 +92,7 @@ python3 tools/pechecksum.py build/research/dinput8.dll
 echo "== built build/dinput8.dll (player) and build/research/dinput8.dll (research) =="
 ls -l build/dinput8.dll build/research/dinput8.dll
 
-[ "${1:-}" = "--harness" ] || exit 0
+[ "$HARNESS" = 1 ] || exit 0
 
 DLLTOOL="${DLLTOOL:-$(command -v llvm-dlltool || command -v x86_64-w64-mingw32-dlltool || true)}"
 [ -n "$DLLTOOL" ] || { echo "harness needs llvm-dlltool (llvm) or mingw-w64-dlltool" >&2; exit 1; }

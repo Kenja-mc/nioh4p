@@ -25,6 +25,9 @@ GAME = os.environ.get("NIOH_DIR",
                       os.path.expanduser("~/.local/share/Steam/steamapps/common/Nioh"))
 EXE = os.path.join(GAME, "nioh.exe")
 
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the repo root
+
+
 READABLE = (".rdata", "_RDATA", ".data")
 # C++-ish names: at least one '::', or a mangled '?' name, no whitespace runs
 TOKEN = re.compile(rb"[A-Za-z_?$@][A-Za-z0-9_$@:<>~,.\-\[\]]{4,200}")
@@ -54,21 +57,30 @@ class SymNames:
         for nm, va, vs, ra, rs in sections(d):
             if nm not in READABLE:
                 continue
+            here = set()        # a name is counted once per section it is in
             for m in TOKEN.finditer(d[ra:ra + rs]):
                 t = m.group().decode("ascii")
                 if "::" not in t and not t.startswith("?"):
                     continue
-                if t in seen:
+                if t in here:
                     continue
-                seen.add(t)
-                self.names.append(t)
+                here.add(t)
                 self.per_section[nm] += 1
+                if t not in seen:
+                    seen.add(t)
+                    self.names.append(t)
         self.names.sort()
 
     def stats(self):
+        per = sum(self.per_section.values())
         print(f"{self.path}: {len(self.names)} unique symbol names")
         for nm, n in self.per_section.most_common():
             print(f"   {nm:8s} {n}")
+        if per != len(self.names):
+            # per-section counts are each section's own distinct names, so a name
+            # occurring in two sections is counted in both but only once above
+            print(f"   ({per} names over {len(self.per_section)} sections; "
+                  f"{per - len(self.names)} occur in more than one section)")
 
     def find(self, subs):
         for n in self.names:
@@ -76,14 +88,21 @@ class SymNames:
                 print(n)
 
     def dump(self, out):
-        with open(out, "w") as f:
+        # `dump analysis/symbols.txt` is documented from the repo root; resolving a
+        # relative path against the repo root keeps that meaning from anywhere
+        path = out if os.path.isabs(out) else os.path.join(REPO, out)
+        with open(path, "w") as f:
             f.write("\n".join(self.names) + "\n")
-        print(f"wrote {out} ({len(self.names)} names)")
+        print(f"wrote {path} ({len(self.names)} names)")
 
 
 def main():
-    t = SymNames()
     args = sys.argv[1:]
+    if args[:1] == ["find"] and len(args) < 2:
+        sys.stderr.write("symtab.py: find needs at least one substring; an empty "
+                         "filter matches every name\n")
+        return 2
+    t = SymNames()
     if not args or args[0] == "stats":
         t.stats()
     elif args[0] == "find":

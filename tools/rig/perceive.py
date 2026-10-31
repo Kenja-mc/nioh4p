@@ -84,6 +84,11 @@ def api_key(backend):
 
 # ---- HTTP ----
 def _post(url, body, key, retries=3):
+    if retries < 1:
+        # The loop below would run zero times, and its "raise last" tail would
+        # then fail with "TypeError: exceptions must derive from BaseException".
+        raise ValueError(f"retries must be at least 1, got {retries}")
+
     data = json.dumps(body).encode()
     headers = {"Content-Type": "application/json", "Authorization": "Bearer " + key}
     last = None
@@ -314,12 +319,15 @@ class Perceiver:
             if spec["type"] == "choice":
                 confidence = round(float(answer.get("confidence", 0.0)), 3)
                 raw = answer.get("choice")
-                value = raw
                 fallback = self.fallbacks.get(name)
-                if name in low and fallback is not None:
-                    value = fallback
+                degraded = name in low and fallback is not None
+                value = fallback if degraded else raw
                 allowed = {item["value"] for item in spec["choices"]}
-                if value not in allowed and value != fallback:
+                if value is None:
+                    # A missing choice used to pass whenever the question has no
+                    # fallback, leaving a state field of None for the rules.
+                    raise RuntimeError(f"{self.label}: answer has no {name} choice")
+                if not degraded and value not in allowed:
                     raise RuntimeError(f"unknown {name} choice {value!r}")
                 state[name] = value
                 state[f"{name}_confidence"] = confidence
@@ -365,15 +373,23 @@ class Trace:
         directory = directory or os.environ.get("RIG_SHOTS") or "."
         os.makedirs(directory, exist_ok=True)
         stamp = time.strftime("%Y%m%d-%H%M%S")
-        path = os.path.join(directory, f"{prefix}-{stamp}.jsonl")
-        suffix = 1
-        while os.path.exists(path):
-            path = os.path.join(directory, f"{prefix}-{stamp}-{suffix}.jsonl")
-            suffix += 1
+        suffix = 0
+        while True:
+            name = (f"{prefix}-{stamp}.jsonl" if not suffix
+                    else f"{prefix}-{stamp}-{suffix}.jsonl")
+            path = os.path.join(directory, name)
+            try:
+                # O_EXCL: two runs started in the same second must not share one
+                # trace file.
+                handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+            except FileExistsError:
+                suffix += 1
+                continue
+            break
         self.path = path
         self.n = 0
         self._lock = threading.Lock()   # concurrent visitor drivers share one trace
-        self._file = open(path, "w", encoding="utf-8")
+        self._file = os.fdopen(handle, "w", encoding="utf-8")
 
     def write(self, **record):
         with self._lock:
@@ -394,7 +410,17 @@ class Trace:
 
 # ---- log oracle ----
 class TailOracle:
-    """Only bytes written after construction count as new evidence."""
+    """Only bytes written after construction count as new evidence.
+
+    ``text`` keeps the last ``WINDOW`` characters: the proxy appends to this log
+    for the whole run, and re-searching every byte written so far on every step
+    is quadratic. The one call site (``coop.run_role``) scans and then asks, once
+    per step, so ``_recent`` always holds the entire newest batch beside the
+    previous window: a needle that arrived in that batch is found even when the
+    batch is longer than the window, and one found earlier stays found.
+    """
+
+    WINDOW = 8192
 
     def __init__(self, path):
         self.path = path
@@ -403,6 +429,8 @@ class TailOracle:
         except OSError:
             self.pos = 0
         self.text = ""
+        self._recent = ""
+        self._found = set()
 
     def scan(self):
         try:
@@ -421,11 +449,18 @@ class TailOracle:
             return ""
         self.pos += len(chunk)
         new = chunk.decode(errors="replace")
-        self.text += new
+        # The window tail plus the new bytes: a needle can straddle the two.
+        self._recent = self.text + new
+        self.text = self._recent[-self.WINDOW:]
         return new
 
     def found(self, needle):
-        return needle in self.text
+        if needle in self._found:
+            return True
+        if needle in self._recent:
+            self._found.add(needle)
+            return True
+        return False
 
 
 class NeedleOracle(TailOracle):

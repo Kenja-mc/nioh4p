@@ -24,9 +24,10 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 
-RIG = os.path.expanduser("~/nioh3p-test")
+RIG = os.path.expanduser("~/Projects/gaming/nioh-mp-mod-rig")
 SLOTS = {
     slot: {"display": None, "rundir": f"{RIG}/run-{slot}", "wayland": "gamescope-0"}
     for slot in ("a", "b", "c", "d")
@@ -130,31 +131,44 @@ def shot(slot, name=None, settle=2.0):
 
 # ---- OCR / classify ----
 def ocr(path, crop=None):
-    src = path
-    tmp = "/tmp/nav_ocr.png"
-    if crop:
-        x, y, w, h = crop
-        subprocess.run(["magick", path, "-crop", f"{w}x{h}+{x}+{y}", "+repage",
-                        "-resize", "300%", "-colorspace", "Gray", "-sharpen", "0x1", tmp],
-                       check=True, capture_output=True)
-        src = tmp
-    else:
-        subprocess.run(["magick", path, "-resize", "200%", "-colorspace", "Gray",
-                        "-sharpen", "0x1", tmp], check=True, capture_output=True)
-        src = tmp
-    r = subprocess.run(["tesseract", src, "-", "--psm", "6"],
-                       capture_output=True, text=True)
-    return " ".join(r.stdout.split())
+    # A file per call: two slots must never OCR each other's frame, and the old
+    # fixed /tmp/nav_ocr.png was never removed.
+    fd, tmp = tempfile.mkstemp(prefix="nav_ocr-", suffix=".png")
+    os.close(fd)
+    try:
+        if crop:
+            x, y, w, h = crop
+            subprocess.run(["magick", path, "-crop", f"{w}x{h}+{x}+{y}", "+repage",
+                            "-resize", "300%", "-colorspace", "Gray", "-sharpen", "0x1",
+                            tmp], check=True, capture_output=True)
+        else:
+            subprocess.run(["magick", path, "-resize", "200%", "-colorspace", "Gray",
+                            "-sharpen", "0x1", tmp], check=True, capture_output=True)
+        r = subprocess.run(["tesseract", tmp, "-", "--psm", "6"],
+                           capture_output=True, text=True)
+        return " ".join(r.stdout.split())
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
 
 def mean_luma(path):
+    """Mean brightness of the frame, or None when it cannot be read.
+
+    1.0 on a failed read looked like a measured bright frame, so the dark-frame
+    check could never fire; callers must say "unmeasured" instead.
+    """
     r = subprocess.run(["magick", path, "-colorspace", "Gray",
                         "-format", "%[fx:mean]", "info:"],
                        capture_output=True, text=True)
+    if r.returncode:
+        return None
     try:
         return float(r.stdout)
     except ValueError:
-        return 1.0
+        return None
 
 
 RULES = [
@@ -188,22 +202,22 @@ def classify(slot, verbose=False):
     footer = ocr(path, crop=(0, 610, 1280, 110)).lower()
     if "starting point" in footer or "twilight" in footer:
         return "world_map", f"footer: {footer[:80]}"
-    lowf = footer
     if "region" in low and "level" not in low:
         return "world_map", f"region-title: {low[:60]}"
     lum = mean_luma(path)
-    if lum < 0.055:
+    if lum is not None and lum < 0.055:
         return "dark", f"luma={lum:.3f}"
     if "koei tecmo" in low or "all rights" in low:
         return "logo", text[:160]
     if verbose:
-        print(f"[verbose] luma={lum:.3f} text={text[:200]} tl={tl[:80]}")
-    return "unknown", text[:160]
+        print(f"[verbose] luma={'unreadable' if lum is None else f'{lum:.3f}'} "
+              f"text={text[:200]} tl={tl[:80]}")
+    return "unknown", text[:160] + ("" if lum is not None else " (luma unreadable)")
 
 
 def wait_state(slot, state, timeout=120):
     deadline = time.time() + timeout
-    last = None
+    last, ev = None, None
     while time.time() < deadline:
         last, ev = classify(slot)
         if last == state:
@@ -224,12 +238,12 @@ def goto(slot, target, skip=False):
     """Scripted transition to a target state. skip=True is a test-only mode:
     it taps Return through lore screens, cutscene dialogs, briefings and
     menus so a run reaches gameplay without a decision model."""
+    inp = Input(SLOTS[slot]["display"])   # one X connection for the whole walk
     for _ in range(60):
         state, ev = classify(slot)
         if state == target:
             print(f"goto: at {target}")
             return True
-        inp = Input(SLOTS[slot]["display"])
         if skip:
             if state == "dark":
                 time.sleep(4)
@@ -260,6 +274,9 @@ def map_select(slot, substr, max_steps=24):
     inp = Input(SLOTS[slot]["display"])
     for i in range(max_steps):
         path = shot(slot, name=f"mapsel-{slot}.png")
+        if not path:
+            print("map_select: no screenshot")
+            return False
         panel = ocr(path, crop=(980, 120, 300, 480))
         if substr.lower() in panel.lower():
             print(f"map_select: {substr} selected -> OK")
@@ -303,6 +320,8 @@ def main():
         print(f"walked {a.args[0]}s")
     elif a.cmd == "ocr":
         p = shot(a.slot)
+        if not p:                      # a failed capture must not reach magick
+            sys.exit("ocr: no screenshot")
         crop = tuple(int(v) for v in a.args) if len(a.args) == 4 else None
         print(ocr(p, crop))
     elif a.cmd == "goto":

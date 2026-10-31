@@ -29,8 +29,8 @@ IMAGE_LIMIT = 0x3073000          # last .bind section end in this build
 CLASSMAP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "analysis", "classmap.txt")
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "nioh3p.sites.txt")
 
-VTABLE_RE = re.compile(r"^\s+vtable\s+0x([0-9a-fA-F]+)\s+methods:(.*)$")
-HEX_RE = re.compile(r"0x([0-9a-fA-F]+)")
+VTABLE_RE = re.compile(r"^\s+vtable\s+0[xX]([0-9a-fA-F]+)\s+methods:(.*)$")
+HEX_RE = re.compile(r"0[xX]([0-9a-fA-F]+)")
 
 
 def pretty(name):
@@ -42,16 +42,23 @@ def pretty(name):
 
 
 def parse_classmap(path):
-    """-> list of (rva, name) in file order: methods as 'Class::vfnN', vtables as 'vtable Class'."""
+    """-> list of (rva, name) in file order: methods as 'Class::vfnN', vtables as 'vtable Class'.
+
+    Every address must land inside the image.  The file is written mechanically
+    by tools/rtti.py from a runtime image, so an address outside it means the
+    classmap and this build disagree - and a silently dropped name would look to
+    the proxy like a call site that simply has no name.
+    """
     try:
         lines = open(path, encoding="utf-8", errors="replace").read().splitlines()
     except OSError as exc:
         sys.exit(f"cannot read {path}: {exc}")
     out = []
+    bad = []
     cls = None
     collecting = False
     slot = 0
-    for line in lines:
+    for n, line in enumerate(lines, 1):
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         if not line[0].isspace():
@@ -66,10 +73,14 @@ def parse_classmap(path):
             vva = int(m.group(1), 16)
             if BASE <= vva < BASE + IMAGE_LIMIT and cls:
                 out.append((vva - BASE, f"vtable {pretty(cls)}"))
+            else:
+                bad.append((n, vva, cls))
             for h in HEX_RE.findall(m.group(2)):
                 va = int(h, 16)
                 if BASE <= va < BASE + IMAGE_LIMIT and cls:
                     out.append((va - BASE, f"{pretty(cls)}::vfn{slot}"))
+                else:
+                    bad.append((n, va, cls))
                 slot += 1
             continue
         if collecting:
@@ -79,26 +90,57 @@ def parse_classmap(path):
                     va = int(h, 16)
                     if BASE <= va < BASE + IMAGE_LIMIT and cls:
                         out.append((va - BASE, f"{pretty(cls)}::vfn{slot}"))
+                    else:
+                        bad.append((n, va, cls))
                     slot += 1
             else:
                 collecting = False
+    if bad:
+        for n, va, c in bad[:20]:
+            sys.stderr.write(f"{path}:{n}: {va:#x} is outside the image "
+                             f"({BASE:#x}-{BASE + IMAGE_LIMIT:#x}), class "
+                             f"{c or '(none)'}\n")
+        if len(bad) > 20:
+            sys.stderr.write(f"   ... and {len(bad) - 20} more\n")
+        sys.exit(f"sites.py: refusing {path}: {len(bad)} of its addresses are not in "
+                 "the image of this build, so the call-site table would be incomplete")
     return out
 
 
 def parse_extra(path):
+    """[(rva, name)] from a hand-written "0xRVA Name" file.
+
+    Unparsable lines and addresses outside the image are reported: these lines
+    are hand-written and they win over the classmap, so dropping one silently
+    would change the table without a trace.
+    """
     out = []
+    skipped = []
     if not path:
         return out
     if not os.path.exists(path):
         print(f"note: extra file {path} does not exist, skipping", file=sys.stderr)
         return out
-    for line in open(path, encoding="utf-8", errors="replace"):
-        line = line.strip()
+    for n, raw in enumerate(open(path, encoding="utf-8", errors="replace"), 1):
+        line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        m = re.match(r"^(?:0x)?([0-9a-fA-F]+)\s+(.+)$", line)
-        if m:
-            out.append((int(m.group(1), 16), m.group(2).strip()))
+        m = re.match(r"^(?:0[xX])?([0-9a-fA-F]+)\s+(.+)$", line)
+        if not m:
+            skipped.append((n, line, "not '<rva> <name>'"))
+            continue
+        rva = int(m.group(1), 16)
+        if not 0 <= rva < IMAGE_LIMIT:
+            # RVAs are what the proxy's nearest-below lookup sees; a VA here (the
+            # classmap's own form) would become a nonsense entry
+            skipped.append((n, line, f"{rva:#x} is not an RVA below "
+                                     f"{IMAGE_LIMIT:#x} (a VA?)"))
+            continue
+        out.append((rva, m.group(2).strip()))
+    if skipped:
+        for n, line, why in skipped[:10]:
+            sys.stderr.write(f"{path}:{n}: {why}: {line}\n")
+        print(f"warning: {len(skipped)} line(s) of {path} were skipped", file=sys.stderr)
     return out
 
 
@@ -130,8 +172,14 @@ def main():
         for rva, name in table:
             if rva <= probe and (best is None or rva >= best[0]):
                 best = (rva, name)
-        if best and probe - best[0] < 0x8000:
-            print(f"  probe 0x{probe:x} -> {best[1]}+0x{probe - best[0]:x}")
+        if best and probe == best[0]:
+            print(f"  probe 0x{probe:x} -> {best[1]} (exact)")
+        elif best and probe - best[0] < 0x8000:
+            # these names are the *nearest* symbol at or below the probe: the
+            # proxy attributes a call site this way, so say so instead of
+            # presenting the name as the site's own
+            print(f"  probe 0x{probe:x} -> {best[1]}+0x{probe - best[0]:x} "
+                  "(nearest below, inexact)")
         else:
             print(f"  probe 0x{probe:x} -> (no symbol within 32 KB)")
 

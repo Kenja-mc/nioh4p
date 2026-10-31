@@ -18,8 +18,8 @@
 #           rewrites libraryfolders.vdf on startup.  Cloning into the root
 #           library sidesteps all of it (and the app is then adopted with
 #           "Fully Installed" and no download).
-#   NOTE 2  Steam keys userdata/ by *accountid* (<accountid-a> = player-one,
-#           <accountid-b> = player-two), while loginusers.vdf is keyed by SteamID64.
+#   NOTE 2  Steam keys userdata/ by accountid, while loginusers.vdf is keyed
+#           by SteamID64. Resolve the accountid from the selected login record.
 #   NOTE 3  The per-game compat tool mapping lives in config/config.vdf
 #           ("Steam" -> "CompatToolMapping"), not in userdata.  Proton 11.0's
 #           own tool prefix fails to build here (missing amdxcffx64.dll), so
@@ -35,6 +35,8 @@ set -eu
 say() { printf '== %s\n' "$*"; }
 
 [ -d "$SRC_LIB/common/Nioh" ] || { echo "no Nioh install in $SRC_LIB" >&2; exit 1; }
+[ -n "$ACCOUNT_A" ] && [ -n "$ACCOUNT_B" ] ||
+    { echo "setup: set ACCOUNT_A and ACCOUNT_B locally" >&2; exit 1; }
 
 mkdir -p "$RIG"/shots
 rig_display || { echo "cannot start Xvfb $XVFB_DISPLAY" >&2; exit 1; }
@@ -95,50 +97,78 @@ for slot in a b; do
     # --- login (NOTE 2) and the compat tool (NOTE 3) ---
     account="$ACCOUNT_A"; [ "$slot" = b ] && account="$ACCOUNT_B"
     python3 - "$root" "$account" <<'PY'
-import os, re, sys
+import os, re, shutil, sys
 root, account = sys.argv[1], sys.argv[2]
 
-# loginusers.vdf is keyed by SteamID64
-p = os.path.join(root, "config", "loginusers.vdf")
-s = open(p).read()
-s = re.sub(r'("AutoLoginUser"\s*)"[^"]*"',
-           lambda m: m.group(1) + '"' + account + '"', s, count=1)
+# Resolve the slot's account from the clone's login records. Never guess a
+# userdata directory: an ambiguous or absent name must fail before any writes.
+login_path = os.path.join(root, "config", "loginusers.vdf")
+with open(login_path) as f:
+    login_text = f.read()
+records = list(re.finditer(r'"(\d{17})"\s*\{([^{}]*)\}', login_text))
+matches = []
+for m in records:
+    name = re.search(r'"AccountName"\s*"([^"]*)"', m.group(2))
+    if name and name.group(1) == account:
+        matches.append(int(m.group(1)) - 76561197960265728)
+if len(matches) != 1 or not 0 < matches[0] <= 0xffffffff:
+    sys.exit("setup: selected account missing or ambiguous in cloned login records")
+account_id = str(matches[0])
+localconfig_path = os.path.join(root, "userdata", account_id, "config", "localconfig.vdf")
+if not os.path.exists(localconfig_path):
+    sys.exit("setup: selected account has no cloned userdata configuration")
 
 
-def account_block(m):
+def load(p):
+    with open(p) as f:
+        return f.read()
+
+
+def save_atomic(p, s):
+    # Steam reads these vdf files at startup, so a half-written file costs the
+    # clone its login.  Keep the pristine clone copy once, then replace by
+    # rename: the file is either the old or the new one, never in between.
+    bak = p + ".nioh3p-bak"
+    if not os.path.exists(bak):
+        shutil.copy2(p, bak)
+    tmp = p + ".nioh3p-tmp"
+    with open(tmp, "w") as f:
+        f.write(s)
+    os.replace(tmp, p)
+
+# Keep the account picker used by login.sh: disable automatic login for every
+# saved account, regardless of whitespace in its record. Preserve remembered
+# credentials and the existing account ordering rather than selecting a user.
+def disable_auto_login(m):
     block = m.group(0)
-    mine = any('"AccountName"' + sep + account + '"' in block
-               for sep in ('\t\t', '\t', ' '))
-    for key in ("AllowAutoLogin", "RememberPassword", "MostRecent"):
-        block = re.sub(r'("' + key + r'"\s*)"\d"',
-                       lambda x: x.group(1) + ('"1"' if mine else '"0"'), block)
+    block, count = re.subn(r'("AllowAutoLogin"\s*)"[^"]*"',
+                           lambda x: x.group(1) + '"0"', block)
+    if count != 1:
+        sys.exit("setup: login record missing or has duplicate AllowAutoLogin")
     return block
 
 
-s = re.sub(r'\{[^{}]*"AccountName"[^{}]*\}', account_block, s)
-open(p, "w").write(s)
+s = re.sub(r'"\d{17}"\s*\{[^{}]*\}', disable_auto_login, login_text)
+save_atomic(login_path, s)
 
 # Compat tool: the per-user mapping, where Steam itself keeps it.
 # config/config.vdf is deliberately NOT edited: a bad regex in it stops the
-# client's window from ever mapping (learned the hard way).  userdata is keyed
-# by accountid (<accountid-a> = player-one, <accountid-b> = player-two).
-uid = "<accountid-a>" if account == os.environ.get("ACCOUNT_A", "player-one") else "<accountid-b>"
-p = os.path.join(root, "userdata", uid, "config", "localconfig.vdf")
-if os.path.exists(p):
-    s = open(p).read()
-    entry = ('\t\t\t\t\t"485510"\n\t\t\t\t\t{\n\t\t\t\t\t\t"name"\t\t"proton_experimental"\n'
-             '\t\t\t\t\t\t"config"\t\t""\n\t\t\t\t\t\t"Priority"\t\t"250"\n\t\t\t\t\t}\n')
-    if '"CompatToolMapping"' not in s:
-        s = s.replace('"UserLocalConfigStore"\n{',
-                      '"UserLocalConfigStore"\n{\n\t\t\t\t"CompatToolMapping"\n\t\t\t\t{\n\t\t\t\t}\n',
-                      1)
-    s = re.sub(r'"485510"\s*\n\s*\{[^{}]*\}', entry.strip(), s)
-    if not re.search(r'"CompatToolMapping"\s*\n\s*\{[^}]*"485510"', s, re.S):
-        s = re.sub(r'("CompatToolMapping"\s*\n\s*\{)',
-                   lambda m: m.group(1) + '\n' + entry, s, count=1)
-    open(p, "w").write(s)
+# client's window from ever mapping (learned the hard way).
+p = localconfig_path
+s = load(p)
+entry = ('\t\t\t\t\t"485510"\n\t\t\t\t\t{\n\t\t\t\t\t\t"name"\t\t"proton_experimental"\n'
+         '\t\t\t\t\t\t"config"\t\t""\n\t\t\t\t\t\t"Priority"\t\t"250"\n\t\t\t\t\t}\n')
+if '"CompatToolMapping"' not in s:
+    s = s.replace('"UserLocalConfigStore"\n{',
+                  '"UserLocalConfigStore"\n{\n\t\t\t\t"CompatToolMapping"\n\t\t\t\t{\n\t\t\t\t}\n',
+                  1)
+s = re.sub(r'"485510"\s*\n\s*\{[^{}]*\}', entry.strip(), s)
+if not re.search(r'"CompatToolMapping"\s*\n\s*\{[^}]*"485510"', s, re.S):
+    s = re.sub(r'("CompatToolMapping"\s*\n\s*\{)',
+               lambda m: m.group(1) + '\n' + entry, s, count=1)
+save_atomic(p, s)
 
-print("   login %s, compat tool proton_experimental" % account)
+print("   login configured, compat tool proton_experimental")
 PY
 
     # --- the game only runs from its own directory, and wants an appid hint ---
@@ -150,9 +180,18 @@ done
 say "installing the mod into slot a"
 A_LIB="$(slot_root a)/steamapps/common/Nioh"
 cp -a build/dinput8.dll "$A_LIB/dinput8.dll"
-cp -a nioh3p.sites.txt "$A_LIB/nioh3p.sites.txt"
+# nioh3p.sites.txt is generated, not installed (see install.sh): the mod runs
+# without it and only trace=1 loses the call-site names.
+if [ -f nioh3p.sites.txt ]; then
+    cp -a nioh3p.sites.txt "$A_LIB/nioh3p.sites.txt"
+else
+    say "no nioh3p.sites.txt to install - generated, not shipped (install.sh:11-14); run tools/sites.py > nioh3p.sites.txt for trace=1"
+fi
+# the ini is read by the game under Wine, so out_dir has to be the Z: path of
+# this rig's log directory, wherever RIG points
+out_dir="Z:$(printf '%s' "$(slot_log a)" | sed 's|/|\\|g')"
 cat > "$A_LIB/nioh3p.ini" <<EOF
-out_dir=Z:\\home\\kenja\\nioh3p-test\\logs-a
+out_dir=$out_dir
 
 max_players=4
 dump_image=0

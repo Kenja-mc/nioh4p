@@ -9,7 +9,7 @@ Public pieces:
   Rule(screen, action, when=None)   one table row; ``limit`` caps sends per run
   first_match(table, state, counts) the first matching rule (or None)
   condition_met(condition, state)   evaluates declarative conditions
-  Driver(...).run() -> (ok, reason)
+  Driver(...).run() -> (True | False | DRY_RUN, reason)
   BaseActuator, XTestActuator, CommandActuator, GamescopeCapture, CommandCapture
   Stop                              raise it in a hook to end the run cleanly
 
@@ -24,16 +24,21 @@ Driver hooks:
   on_step(row)                       one mutable trace row per step
 """
 import os
+import shlex
 import signal
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 RETURN_UNCHANGED = 3
 RETURN_SETTLE = 1.5
+
+# Driver.run() status for a step that was only planned: nothing was driven, so a
+# caller must not read it as a run that happened.
+DRY_RUN = "dry-run"
 
 
 class Stop(Exception):
@@ -216,7 +221,12 @@ class XTestActuator(BaseActuator):
 
 
 class CommandActuator(BaseActuator):
-    """Shell command template with {key}, {ms}, {seconds} substituted."""
+    """Shell command template with {key}, {ms}, {seconds} substituted.
+
+    A template keeps its shell (it may use ``&&`` or ``sleep``), so every
+    substituted value is shell-quoted: a key name from a profile cannot become
+    a second command.
+    """
 
     def __init__(self, template, hold_template=None, timeout=15.0):
         self.template = template
@@ -231,15 +241,17 @@ class CommandActuator(BaseActuator):
             raise RuntimeError(f"actuator command failed ({result.returncode}): {detail}")
 
     def tap(self, key, ms=90):
-        self._run(self.template.format(key=key, ms=ms, seconds=ms / 1000.0))
+        self._run(self.template.format(key=shlex.quote(str(key)), ms=int(ms),
+                                       seconds=ms / 1000.0))
 
     def hold(self, key, seconds):
-        self._run(self.hold_template.format(key=key, ms=int(seconds * 1000),
-                                           seconds=seconds))
+        self._run(self.hold_template.format(key=shlex.quote(str(key)),
+                                            ms=int(seconds * 1000), seconds=seconds))
 
 
-def process_pid(comm, environ_entry):
-    """PID of the process named ``comm`` whose environment contains a marker."""
+def process_pids(comm, environ_entry):
+    """PIDs of the processes named ``comm`` whose environment has the marker."""
+    found = []
     for entry in os.scandir("/proc"):
         if not entry.name.isdigit():
             continue
@@ -249,19 +261,30 @@ def process_pid(comm, environ_entry):
                     continue
             with open(f"{entry.path}/environ", "rb") as handle:
                 if environ_entry in handle.read().split(b"\0"):
-                    return int(entry.name)
+                    found.append(int(entry.name))
         except OSError:
             continue
-    return None
+    return found
 
 
 def pause_process(comm, environ_entry, seconds=5.0, pause=2.0, on_error=None):
-    """SIGSTOP the matching process, wait, SIGCONT, then wait ``pause`` again."""
-    pid = process_pid(comm, environ_entry)
-    if pid is None:
+    """SIGSTOP the matching process, wait, SIGCONT, then wait ``pause`` again.
+
+    The marker sits in the environment of every process the slot started, so
+    several can match: act only when exactly one does and say what was found
+    otherwise, instead of pausing an arbitrary one.
+    """
+    pids = process_pids(comm, environ_entry)
+    if not pids:
         if on_error:
             on_error(f"no live {comm} for that slot")
         return False
+    if len(pids) > 1:
+        if on_error:
+            on_error(f"{len(pids)} processes match {comm} and the slot marker "
+                     f"({', '.join(str(pid) for pid in pids)}); not pausing any")
+        return False
+    pid = pids[0]
     try:
         os.kill(pid, signal.SIGSTOP)
     except OSError as exc:
@@ -325,7 +348,10 @@ class GamescopeCapture:
 
 
 class CommandCapture:
-    """Screenshot anything else; command gets {path} and {name} substituted."""
+    """Screenshot anything else; command gets {path} and {name} substituted.
+
+    Both are shell-quoted, because the command keeps its shell.
+    """
 
     def __init__(self, command, path, settle=0.5, timeout=20.0):
         self.command = command
@@ -338,7 +364,8 @@ class CommandCapture:
         time.sleep(self.settle if settle is None else settle)
         if os.path.exists(path):
             os.unlink(path)
-        result = subprocess.run(self.command.format(path=path, name=name),
+        result = subprocess.run(self.command.format(path=shlex.quote(path),
+                                                    name=shlex.quote(name)),
                                 shell=True, capture_output=True, text=True,
                                 timeout=self.timeout)
         if result.returncode:
@@ -382,7 +409,8 @@ class Driver:
         retn_key = None
         retn_count = 0
         for step in range(self.step_limit):
-            if time.monotonic() > deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 return False, f"wall timeout after {self.timeout:.0f}s"
             try:
                 state = self.perceive(step)
@@ -435,12 +463,21 @@ class Driver:
             if stop:
                 return False, stop
             if self.dry_run:
-                return True, f"dry-run: {text} in {state.get('screen')}"
+                return DRY_RUN, f"dry-run: {text} in {state.get('screen')}"
             if action is None:
                 return False, (f"unexpected state {state.get('screen')}/"
                                f"{state.get('highlight')} has no rule")
             if self.actuator is None:
                 raise RuntimeError("driver has no actuator")
+            # The deadline is only checked between steps, so this step's own
+            # sleeps are clamped to what is left of it (seconds, then settle):
+            # a hold of minutes must not overshoot the wall clock the run was
+            # planned under.
+            left = max(0.0, deadline - time.monotonic())
+            seconds = min(action.seconds, left)
+            settle = min(action.settle, max(0.0, left - seconds))
+            if seconds != action.seconds or settle != action.settle:
+                action = replace(action, seconds=seconds, settle=settle)
             self.actuator.perform(action)
             if action.sends_key:
                 if rule is not None and rule.name:

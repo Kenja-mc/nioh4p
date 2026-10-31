@@ -2,7 +2,8 @@
 # Installs / removes the nioh3p mod inside the Steam installation of
 # Nioh: Complete Edition (appid 485510) on this machine.
 #
-#   ./install.sh            install (build first if build/dinput8.dll is missing)
+#   ./install.sh            install (rebuild the proxy first when build/dinput8.dll
+#                           is missing or older than src/proxy/* or build.sh)
 #   ./install.sh uninstall  remove the mod, leave the game stock
 #
 # The game directory gets two files: dinput8.dll (the proxy) and nioh3p.ini
@@ -32,14 +33,43 @@ put_away() {
 }
 
 # Compare two text files ignoring CR line endings, so a CRLF copy of the same
-# content counts as identical.
+# content counts as identical. Hashes, not cmp on process substitutions: an
+# unreadable file feeds both streams no bytes and cmp then reports "identical".
 same_text() {
-    cmp -s <(tr -d '\r' < "$1") <(tr -d '\r' < "$2")
+    local a b
+    [ -r "$1" ] || { echo "cannot read $1" >&2; exit 1; }
+    [ -r "$2" ] || { echo "cannot read $2" >&2; exit 1; }
+    a=$(tr -d '\r' < "$1" | sha256sum) || { echo "cannot hash $1" >&2; exit 1; }
+    b=$(tr -d '\r' < "$2" | sha256sum) || { echo "cannot hash $2" >&2; exit 1; }
+    [ "$a" = "$b" ]
 }
 
+# An existing dinput8.dll is fine if it is one of ours (the proxy carries the
+# marker string below); anything else belongs to somebody else's mod.
+is_foreign_dll() {
+    [ -e "$1" ] && ! grep -qa "nioh3p proxy" "$1"
+}
+
+foreign_dll_error() {
+    echo "!! $GAME/dinput8.dll already exists and is not nioh3p"
+    echo "   move it aside first, or back it up as dinput8.dll.nioh3p-backup"
+}
+
+# The directory must hold the game, not merely exist: NIOH_DIR=$HOME used to
+# pass a -d test and get the mod written into the home directory.
 [ -d "$GAME" ] || { echo "game directory not found: $GAME" >&2; exit 1; }
+[ -f "$GAME/nioh.exe" ] && [ -f "$GAME/EOSSDK-Win64-Shipping.dll" ] ||
+    { echo "no nioh.exe/EOSSDK-Win64-Shipping.dll in $GAME; not a Nioh install" >&2; exit 1; }
+
+is_foreign_dll "$GAME/dinput8.dll" && { foreign_dll_error; exit 1; }
 
 if [ "${1:-install}" = "uninstall" ]; then
+    # The same scan again, right before the removal: a foreign DLL that
+    # appeared after the check above must never be deleted as ours.
+    if is_foreign_dll "$GAME/dinput8.dll"; then
+        foreign_dll_error
+        exit 1
+    fi
     removed=()
     put_away "$GAME/dinput8.dll"
     put_away "$GAME/nioh3p.ini"
@@ -54,15 +84,14 @@ if [ "${1:-install}" = "uninstall" ]; then
     exit 0
 fi
 
-# An existing dinput8.dll is fine if it is one of ours (the proxy carries the
-# marker string below); anything else belongs to somebody else's mod.
-if [ -e "$GAME/dinput8.dll" ] && ! grep -qa "nioh3p proxy" "$GAME/dinput8.dll"; then
-    echo "!! $GAME/dinput8.dll already exists and is not nioh3p"
-    echo "   move it aside first, or back it up as dinput8.dll.nioh3p-backup"
-    exit 1
+# Rebuild when the artifact is missing or older than any input: build.sh links in
+# place and stops before the link on a compile error, so gating the rebuild on
+# the DLL existing would install the DLL from before the edit. -type f: the
+# mtime of the src/proxy directory itself says nothing about the sources.
+if [ ! -f build/dinput8.dll ] ||
+    [ -n "$(find build.sh src/proxy -type f -newer build/dinput8.dll -print -quit)" ]; then
+    ./build.sh
 fi
-
-[ -f build/dinput8.dll ] || ./build.sh
 
 # Install by rename: a running game keeps its old mapping and is never corrupted.
 install -m 0755 build/dinput8.dll "$GAME/.dinput8.dll.new"

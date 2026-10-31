@@ -18,6 +18,8 @@
 set -eu
 . "$(dirname "$0")/env.sh"
 
+APPID=485510
+
 slot="${1:?usage: run.sh <a|b|c|d> [client|login|game|direct|lan|probe EXE ARGS]}"
 what="${2:-client}"
 client_slot="$slot"
@@ -47,11 +49,11 @@ case "$what" in
         # the client *binary* forwards the request to the running client;
         # steam.sh would start a second client instead and the request would
         # die with it
-        exec "$root/ubuntu12_32/steam" -applaunch 485510
+        exec "$root/ubuntu12_32/steam" -applaunch "$APPID"
         ;;
     lan|probe)
         game_dir="$RIG/lan-$slot"
-        prefix="$root/steamapps/compatdata/485510"
+        prefix="$root/steamapps/compatdata/$APPID"
         case "$slot" in c|d) prefix="$RIG/compat-$slot" ;; esac
         [ -f "$game_dir/nioh.exe" ] && [ -d "$prefix/pfx" ] || {
             echo "slot $slot needs a prepared LAN copy and prefix" >&2; exit 1;
@@ -59,14 +61,28 @@ case "$what" in
         launcher="$(realpath "$(dirname "$0")/../quiet-launch.sh")"
         export STEAM_COMPAT_CLIENT_INSTALL_PATH="$root"
         export STEAM_COMPAT_DATA_PATH="$prefix"
-        export SteamAppId=485510 SteamGameId=485510 PROTON_LOG="${PROTON_LOG:-1}"
+        export SteamAppId="$APPID" SteamGameId="$APPID" PROTON_LOG="${PROTON_LOG:-1}"
         export NIOH3P_HEADLESS=1 NIOH3P_SCOPE=0
-        export NIOH3P_GPU=RAPHAEL_MENDOCINO NIOH3P_VK_DEVICE="$IGPU_ID"
+        # the game must stay inaudible (standing rule): the slot's runtime dir
+        # has no pulse socket, so wine falls back to raw ALSA, whose pcm device
+        # reaches the desktop speakers. Both audio paths die here.
+        export PULSE_SERVER="${PULSE_SERVER:-127.0.0.1:1}" ALSA_CONFIG_PATH=/dev/null
         cd "$game_dir"
         if [ "$what" = probe ]; then
             shift 2
             exe="${1:?usage: run.sh <slot> probe <exe> [args]}"; shift
-            exec "$root/steamapps/common/Proton - Experimental/proton" runinprefix "$RIG/tools-tmp/$exe" "$@"
+            # probes are read-only tools staged in $RIG/tools-tmp: resolve the
+            # name and refuse anything that lands outside (../bin/sh, or a
+            # symlink leaving the directory, would run an arbitrary binary in
+            # the game's prefix).  $RIG is resolved too: it may itself sit
+            # behind a symlink, which would otherwise reject every honest name.
+            probe_dir="$(realpath -m -- "$RIG/tools-tmp")"
+            probe="$(realpath -m -- "$probe_dir/$exe")"
+            case "$probe" in
+                "$probe_dir"/*) ;;
+                *) echo "usage: run.sh <slot> probe <exe> [args] (exe must be inside $probe_dir)" >&2; exit 2 ;;
+            esac
+            exec "$root/steamapps/common/Proton - Experimental/proton" runinprefix "$probe" "$@"
         fi
         exec "$launcher" "$root/steamapps/common/Proton - Experimental/proton" run "$game_dir/nioh.exe"
         ;;
@@ -74,13 +90,20 @@ case "$what" in
         # Nioh resolves its data files relative to the working directory (its
         # boot log prints "Boot Path:"), so it is started from its own directory
         export STEAM_COMPAT_CLIENT_INSTALL_PATH="$root"
-        export STEAM_COMPAT_DATA_PATH="$root/steamapps/compatdata/485510"
-        export SteamAppId=485510 SteamGameId=485510
-        printf '485510' > "$game_dir/steam_appid.txt"
+        export STEAM_COMPAT_DATA_PATH="$root/steamapps/compatdata/$APPID"
+        export SteamAppId="$APPID" SteamGameId="$APPID"
+        printf '%s' "$APPID" > "$game_dir/steam_appid.txt"
         cd "$game_dir"
+        # same standing rule as the lan path: no audio path may reach the desk
+        export PULSE_SERVER="${PULSE_SERVER:-127.0.0.1:1}" ALSA_CONFIG_PATH=/dev/null
         exec "$root/steamapps/common/Proton - Experimental/proton" run "$game_dir/nioh.exe"
         ;;
 esac
 
+
+# the client must stay inaudible: its HOME is isolated, but libpulse would
+# still find the desktop server through the inherited runtime dir. Point it
+# at a dead local address so every sound sink fails (standing rig rule).
+export PULSE_SERVER="${PULSE_SERVER:-127.0.0.1:1}"
 # the rig UI can render in software: nothing it draws needs the GPU
 LIBGL_ALWAYS_SOFTWARE=1 exec "$root/steam.sh" -silent -cef-disable-gpu

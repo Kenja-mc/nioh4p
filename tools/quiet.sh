@@ -30,6 +30,8 @@ export SMOKE_DIR="${SMOKE_DIR:-$STATE/smoke}"
 export SMOKE_TIMEOUT="${QUIET_TIMEOUT:-90}"
 XDISP="${QUIET_DISPLAY:-:9}"
 UNIT="nioh3p-run-$$"          # unique: a killed run can leave a loaded unit behind
+UNITF="$STATE/unit"           # ...so --stop reads it back instead of guessing
+XVFBPIDF="$STATE/xvfb.pid"    # the private display this run may start
 LOGF="$STATE/quiet.log"
 
 mkdir -p "$STATE" "$SMOKE_DIR"
@@ -82,10 +84,24 @@ check() {
 }
 
 # ------------------------------------------------------------------- cleanup
+# --stop is a separate process, so it reads the unit and the display PID back
+# from the state directory.  Guessing them ($$ of a dead run, or the display
+# name, which any session may use) would stop the wrong thing or nothing.
 stop_all() {
-    systemctl --user stop "$UNIT.scope" 2>/dev/null
-    pkill -f "Xvfb $XDISP" 2>/dev/null
-    pkill -f "smoketest.sh" 2>/dev/null
+    local u pid
+    [ -s "$UNITF" ] && systemctl --user stop "$(cat "$UNITF").scope" 2>/dev/null
+    for u in $(systemctl --user list-units --all --plain --no-legend 'nioh3p-run-*' 2>/dev/null | awk '{print $1}'); do
+        systemctl --user stop "$u" 2>/dev/null
+    done
+    if [ -s "$XVFBPIDF" ]; then
+        pid=$(cat "$XVFBPIDF")
+        # only a live Xvfb still on this display: a recycled PID must not be killed
+        if kill -0 "$pid" 2>/dev/null &&
+           tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q "Xvfb $XDISP"; then
+            kill "$pid" 2>/dev/null
+        fi
+    fi
+    rm -f "$UNITF" "$XVFBPIDF"
     say "stopped"
 }
 
@@ -100,6 +116,11 @@ if [ "${1:-}" = "--check" ]; then
 fi
 
 # --------------------------------------------------------------------- set up
+# The before/after snapshot is the whole "the game directory was never touched"
+# claim, so the directory has to exist and list: a NIOH_DIR typo must not pass
+# as two identical empty snapshots.
+[ -d "$GAME" ] || { say "!! game directory not found: $GAME (set NIOH_DIR)"; exit 1; }
+
 WAIT=0
 [ "${2:-}" = "--wait" ] && WAIT=1
 
@@ -120,6 +141,7 @@ fi
 SNAP_BEFORE="$STATE/gamedir.before"
 SNAP_AFTER="$STATE/gamedir.after"
 ( cd "$GAME" 2>/dev/null && find . -maxdepth 1 -printf '%p|%s|%T@\n' | sort ) > "$SNAP_BEFORE"
+[ -s "$SNAP_BEFORE" ] || { say "!! cannot list $GAME - refusing to run"; exit 1; }
 
 # Private display. A no-render run (harness) is happy on Xvfb; the real game
 # needs a working Vulkan swapchain, and Xvfb has no DRI3 - so it goes through
@@ -133,10 +155,18 @@ else
         say "display $XDISP busy, reusing it"
     else
         Xvfb "$XDISP" -screen 0 1280x720x24 -nolisten tcp >"$STATE/xvfb.log" 2>&1 &
+        xvfb_pid=$!
+        printf '%s\n' "$xvfb_pid" > "$XVFBPIDF"
         for _ in $(seq 1 50); do
             [ -e "/tmp/.X11-unix/X${XDISP#:}" ] && break
             sleep 0.1
         done
+        # a dead Xvfb leaves every later step failing for no visible reason
+        if ! kill -0 "$xvfb_pid" 2>/dev/null ||
+           [ ! -e "/tmp/.X11-unix/X${XDISP#:}" ]; then
+            say "!! Xvfb $XDISP did not come up (see $STATE/xvfb.log)"
+            exit 4
+        fi
     fi
     export DISPLAY="$XDISP"
 fi
@@ -160,6 +190,7 @@ for u in $(systemctl --user list-units --all --plain --no-legend 'nioh3p-run-*' 
     systemctl --user stop "$u" 2>/dev/null
 done
 systemctl --user reset-failed 'nioh3p-run-*' 2>/dev/null
+printf '%s\n' "$UNIT" > "$UNITF"
 
 say "running '$MODE' on ${DISPLAY:-gamescope-headless} (timeout ${SMOKE_TIMEOUT}s, capped + niced)"
 RC=0
@@ -173,7 +204,10 @@ fi
 
 # --------------------------------------------------------------------- report
 ( cd "$GAME" 2>/dev/null && find . -maxdepth 1 -printf '%p|%s|%T@\n' | sort ) > "$SNAP_AFTER"
-if diff -q "$SNAP_BEFORE" "$SNAP_AFTER" >/dev/null; then
+if [ ! -s "$SNAP_AFTER" ]; then
+    say "!! game directory unlistable after the run ($GAME): nothing can be claimed about it"
+    [ "$RC" != "0" ] || RC=4
+elif diff -q "$SNAP_BEFORE" "$SNAP_AFTER" >/dev/null; then
     say "game directory untouched: identical file list, sizes and mtimes ($(wc -l < "$SNAP_BEFORE") entries)"
 else
     say "!! game directory changed:"
