@@ -63,7 +63,10 @@ case "$what" in
         export STEAM_COMPAT_DATA_PATH="$prefix"
         export SteamAppId="$APPID" SteamGameId="$APPID" PROTON_LOG="${PROTON_LOG:-1}"
         export NIOH3P_HEADLESS=1 NIOH3P_SCOPE=0
-        export NIOH3P_GPU=RAPHAEL_MENDOCINO NIOH3P_VK_DEVICE="$IGPU_ID"
+        # the game must stay inaudible (standing rule): the slot's runtime dir
+        # has no pulse socket, so wine falls back to raw ALSA, whose pcm device
+        # reaches the desktop speakers. Both audio paths die here.
+        export PULSE_SERVER="${PULSE_SERVER:-127.0.0.1:1}" ALSA_CONFIG_PATH=/dev/null
         cd "$game_dir"
         if [ "$what" = probe ]; then
             shift 2
@@ -91,9 +94,16 @@ case "$what" in
         export SteamAppId="$APPID" SteamGameId="$APPID"
         printf '%s' "$APPID" > "$game_dir/steam_appid.txt"
         cd "$game_dir"
+        # same standing rule as the lan path: no audio path may reach the desk
+        export PULSE_SERVER="${PULSE_SERVER:-127.0.0.1:1}" ALSA_CONFIG_PATH=/dev/null
         exec "$root/steamapps/common/Proton - Experimental/proton" run "$game_dir/nioh.exe"
         ;;
 esac
 
+
+# the client must stay inaudible: its HOME is isolated, but libpulse would
+# still find the desktop server through the inherited runtime dir. Point it
+# at a dead local address so every sound sink fails (standing rig rule).
+export PULSE_SERVER="${PULSE_SERVER:-127.0.0.1:1}"
 # the rig UI can render in software: nothing it draws needs the GPU
 LIBGL_ALWAYS_SOFTWARE=1 exec "$root/steam.sh" -silent -cef-disable-gpu

@@ -2115,6 +2115,22 @@ returned`, `per-frame drive confirmed`, `wrote entry ... + dirty flag`. The
 bound-update crash from trial 7 never recurred across trials 8-11; the
 vectored exception handler stays armed under `hud_row3=1`.
 
+## Third HUD row: driven in a real four-player mission (2026-10-31)
+
+After the live formation (host b, visitors a/c/d, build `55853a1c`), all four
+slots bound a row3 character and drove it every ~2 s through the mission
+(78-79 `shown word` lines each, `runs/fourp-live-1031/`). The shown word
+started at `0x1010000` (state 1) at 00:44 and reached `0x1010001` (state 2,
+the trial-7 "shown" value) by 00:46-00:47 on every slot; the host's last line
+before shutdown was `state 2, shown word 0x1010001`. The two captured host
+frames (`shots/4p-live-b.png` ~00:44, `shots/4p-live-b2.png` ~00:46:30)
+contain no blue strip at the top edge (246 blue-threshold pixels in the top
+60 rows vs 1,975 in the trial-7 reference `runs/hud-probe-1026/
+row3-trial7-b-hud.png`, measured by the same scan), so both straddle the
+state transition and neither captures the rendered row. Visible rendering in a
+live mission is therefore still unproven; the game-side drive is now proven
+end-to-end on all four slots.
+
 ## Synthetic invite factory guard
 
 The synthetic invite test first dropped the request at the open-task factory

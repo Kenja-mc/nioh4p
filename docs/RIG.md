@@ -188,11 +188,16 @@ The table below lists faults that each cost a debugging session. Each row gives 
 | no video settings, first run on a fresh prefix | `config.xml` is written by the launcher, and `nioh.exe` reads it | `setup.sh` seeds a 720p windowed low-detail one |
 | `Proton: Error while copying … amdxcffx64.dll` | Proton 11.0's own tool prefix fails to build from a clone | pin `proton_experimental` and drop the broken tool clones |
 | Steam UI window never maps (black display) | hand-editing `config/config.vdf` with a bad regex | restore it from the original (`cp --reflink=auto`; COW protects the source) |
-| account picker or remembered login missing | client state or saved credentials may differ from the cloned records | inspect the cloned client state locally; setup does not restore credentials or guarantee the picker |
+| LAN game exits silently ~60 s after preflight; no `DirectInput8Create`, no SEH | the cloned Steam client is running but logged off (the stored login did not survive a restart), so the game's DRM handshake fails | log the client in first (`login.sh b`; if the saved credential died, QR-sign-in and pick the account tile) and only then `rig.py up` |
+| rig game audio plays on the desktop | the slot's isolated runtime dir has no pulse socket, so wine falls back to raw ALSA and opens `/dev/snd/pcmC0D0p` directly | standing rule: `run.sh` exports a dead `PULSE_SERVER` for the client and additionally `ALSA_CONFIG_PATH=/dev/null` for the game; verify with `fuser /dev/snd/pcmC0D0p` |
 
 ## Boundaries
 
 - Authenticated Steam tests require distinct licensed Steam accounts. The LAN experiment instead uses separate local emulator identities and prefixes. That does not demonstrate three authenticated Steam accounts playing online. The owned game executable is unchanged, and no DRM-bypass patch is applied.
+- The rig stays inaudible and unseen on the desktop: clients run Invisible on
+  their private Xvfb display with a dead `PULSE_SERVER`, games additionally
+  get `ALSA_CONFIG_PATH=/dev/null` (`tools/rig/run.sh`), and no slot audio
+  path may reach the user's session.
 - Every authenticated Steam account that the rig uses must be Invisible. Make sure that the label shows in its private-display Friends window before you use the account. `-silent` only hides the client and does not set presence. The active cloned client showed Invisible in the recorded screenshot.
 - Removals inside the rig go through `trash` or `trash-put`, never `rm`.
 

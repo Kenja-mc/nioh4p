@@ -19,7 +19,16 @@ esac
 
 mkdir -p "$RIG/shots"
 
+# the picker draws on the slot's private Xvfb display, started on demand
+rig_display "$(slot_display "$slot")" ||
+    { echo "slot $slot: Xvfb $(slot_display "$slot") did not start" >&2; exit 1; }
+
 if ! pgrep -f "$RIG/home-$slot" >/dev/null 2>&1; then
+    # isolated HOME, runtime dir and display, and no desktop audio: the client
+    # must never reach the user's session (PULSE_SERVER points at a dead
+    # address; the games are silent through their isolated runtime dir)
+    rig_env "$slot"
+    export PULSE_SERVER="${PULSE_SERVER:-127.0.0.1:1}"
     ( cd "$root" && LIBGL_ALWAYS_SOFTWARE=1 nohup "$root/steam.sh" -silent \
         -cef-disable-gpu >>"$RIG/steam-$slot.log" 2>&1 & )
 fi
@@ -44,15 +53,16 @@ done
 DISPLAY="$(slot_display "$slot")" python3 "$(dirname "$0")/xkey.py" move "$tile_x" 384
 DISPLAY="$(slot_display "$slot")" python3 "$(dirname "$0")/xkey.py" click 1
 
+# proof: a NEW "Logged On" line must appear after the click. The log keeps
+# lines from earlier sessions, so a plain grep would match stale history.
+before=$(grep -ac "Logged On" "$root/logs/connection_log.txt" 2>/dev/null || printf 0)
 logged=0
 i=0
 while [ "$i" -lt 15 ]; do
     i=$((i + 1))
     sleep 3
-    if grep -q "Logged On" "$root/logs/connection_log.txt" 2>/dev/null; then
-        logged=1
-        break
-    fi
+    now=$(grep -ac "Logged On" "$root/logs/connection_log.txt" 2>/dev/null || printf 0)
+    [ "$now" -gt "$before" ] && { logged=1; break; }
 done
 
 printf 'slot %s: login %s\n' "$slot" "$([ "$logged" = 1 ] && echo detected || echo not-detected)"
