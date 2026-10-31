@@ -254,7 +254,7 @@ XTest or uinput still misbehaves.
 The rig's saves are not in Steam `userdata`. Those `485510/ac/WinMyDocuments`
 trees are empty. The saves live in each prefix's Documents:
 
-| slot | path (under `~/nioh3p-test`) | account dir |
+| slot | path (under `~/Projects/gaming/nioh-mp-mod-rig`) | account dir |
 |---|---|---|
 | a | `home-a/.local/share/Steam/steamapps/compatdata/485510/pfx/drive_c/users/steamuser/Documents/KoeiTecmo/NIOH/Savedata/` | account-specific |
 | b | `home-b/.../compatdata/485510/pfx/.../KoeiTecmo/NIOH/Savedata/` | account-specific |

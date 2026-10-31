@@ -6,7 +6,7 @@
 # and gamescope's --prefer-vk-device select the iGPU. The user's own Steam
 # root, library and Proton prefix are never written to.
 
-RIG="${RIG:-$HOME/nioh3p-test}"
+RIG="${RIG:-$HOME/Projects/gaming/nioh-mp-mod-rig}"
 XVFB_DISPLAY="${XVFB_DISPLAY:-:9}"
 IGPU_ID="${IGPU_ID:-1002:13c0}"          # Radeon 610M iGPU; dGPU is 1002:7550
 SRC_STEAM="${SRC_STEAM:-$HOME/.local/share/Steam}"

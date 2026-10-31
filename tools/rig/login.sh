@@ -19,7 +19,7 @@ esac
 
 mkdir -p "$RIG/shots"
 
-if ! pgrep -f "nioh3p-test/home-$slot" >/dev/null 2>&1; then
+if ! pgrep -f "$RIG/home-$slot" >/dev/null 2>&1; then
     ( cd "$root" && LIBGL_ALWAYS_SOFTWARE=1 nohup "$root/steam.sh" -silent \
         -cef-disable-gpu >>"$RIG/steam-$slot.log" 2>&1 & )
 fi

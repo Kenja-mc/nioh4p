@@ -892,8 +892,9 @@ The final build was installed into slot a and relaunched through the persistent
 `ioFailure=0` are visible in `logs-a/nioh3p.log`. This is a live callback smoke,
 not a lobby result. The same verified DLL was then installed into the main Nioh
 installation, and its existing INI settings were preserved.
-`~/nioh3p-test/shots/a-title-ready.png` captures the corrected build at Nioh
-1.24.08's “PRESS ANY BUTTON” title screen after first-run setup.
+`~/Projects/gaming/nioh-mp-mod-rig/shots/a-title-ready.png` captures the
+corrected build at Nioh 1.24.08's “PRESS ANY BUTTON” title screen after
+first-run setup.
 
 ## Rig boot investigation: corrected evidence (2026-10-20)
 
@@ -907,7 +908,7 @@ A fresh direct-launch trace used the existing slot-b launcher with:
 
 ```sh
 WINEDEBUG=+timestamp,+pid,+tid,+process \
-  bash "$HOME/nioh3p-test/scripts/run-b.sh"
+  bash "$HOME/Projects/gaming/nioh-mp-mod-rig/scripts/run-b.sh"
 ```
 
 The first fresh run's `steam-485510.log` recorded this sequence (later runs
@@ -1424,7 +1425,7 @@ A custom scan found no new detection. The threat count stayed at zero.
 Definitions were `1.461.144.0`, not updated for this run. This was a harness
 test, not Windows multiplayer gameplay. No public scan or upload was made.
 The Windows console output is saved privately at
-`~/nioh3p-test/runs/integrated-windows-smoke.out`.
+`~/Projects/gaming/nioh-mp-mod-rig/runs/integrated-windows-smoke.out`.
 The test directory was removed from the guest, and the VM shut down cleanly.
 
 ### Launch-command and filesystem limits
@@ -1528,10 +1529,10 @@ vendor reports as the fix. Report: https://www.virustotal.com/gui/file/1003e4e73
 #### Windows 11 VM test of the player build `48415ff0…` (2026-10-21)
 
 The VM is `dockurr/windows` (Windows 11 Pro 10.0.26200, KVM, NAT) with its
-files in `~/nioh3p-test/winvm`. Defender ran at its defaults: real-time,
-behavior and IOAV protection on, cloud reporting on, tamper protection on, and
-no exclusions. The definitions were updated before the test to 1.461.144.0,
-engine 1.1.26090.9. No Steam account was used.
+files in `~/Projects/gaming/nioh-mp-mod-rig/winvm`. Defender ran at its
+defaults: real-time, behavior and IOAV protection on, cloud reporting on,
+tamper protection on, and no exclusions. The definitions were updated before
+the test to 1.461.144.0, engine 1.1.26090.9. No Steam account was used.
 
 | Step | Result |
 |---|---|
@@ -1722,7 +1723,7 @@ First co-op session over Steam with real accounts, the released player build
 `632684d0`, three Windows clients, Torii Gate search with `Without Conditions`
 and stock filters. Evidence: the host's log and the slot-2 client's log, plus
 the host-side trace of a later session; all in
-`~/nioh3p-test/runs/live-20261025-3p/`.
+`~/Projects/gaming/nioh-mp-mod-rig/runs/live-20261025-3p/`.
 
 What the logs show, with times from the host log:
 
@@ -1912,8 +1913,9 @@ passes, and the result screen itself works at four players. Reviving a fallen
 companion was not exercised, because that needs a player to walk to the body.
 Mission completion on the success path is also still unexercised.
 
-Evidence: `~/nioh3p-test/runs/rel-4p-death/` (`combat-a2.png`, `dead-a.png`,
-`dead-b.png`, `after-death-b.png`, `result-b.png`).
+Evidence: `~/Projects/gaming/nioh-mp-mod-rig/runs/rel-4p-death/`
+(`combat-a2.png`, `dead-a.png`, `dead-b.png`, `after-death-b.png`,
+`result-b.png`).
 
 ## Windows harness and Defender on the release build (2026-10-25)
 

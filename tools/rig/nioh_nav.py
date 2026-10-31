@@ -27,7 +27,7 @@ import sys
 import tempfile
 import time
 
-RIG = os.path.expanduser("~/nioh3p-test")
+RIG = os.path.expanduser("~/Projects/gaming/nioh-mp-mod-rig")
 SLOTS = {
     slot: {"display": None, "rundir": f"{RIG}/run-{slot}", "wayland": "gamescope-0"}
     for slot in ("a", "b", "c", "d")

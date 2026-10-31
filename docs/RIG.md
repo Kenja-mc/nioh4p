@@ -3,7 +3,7 @@
 Two extra Nioh instances run with no window on the desktop. They use no dGPU, and they write nothing anywhere in the user's Steam root, library or Proton prefix. The three-player tests need this setup. A host and a second player come up on demand while the machine stays usable.
 
 ```
-$RIG = ~/nioh3p-test
+$RIG = ~/Projects/gaming/nioh-mp-mod-rig
 ├── home-a/.local/share/Steam/     slot a: own Steam root (COW clone of the client)
 │     ├── steamapps/common/Nioh/   the game, with dinput8.dll + nioh3p.ini (mod)
 │     ├── steamapps/common/Proton - Experimental
@@ -78,8 +78,8 @@ The wrapper clears inherited display and WSI overrides before it starts gamescop
 Gamescope chooses its own Xwayland display. Read `Starting Xwayland on :N` in its output, then use `DISPLAY=:N` for game input. Xvfb screenshots capture Steam, not the game. Capture the actual frame of the compositor instead:
 
 ```sh
-XDG_RUNTIME_DIR="$HOME/nioh3p-test/run-a" GAMESCOPE_WAYLAND_DISPLAY=gamescope-0 \
-  gamescopectl screenshot "$HOME/nioh3p-test/shots/game-a.png"
+XDG_RUNTIME_DIR="$HOME/Projects/gaming/nioh-mp-mod-rig/run-a" GAMESCOPE_WAYLAND_DISPLAY=gamescope-0 \
+  gamescopectl screenshot "$HOME/Projects/gaming/nioh-mp-mod-rig/shots/game-a.png"
 ```
 
 Use the Wayland display that gamescope prints if it is not `gamescope-0`. Xwayland's XTest pointer input here uses client-window coordinates, not the offset of the window on the root. The input helper holds keys across game frames. Nioh's polled input missed an instantaneous down/up.
@@ -219,7 +219,7 @@ Enable process tracing without changing the files of Proton:
 
 ```sh
 WINEDEBUG=+timestamp,+pid,+tid,+process \
-  bash "$HOME/nioh3p-test/scripts/run-b.sh"
+  bash "$HOME/Projects/gaming/nioh-mp-mod-rig/scripts/run-b.sh"
 ```
 
 The launcher already sets `PROTON_LOG=1`. The resulting log is `$RIG/home-b/steam-485510.log`. This Proton version preserves an explicit `WINEDEBUG` value (`env.setdefault` in its logging setup).
@@ -230,15 +230,15 @@ If the title animates but ignores XTest input, inspect the compositor output. On
 
 ## Windows 11 VM (Defender test)
 
-A Windows 11 Pro VM runs in Docker with `dockurr/windows`. The container `nioh3p-winvm` uses the local image `nioh3p/windows:6.06-trustfix`, built from `~/nioh3p-test/winvm/image-trustfix/Dockerfile`. The stopped container `nioh3p-winvm-6.06-orig` is the rollback copy. Do not start both, because they share the VM disk. Its disk, OEM script and SSH key live in `~/nioh3p-test/winvm`. No sudo and no Steam account are needed. The OEM script enables OpenSSH, so you can run commands with the key in that folder.
+A Windows 11 Pro VM runs in Docker with `dockurr/windows`. The container `nioh3p-winvm` uses the local image `nioh3p/windows:6.06-trustfix`, built from `~/Projects/gaming/nioh-mp-mod-rig/winvm/image-trustfix/Dockerfile`. The stopped container `nioh3p-winvm-6.06-orig` is the rollback copy. Do not start both, because they share the VM disk. Its disk, OEM script and SSH key live in `~/Projects/gaming/nioh-mp-mod-rig/winvm`. No sudo and no Steam account are needed. The OEM script enables OpenSSH, so you can run commands with the key in that folder.
 
 ```bash
 docker start nioh3p-winvm                       # boot the VM; the screen is at http://127.0.0.1:8006/
-ssh -i ~/nioh3p-test/winvm/key -p 2222 Docker@127.0.0.1 'Get-MpComputerStatus'   # PowerShell in the VM
+ssh -i ~/Projects/gaming/nioh-mp-mod-rig/winvm/key -p 2222 Docker@127.0.0.1 'Get-MpComputerStatus'   # PowerShell in the VM
 docker stop -t 120 nioh3p-winvm                 # shut it down cleanly
 ```
 
-`~/nioh3p-test/winvm/shared` is `\\host.lan\Data` in the VM. The rig copy `lan-a` is mounted read-only under it as `nioh-lan-a`. Programs that need the desktop (for example `nioh.exe`) run through the scheduled task `nioh3p-run`, which starts `C:\Games\run-nioh.bat` in the signed-in session. The VM already has the Visual C++ runtime and the DirectX June 2010 runtime. The game itself stops with code 53 in the VM because no Steam client runs there. Results are in `FINDINGS.md`, "Windows 11 VM test".
+`~/Projects/gaming/nioh-mp-mod-rig/winvm/shared` is `\\host.lan\Data` in the VM. The rig copy `lan-a` is mounted read-only under it as `nioh-lan-a`. Programs that need the desktop (for example `nioh.exe`) run through the scheduled task `nioh3p-run`, which starts `C:\Games\run-nioh.bat` in the signed-in session. The VM already has the Visual C++ runtime and the DirectX June 2010 runtime. The game itself stops with code 53 in the VM because no Steam client runs there. Results are in `FINDINGS.md`, "Windows 11 VM test".
 
 ## Operational boundaries
 
