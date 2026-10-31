@@ -1567,6 +1567,30 @@ sandbox reported 0 malicious behavior. Zenbox and CAPE were still running at the
 time of writing. Report:
 https://www.virustotal.com/gui/file/48415ff045d11e34cb8e76ca9fc17afa2c8965b3d4f1c447ad96e01c646223a7
 
+Security audit before release (2026-10-31), current player artifacts
+(`55853a1c…`, 78,336 bytes, the modular core and the five add-on DLLs):
+
+- Import tables (tools/pe.py) across all eight built binaries: every DLL
+  imports only from `KERNEL32.dll` (42 functions in the core, 3-8 in the
+  2026-10-31 add-ons). No socket, HTTP, URL-download, registry, service,
+  process-creation, `SetWindowsHookEx`, or remote-injection import
+  (`CreateProcess*`, `VirtualAllocEx`, `WriteProcessMemory`,
+  `CreateRemoteThread` all absent).
+- Strings: the only URI in any binary is the Microsoft manifest namespace
+  (same finding as the source-level review); no URLs, IPs or pipe names.
+- Two independent adversarial model reviews (read-only, separate models)
+  of the same tree: 13 of 14 attack surfaces clean. Remaining findings: a
+  medium local-write symlink/junction edge on the log paths and `out_dir`
+  (requires an attacker who can already write to the game folder, where
+  replacing `dinput8.dll` itself would be the easier attack), a medium
+  stale-value nuance in the HUD block-A borrow/return (a display-stability
+  concern inside the host game, not a downloader risk), and low notes on
+  log growth under `trace=1` (stripped in the player build). No critical or
+  high finding; no repo change required.
+- VirusTotal and the Windows 11 VM Defender retest of this build are still
+  pending; the 2026-10-21 VM procedure and its 0-detection result cover the
+  predecessor build `48415ff0…`.
+
 ## 15. Four-player static research (2026-10-23)
 
 The branch `four-player` asked whether the game code carries another limit
@@ -2115,21 +2139,23 @@ returned`, `per-frame drive confirmed`, `wrote entry ... + dirty flag`. The
 bound-update crash from trial 7 never recurred across trials 8-11; the
 vectored exception handler stays armed under `hud_row3=1`.
 
-## Third HUD row: driven in a real four-player mission (2026-10-31)
+## Third HUD row: renders in a live four-player mission (2026-10-31)
 
-After the live formation (host b, visitors a/c/d, build `55853a1c`), all four
-slots bound a row3 character and drove it every ~2 s through the mission
-(78-79 `shown word` lines each, `runs/fourp-live-1031/`). The shown word
-started at `0x1010000` (state 1) at 00:44 and reached `0x1010001` (state 2,
-the trial-7 "shown" value) by 00:46-00:47 on every slot; the host's last line
-before shutdown was `state 2, shown word 0x1010001`. The two captured host
-frames (`shots/4p-live-b.png` ~00:44, `shots/4p-live-b2.png` ~00:46:30)
-contain no blue strip at the top edge (246 blue-threshold pixels in the top
-60 rows vs 1,975 in the trial-7 reference `runs/hud-probe-1026/
-row3-trial7-b-hud.png`, measured by the same scan), so both straddle the
-state transition and neither captures the rendered row. Visible rendering in a
-live mission is therefore still unproven; the game-side drive is now proven
-end-to-end on all four slots.
+The live formation (host b, visitors a/c/d, build `55853a1c`) was captured
+again with a fixed `tools/rig/shot.sh`: the old script screenshotted the
+slot's Xvfb (the Steam client UI), never the game; it now reads the live
+game's runtime dir and wayland display from `/proc` and captures through
+`gamescopectl` like `nioh_nav.shot`. Real game frames: `shots/4p2-{b,a,c}.png`.
+A blue-pixel scan (B>140, R,G<110, B-R>50) finds a band at rows 90-179 on
+host and visitor (895 and 827 px; zero in the other bands), and vision review
+of that band confirms a blue UI health bar with p=0.97 (host) and p=0.93
+(visitor) - the third row's blue bar renders in a real mission, not only in
+the HUD probe. Counting companion rows on the same frames leans two of three
+(p(2)=0.55 on the visitor), so the full rows-for-every-companion goal is
+still short one row. Game-side, all four slots bound and drove the row
+through the mission (78-79 `shown word` lines each, reaching `0x1010001`,
+`runs/fourp-live-1031/`). The earlier same-night note that no bar was
+visible was an artifact of the broken capture, not the game.
 
 ## Synthetic invite factory guard
 
