@@ -101,11 +101,23 @@
       {"screen": "lore", "action": {"kind": "wait", "seconds": 3.0}},
       {"screen": "result", "action": {"kind": "tap", "key": "Return", "settle": 2.0}},
       {"screen": "other", "action": {"kind": "wait", "seconds": 3.0}}
+    ],
+    "leave_lobby": [
+      {"screen": "companion_prep", "action": {"kind": "tap", "key": "BackSpace", "ms": 90, "settle": 2.0}},
+      {"screen": "dialog", "action": {"kind": "tap", "key": "Return", "settle": 2.0}, "when": {"highlight": ["yes", "confirm_button"]}},
+      {"screen": "dialog", "action": {"kind": "tap", "key": "Up", "ms": 90, "settle": 0.8}, "when": {"highlight": ["no"]}},
+      {"screen": "searching", "action": {"kind": "tap", "key": "BackSpace", "ms": 90, "settle": 2.0}},
+      {"screen": "companion_panel", "action": {"kind": "wait", "seconds": 2.0}},
+      {"screen": "torii_menu", "action": {"kind": "wait", "seconds": 2.0}},
+      {"screen": "notice", "action": {"kind": "wait", "seconds": 2.0}},
+      {"screen": "other", "action": {"kind": "wait", "seconds": 2.0}}
     ]
   },
   "roles": {
     "host": {"rules": "companion", "oracle": "host", "flag": "host_offering", "guard": "host_guard", "check": "host_check"},
     "visitor": {"rules": "companion", "oracle": "visitor", "flag": "join_seen", "guard": "visitor_guard", "check": "visitor_check", "uncertain_settle": 1.5, "uncertain_safe_keys": ["BackSpace", "Up", "Down"]},
-    "leave": {"rules": "leave", "check": "leave_check", "uncertain_settle": 1.5, "uncertain_safe_keys": ["Up", "Down"]}
+    "leave": {"rules": "leave", "check": "leave_check", "uncertain_settle": 1.5, "uncertain_safe_keys": ["Up", "Down"]},
+    "leave_lobby": {"rules": "leave_lobby", "check": "leave_lobby_check", "uncertain_settle": 1.5, "uncertain_safe_keys": ["Up", "Down"]},
+    "visit_lobby": {"rules": "companion", "check": "lobby_check", "uncertain_settle": 1.5, "uncertain_safe_keys": ["BackSpace", "Up", "Down"]}
   }
 }

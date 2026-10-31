@@ -42,6 +42,7 @@ __declspec(dllimport) int nioh3p_test_filter_calls(void);
 __declspec(dllimport) const char *nioh3p_test_last_value(void);
 __declspec(dllimport) int nioh3p_test_slots_calls(void);
 __declspec(dllimport) int nioh3p_test_list_calls(void);
+__declspec(dllimport) int nioh3p_test_members_calls(void);
 __declspec(dllimport) void __stdcall SteamAPI_RegisterCallResult(void *, uint64_t);
 
 typedef struct {
@@ -115,13 +116,16 @@ static const unsigned char IID_DI8W[16] = {
     0x31, 0x80, 0x79, 0xBF, 0x3A, 0x48, 0xA2, 0x4D,
     0xAA, 0x99, 0x5D, 0x64, 0xED, 0x36, 0x97, 0x00 };
 
-static void num(const char *label, unsigned long v)
+/* Console numbers are diagnostics: module handles, interface pointers, file
+ * handles, the clamp value. A 32-bit parameter truncated them silently, so a
+ * handle whose low half happened to be zero printed as 0. */
+static void num(const char *label, unsigned long long v)
 {
     char buf[64];
     int i = 0;
-    char t[16];
+    char t[24];
     int j = 0;
-    unsigned long x = v;
+    unsigned long long x = v;
     out(label);
     if (!x) t[j++] = '0';
     while (x) { t[j++] = (char)('0' + x % 10); x /= 10; }
@@ -132,24 +136,56 @@ static void num(const char *label, unsigned long v)
     out(buf);
 }
 
-/* What the proxy should clamp to: max_players from nioh3p.ini next to this
- * exe (the same file the proxy reads). 0 turns the proxy clamps off, so the
- * raw value 2 then stays 2. A missing file or key means the proxy default 3.
- * Freestanding build, so the scan is a plain byte loop. */
+/* This exe's own folder, trailing backslash included. The proxy reads its ini
+ * and writes its log next to the dll, whatever the current directory is, so
+ * every path in this fixture is built from here. */
+static DWORD exe_dir(char *path, DWORD cap)
+{
+    DWORD n = GetModuleFileNameA(NULL, path, cap);
+    DWORD dir = n;
+    while (dir && path[dir - 1] != '\\')
+        dir--;
+    return dir;
+}
+
+/* Append name to the directory already in path. 0 when it does not fit. */
+static DWORD path_join(char *path, DWORD dir, const char *name, DWORD cap)
+{
+    DWORD i = 0;
+    if (!dir)
+        return 0;
+    while (name[i] && dir + i + 1 < cap) {
+        path[dir + i] = name[i];
+        i++;
+    }
+    if (name[i])
+        return 0;
+    path[dir + i] = 0;
+    return dir + i;
+}
+
+/* The value the proxy clamps to, read from the nioh3p.ini next to this exe (the
+ * file the proxy itself reads). It mirrors the proxy's parser (cfg_load plus
+ * atoi_a): a line starting with '#' or ';' is a comment, the key is compared
+ * exactly after trimming blanks, the value is read as blanks, one optional
+ * sign, then digits, the last occurrence wins, and every value but 0 or 2..4 is
+ * replaced by 3 - so max_players=1 also means three players. A missing file,
+ * missing key or unreadable file gives the built-in default 3. 0 turns the
+ * proxy's clamps off, so the raw 2 the fixture's fake lobby reports stays 2.
+ * This used to accept any number it found in the file and expect that number,
+ * which made the fixture pass on a proxy that ignored the documented clamp.
+ * Freestanding build, so this is a plain byte loop. */
 static int expected_max(void)
 {
     /* static: a 4 KB stack buffer would need __chkstk_ms, which the
      * freestanding link has no CRT for */
     static char buf[4096];
+    static const char key[] = "max_players";
     char path[512];
-    DWORD n = GetModuleFileNameA(NULL, path, sizeof path);
-    DWORD dir = n;
-    while (dir && path[dir - 1] != '\\') dir--;
-    if (!dir || dir + 13 > sizeof path)
+    int found = -1;
+
+    if (!path_join(path, exe_dir(path, sizeof path), "nioh3p.ini", sizeof path))
         return 3;
-    path[dir++] = 'n'; path[dir++] = 'i'; path[dir++] = 'o'; path[dir++] = 'h';
-    path[dir++] = '3'; path[dir++] = 'p'; path[dir++] = '.'; path[dir++] = 'i';
-    path[dir++] = 'n'; path[dir++] = 'i'; path[dir] = 0;
     HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
                            NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE)
@@ -160,25 +196,73 @@ static int expected_max(void)
     if (!ok)
         return 3;
     buf[got] = 0;
-    static const char key[] = "max_players=";
-    int found = -1;   /* last occurrence wins, like the proxy parser */
-    for (DWORD i = 0; i + sizeof key - 1 <= got; i++) {
-        DWORD j = 0;
-        while (j < sizeof key - 1 && buf[i + j] == key[j]) j++;
-        if (j == sizeof key - 1) {
-            int v = 0, any = 0;
-            for (DWORD k = i + j; k < got && buf[k] != '\r' && buf[k] != '\n'; k++) {
-                if (buf[k] < '0' || buf[k] > '9') break;
-                v = v * 10 + (buf[k] - '0');
-                any = 1;
+
+    for (DWORD i = 0; i < got; ) {
+        DWORD e = i;                                  /* end of this line */
+        while (e < got && buf[e] != '\r' && buf[e] != '\n')
+            e++;
+        if (buf[i] != '#' && buf[i] != ';') {
+            DWORD eq = i;                             /* first '=' on the line */
+            while (eq < e && buf[eq] != '=')
+                eq++;
+            if (eq < e) {
+                DWORD ks = i, ke = eq, j;
+                while (ks < ke && (buf[ks] == ' ' || buf[ks] == '\t')) ks++;
+                while (ke > ks && (buf[ke - 1] == ' ' || buf[ke - 1] == '\t')) ke--;
+                if (ke - ks == sizeof key - 1) {
+                    for (j = 0; j < sizeof key - 1 && buf[ks + j] == key[j]; j++)
+                        ;
+                    if (j == sizeof key - 1) {
+                        DWORD vp = eq + 1;
+                        int neg = 0, v = 0;
+                        while (vp < e && (buf[vp] == ' ' || buf[vp] == '\t')) vp++;
+                        if (vp < e && buf[vp] == '-') { neg = 1; vp++; }
+                        for (; vp < e && buf[vp] >= '0' && buf[vp] <= '9'; vp++)
+                            if (v <= 100)   /* saturates; only "> 4" matters */
+                                v = v * 10 + (buf[vp] - '0');
+                        found = neg ? -v : v;
+                    }
+                }
             }
-            if (any && v >= 0 && v <= 4)
-                found = v;
         }
+        i = e + 1;
     }
-    if (found < 0)
-        return 3;
+    if (found < 0 || found == 1 || found > 4)
+        return 3;   /* no key at all, or a value the proxy replaces with 3 */
     return found ? found : 2;   /* 0: clamps off, the raw 2 stays 2 */
+}
+
+/* Shared reader for the proxy's log. The proxy writes it next to itself, one
+ * line per call, and the mode banner it prints at load comes first, so the
+ * lines the checks below look for are the newest in the file. Reading one
+ * window from the head for the banner and one from the tail for the newest
+ * lines keeps both reachable once the log grows past the buffer, and an
+ * unopenable log is reported as such instead of looking like an empty one.
+ * The proxy opens the file with FILE_SHARE_READ; this reader opens it with
+ * read+write sharing, which only relaxes what other handles may do. */
+#define LOG_WINDOW 65536
+static char log_win[LOG_WINDOW];
+
+/* 1 = found, 0 = not found, -1 = the log could not be read */
+static int log_has(const char *needle, int from_tail)
+{
+    HANDLE lh = CreateFileA("nioh3p.log", GENERIC_READ,
+                            FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (lh == INVALID_HANDLE_VALUE)
+        return -1;
+    DWORD size = GetFileSize(lh, NULL);
+    if (from_tail && size != INVALID_FILE_SIZE && size > LOG_WINDOW - 1u) {
+        LARGE_INTEGER off;
+        off.QuadPart = (LONGLONG)(size - (LOG_WINDOW - 1));
+        SetFilePointerEx(lh, off, NULL, FILE_BEGIN);
+    }
+    DWORD got = 0;
+    if (!ReadFile(lh, log_win, LOG_WINDOW - 1, &got, NULL))
+        got = 0;
+    CloseHandle(lh);
+    log_win[got] = 0;
+    return contains(log_win, needle);
 }
 
 void mainCRTStartup(void)
@@ -202,41 +286,51 @@ void mainCRTStartup(void)
     void *di = 0;
     HRESULT hr = DirectInput8Create(GetModuleHandleA(NULL), 0x0800, IID_DI8W, &di, 0);
     out("TEST: DirectInput8Create hr = ");
-    num("", (unsigned long)hr);
+    num("", (unsigned long long)(uint32_t)hr);   /* HRESULT: 32 bits by definition */
     (void)di;
 
     {
-        /* diagnostics: which APIs work in this prefix */
-        HANDLE h1 = CreateFileA("Z:\\tmp\\nioh3p-smoke\\game\\appendtest.txt",
-                                FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-        num("TEST: CreateFileA(FILE_APPEND_DATA) = ", (unsigned long)(uintptr_t)h1);
+        /* Diagnostics: which of these APIs work in this prefix. The test paths
+         * come from this exe's own folder and are removed again; they used to
+         * be hardcoded to a smoke directory that no longer exists, so both
+         * probes could only ever report INVALID_HANDLE_VALUE whatever the
+         * prefix supported. */
+        char path[512];
+        DWORD dir = exe_dir(path, sizeof path);
+        HANDLE h1 = INVALID_HANDLE_VALUE, h2 = INVALID_HANDLE_VALUE;
+        if (path_join(path, dir, "appendtest.txt", sizeof path))
+            h1 = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                             NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        num("TEST: CreateFileA(FILE_APPEND_DATA) = ", (unsigned long long)(uintptr_t)h1);
         if (h1 != INVALID_HANDLE_VALUE) {
             DWORD w = 0;
             WriteFile(h1, "append-test\n", 12, &w, NULL);
             CloseHandle(h1);
+            DeleteFileA(path);
         }
-        HANDLE h2 = CreateFileA("Z:\\tmp\\nioh3p-smoke\\game\\appendtest2.txt",
-                                GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-        num("TEST: CreateFileA(GENERIC_WRITE) = ", (unsigned long)(uintptr_t)h2);
-        if (h2 != INVALID_HANDLE_VALUE)
+        if (path_join(path, dir, "appendtest2.txt", sizeof path))
+            h2 = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                             NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        num("TEST: CreateFileA(GENERIC_WRITE) = ", (unsigned long long)(uintptr_t)h2);
+        if (h2 != INVALID_HANDLE_VALUE) {
             CloseHandle(h2);
+            DeleteFileA(path);
+        }
 
         SetLastError(0);
         HMODULE s1 = LoadLibraryA("C:\\windows\\system32\\dinput8.dll");
-        num("TEST: LoadLibraryA(system32 dinput8) = ", (unsigned long)(uintptr_t)s1);
-        num("TEST:   last error = ", (unsigned long)GetLastError());
+        num("TEST: LoadLibraryA(system32 dinput8) = ", (unsigned long long)(uintptr_t)s1);
+        num("TEST:   last error = ", (unsigned long long)(uint32_t)GetLastError());
         SetLastError(0);
         HMODULE s2 = LoadLibraryExA("dinput8.dll", NULL, 0x00000800);
-        num("TEST: LoadLibraryExA(SEARCH_SYSTEM32) = ", (unsigned long)(uintptr_t)s2);
-        num("TEST:   last error = ", (unsigned long)GetLastError());
+        num("TEST: LoadLibraryExA(SEARCH_SYSTEM32) = ", (unsigned long long)(uintptr_t)s2);
+        num("TEST:   last error = ", (unsigned long long)(uint32_t)GetLastError());
     }
 
     Sleep(1500);   /* let the proxy install its hooks before we exercise them */
 
     int want = expected_max();
-    num("TEST: expected clamp from nioh3p.ini = ", (unsigned long)want);
+    num("TEST: expected clamp from nioh3p.ini = ", (unsigned long long)(unsigned)want);
 
     CreateLobbyOptions o;
     o.ApiVersion = 7;   /* what the game image builds (docs/RE_EOS_CALLSITES.md §4.1) */
@@ -281,7 +375,7 @@ void mainCRTStartup(void)
 
         struct { int32_t ApiVersion; } g;
         g.ApiVersion = 1;
-        num("TEST: GetMemberCount = ", EOS_LobbyDetails_GetMemberCount(0, &g));
+        num("TEST: GetMemberCount = ", (unsigned long long)EOS_LobbyDetails_GetMemberCount(0, &g));
 
         AttrData ad;
         AttrOptions ao;
@@ -294,12 +388,15 @@ void mainCRTStartup(void)
         struct { int32_t ApiVersion; const AttrData *Parameter; int32_t ComparisonOp; } search;
         ad.Key = "ktol_lobby_lock_status";
         ad.V.s = "ktol_lobby_lock";
-        num("TEST: AddAttribute lock result = ", EOS_LobbyModification_AddAttribute(0, &ao));
+        num("TEST: AddAttribute lock result = ",
+            (unsigned long long)(uint32_t)EOS_LobbyModification_AddAttribute(0, &ao));
         ad.V.s = "ktol_lobby_unlock";
         search.ApiVersion = 1; search.Parameter = &ad; search.ComparisonOp = 0;
-        num("TEST: EOS lock search result = ", EOS_LobbySearch_SetParameter(0, &search));
+        num("TEST: EOS lock search result = ",
+            (unsigned long long)(uint32_t)EOS_LobbySearch_SetParameter(0, &search));
         ad.Key = "unrelated_parameter";
-        num("TEST: EOS unrelated search result = ", EOS_LobbySearch_SetParameter(0, &search));
+        num("TEST: EOS unrelated search result = ",
+            (unsigned long long)(uint32_t)EOS_LobbySearch_SetParameter(0, &search));
 
         struct { int32_t ApiVersion; } ci;
         void *info = 0;
@@ -324,29 +421,40 @@ void mainCRTStartup(void)
         out("PASS: unsupported matchmaking version forwarded unchanged\n");
         void *iface = SteamInternal_FindOrCreateUserInterface(0, "SteamMatchMaking009");
         out("TEST: Steam interface = ");
-        num("", (unsigned long)(uintptr_t)iface);
+        num("", (unsigned long long)(uintptr_t)iface);
         {
             HMODULE sc = GetModuleHandleA("steamclient64.dll");
             void *(*ifn)(void) = sc ? (void *(*)(void))GetProcAddress(sc, "nioh3p_sc_iface") : 0;
             out("TEST: steamclient64 module = ");
-            num("", (unsigned long)(uintptr_t)sc);
+            num("", (unsigned long long)(uintptr_t)sc);
             out("TEST:   nioh3p_sc_iface = ");
-            num("", (unsigned long)(uintptr_t)ifn);
+            num("", (unsigned long long)(uintptr_t)ifn);
             if (ifn) {
                 void *o = ifn();
                 out("TEST:   direct iface = ");
-                num("", (unsigned long)(uintptr_t)o);
+                num("", (unsigned long long)(uintptr_t)o);
                 out("TEST:   direct vtable[0] = ");
-                num("", (unsigned long)(uintptr_t)(*(void ***)o));
+                num("", (unsigned long long)(uintptr_t)(*(void ***)o));
             }
         }
         if (iface) {
             out("TEST:   vtable = ");
-            num("", (unsigned long)(uintptr_t)(*(void ***)iface));
+            num("", (unsigned long long)(uintptr_t)(*(void ***)iface));
             out("TEST:   slot13 = ");
-            num("", (unsigned long)(uintptr_t)((*(void ***)iface)[13]));
+            num("", (unsigned long long)(uintptr_t)((*(void ***)iface)[13]));
         }
         if (iface) {
+            /* Which proxy is in the log decides what the checks below can ask
+             * for: the mode banner is the proxy's own first line, the lines
+             * the calls above logged are the newest in the file. "the banner
+             * says player" and "the log cannot be read" are different answers,
+             * and only the first one may silence a check. */
+            int research_trace = log_has("mode: research (trace=1)", 0);
+            int player_mode = log_has("mode: player (trace=0)", 0);
+            if (research_trace != 1 && player_mode != 1) {
+                out("FAIL: nioh3p.log is missing or not this proxy's (keep out_dir empty)\n");
+                ExitProcess(8);
+            }
             /* A mismatched or duplicate async result must not consume the
              * pending call; its matching error result must reach the handler. */
             void *cb = nioh3p_test_callback();
@@ -366,6 +474,16 @@ void mainCRTStartup(void)
                 out("FAIL: matching call result or I/O failure was lost\n");
                 ExitProcess(4);
             }
+            /* Those counts come from our own callback object, so they hold even
+             * when the proxy never touched it. In research mode the proxy
+             * replaces the object's Run slot and logs every run it forwards,
+             * and that record is the only proof the call went through it.
+             * Player builds compile the watch out: there the counts are all
+             * that exists to assert. */
+            if (research_trace == 1 && log_has("steam cb: Run id=-1", 0) != 1) {
+                out("FAIL: the proxy recorded no run of the call result it forwarded\n");
+                ExitProcess(4);
+            }
             out("PASS: async result completed once with its I/O failure\n");
             /* the real layout: CreateLobby lives at vtable offset 0x68 (slot 13)
              * and SetLobbyMemberLimit at 0xf8 (slot 31) */
@@ -379,9 +497,9 @@ void mainCRTStartup(void)
                 ExitProcess(5);
             }
             out("TEST: Steam CreateLobby cMaxMembers seen by the fake service = ");
-            num("", (unsigned long)nioh3p_test_create_max());
+            num("", (unsigned long long)nioh3p_test_create_max());
             out("TEST: Steam SetLobbyMemberLimit seen by the fake service = ");
-            num("", (unsigned long)(unsigned)nioh3p_test_setmax());
+            num("", (unsigned long long)(unsigned)nioh3p_test_setmax());
             /* Native virtual calls exercise the proxy ABI without relying on a
              * flat SteamAPI thunk to discover its slot. */
             /* Flat wrappers unwrap MSVC's hidden CSteamID result buffers.
@@ -401,9 +519,11 @@ void mainCRTStartup(void)
             int (*mdf)(void *, unsigned long long, const char *, const char *) =
                 (int (*)(void *, unsigned long long, const char *, const char *))vt[25];
             out("TEST: Steam InviteUserToLobby -> ");
-            num("", (unsigned long)invf(iface, 0x0180000123456789ull, 0x0110000103c821a2ull));
+            num("", (unsigned long long)(unsigned)invf(iface, 0x0180000123456789ull,
+                                                       0x0110000103c821a2ull));
             out("TEST: Steam SetLobbyMemberData -> ");
-            num("", (unsigned long)mdf(iface, 0x0180000123456789ull, "ktol_invite_data", "AAAAAAAA"));
+            num("", (unsigned long long)(unsigned)mdf(iface, 0x0180000123456789ull,
+                                                      "ktol_invite_data", "AAAAAAAA"));
 
 
             /* host path: what value does the service actually receive? */
@@ -420,16 +540,16 @@ void mainCRTStartup(void)
             unsigned long long (*rlf)(void *) = (unsigned long long (*)(void *))vt[4];
             sff(iface, "ktol_lock_status", "ktol_session_unlock", 0);
             out("TEST: Steam RequestLobbyList -> ");
-            num("", (unsigned long)rlf(iface));
+            num("", (unsigned long long)rlf(iface));
             out("TEST: Steam GetLobbyByIndex(0) -> ");
-            num("", (unsigned long)SteamAPI_ISteamMatchmaking_GetLobbyByIndex(iface, 0));
+            num("", (unsigned long long)SteamAPI_ISteamMatchmaking_GetLobbyByIndex(iface, 0));
             void (*slf)(void *, int) = (void (*)(void *, int))vt[8];
             slf(iface, 1);
             out("TEST: slots filters seen by the fake service = ");
-            num("", (unsigned long)nioh3p_test_slots_calls());
+            num("", (unsigned long long)(unsigned)nioh3p_test_slots_calls());
             out("TEST: filters/lists seen by the fake service = ");
-            num("", (unsigned long)nioh3p_test_filter_calls());
-            num("", (unsigned long)nioh3p_test_list_calls());
+            num("", (unsigned long long)(unsigned)nioh3p_test_filter_calls());
+            num("", (unsigned long long)(unsigned)nioh3p_test_list_calls());
 
             /* Player-mode filter visibility: keys with no drop rule must be
              * forwarded unchanged and named in a `lobby filter: pass-through`
@@ -440,35 +560,24 @@ void mainCRTStartup(void)
             sff(iface, "nioh3p_probe_key", "probe", 0);
             nnf(iface, "nioh3p_probe_num", 5, 0);
             {
-                static char logbuf[65536];
-                DWORD got = 0;
-                /* The proxy opens the log with FILE_SHARE_READ, so no other
-                 * process can rewrite it. This reader still opens with
-                 * read+write sharing (a reader's share mode only permits other
-                 * handles; the proxy's GENERIC_READ access is allowed). */
-                HANDLE lh = CreateFileA("nioh3p.log", GENERIC_READ,
-                                        FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
-                                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-                if (lh != INVALID_HANDLE_VALUE) {
-                    if (!ReadFile(lh, logbuf, sizeof logbuf - 1, &got, NULL))
-                        got = 0;
-                    CloseHandle(lh);
-                }
-                logbuf[got] = 0;
-                if (!contains(logbuf, "mode: player (trace=0)")) {
+                /* These two keys match no drop rule, so the proxy must forward
+                 * them and name each in a `lobby filter: pass-through` line.
+                 * The banner read above said whether this proxy writes those
+                 * lines at all; the lines just written are the newest in the
+                 * log, so they are read from its tail. */
+                if (player_mode != 1) {
                     /* trace=1 logs every filter call in full by design and has
-                     * no pass-through summary: nothing to check in that mode. */
+                     * no pass-through summary: nothing to check in that mode.
+                     * A log that could not be read failed before this point. */
                     out("SKIP: filter pass-through lines need player mode (trace=0)\n");
                 } else {
-                    int str_ok = contains(logbuf,
-                        "lobby filter: pass-through \"nioh3p_probe_key\"");
-                    int num_ok = contains(logbuf,
-                        "lobby filter: pass-through \"nioh3p_probe_num\"");
-                    out(str_ok ? "PASS: unknown string filter key logged as pass-through\n"
-                               : "FAIL: unknown string filter key not logged as pass-through\n");
-                    out(num_ok ? "PASS: unknown numerical filter key logged as pass-through\n"
-                               : "FAIL: unknown numerical filter key not logged as pass-through\n");
-                    if (!str_ok || !num_ok)
+                    int str_ok = log_has("lobby filter: pass-through \"nioh3p_probe_key\"", 1);
+                    int num_ok = log_has("lobby filter: pass-through \"nioh3p_probe_num\"", 1);
+                    out(str_ok == 1 ? "PASS: unknown string filter key logged as pass-through\n"
+                                    : "FAIL: unknown string filter key not logged as pass-through\n");
+                    out(num_ok == 1 ? "PASS: unknown numerical filter key logged as pass-through\n"
+                                    : "FAIL: unknown numerical filter key not logged as pass-through\n");
+                    if (str_ok != 1 || num_ok != 1)
                         ExitProcess(8);
                 }
             }
@@ -487,14 +596,27 @@ void mainCRTStartup(void)
                 out("TEST: Steam GetFriendRichPresence -> \"");
                 out(rp(fi, 0x0110000103c821a2ull, "connect"));
                 out("\", friend seen by the game = ");
-                num("", (unsigned long)nioh3p_test_rp_friend());
+                num("", (unsigned long long)(uintptr_t)nioh3p_test_rp_friend());
             }
 
 
-            /* a watched read-only call: the proxy must see it through slot 17 */
+            /* A watched read-only call: the proxy must see it through vtable
+             * slot 17. The fake service counts its own GetNumLobbyMembers
+             * entrances, so an answer produced before the call reaches it
+             * cannot pass this check. */
             int (*mf)(void *, unsigned long long) = (int (*)(void *, unsigned long long))vt[17];
+            int members_before = nioh3p_test_members_calls();
+            int members_ret = mf(iface, 0);
+            int members_after = nioh3p_test_members_calls();
             out("TEST: Steam GetNumLobbyMembers returned = ");
-            num("", (unsigned long)(unsigned)mf(iface, 0));
+            num("", (unsigned long long)(unsigned)members_ret);
+            if (members_ret != 2 || members_after <= members_before) {
+                out("FAIL: the watched lobby call did not reach the service\n");
+                out("TEST:   member-count calls before/after = ");
+                num("", (unsigned long long)(unsigned)members_before);
+                num("", (unsigned long long)(unsigned)members_after);
+                ExitProcess(9);
+            }
         }
     }
 

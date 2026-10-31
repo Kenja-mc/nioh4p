@@ -3,7 +3,7 @@
 #
 # Set once in Steam -> Nioh -> Properties -> Launch Options:
 #
-#     /home/<you>/Projects/nioh3p/tools/quiet-launch.sh %command%
+#     /path/to/nioh-mp-mod/tools/quiet-launch.sh %command%
 #
 # then:
 #   * normal play (default): exactly the invocation your launch options already
@@ -81,6 +81,14 @@ if [ "$DRY" = "1" ]; then
     printf '%q ' "${CMD[@]}"
     printf '\n'
     exit 0
+fi
+
+# The flag arms exactly one launch - the next one - and this is it, so consume
+# it here.  After the exec below this shell is gone and no trap could disarm it
+# later, and an interrupted test must not leave the next normal launch on
+# gamescope's headless backend, windowless and unexplained.
+if [ "$headless" = "1" ]; then
+    rm -f "$FLAG"
 fi
 
 echo "quiet-launch: $who" >&2

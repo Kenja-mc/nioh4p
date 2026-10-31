@@ -15,7 +15,10 @@ usage:
   coop.py leave b                      leave the mission (Himorogi Fragment; costs Amrita)
   coop.py decide a [--role visitor]    one frame: print perception + action
   --dry-run                            perceive once and print the action only
+                                       (reported as DRY-RUN: nothing was driven)
   --timeout SECONDS                    wall clock limit (default 600)
+                                       Exit status is 0 only when every launched
+                                       slot ran its role to the end.
   --backend {mercury,luna}             default luna, or $COOP_BACKEND
   --model MODEL / --profile PATH       override model or profile
 
@@ -61,19 +64,32 @@ def make_view(slot, profile, backend, model, table):
 
 
 def slot_log_dir(slot):
-    """The directory the slot's proxy logs to: its ini out_dir, else the game dir."""
+    """The directory the slot's proxy logs to: its ini out_dir, else the game dir.
+
+    A declared ``out_dir`` that is not a readable directory is fatal here: the
+    proxy falls back to the game directory when it cannot open the log there,
+    so the file a caller waits for would never appear.
+    """
     game_dir = os.path.join(RIG, f"lan-{slot}")
+    ini_path = os.path.join(game_dir, "nioh3p.ini")
     try:
-        with open(os.path.join(game_dir, "nioh3p.ini"), encoding="utf-8", errors="replace") as ini:
-            for line in ini:
-                key, _, value = line.strip().partition("=")
-                if key.strip() == "out_dir" and value.strip():
-                    value = value.strip()
-                    if value[:2].upper() == "Z:":   # Wine's view of the Linux root
-                        value = value[2:].replace("\\", "/")
-                    return value
-    except OSError:
-        pass
+        with open(ini_path, encoding="utf-8", errors="replace") as ini:
+            lines = ini.readlines()
+    except FileNotFoundError:
+        return game_dir          # no ini: the proxy logs next to dinput8.dll
+    except OSError as exc:
+        raise RuntimeError(f"cannot read {ini_path}: {exc}") from exc
+    for line in lines:
+        key, _, value = line.strip().partition("=")
+        if key.strip() != "out_dir" or not value.strip():
+            continue
+        out_dir = value.strip()
+        if out_dir[:2].upper() == "Z:":   # Wine's view of the Linux root
+            out_dir = out_dir[2:].replace("\\", "/")
+        if not os.path.isdir(out_dir) or not os.access(out_dir, os.R_OK | os.W_OK):
+            raise RuntimeError(f"slot {slot}: out_dir={value.strip()} from "
+                               f"{ini_path} is not a readable directory")
+        return out_dir
     return game_dir
 
 
@@ -126,19 +142,36 @@ def leave_check(state, ctx):
     return _other_limit(state, ctx)
 
 
+def lobby_check(state, ctx):
+    """Stop as soon as the visitor is inside the host's lobby, before the
+    preparation countdown starts the mission."""
+    if state["screen"] == "companion_prep":
+        return "success", "visitor inside the companion lobby"
+    return _other_limit(state, ctx)
+
+
+def leave_lobby_check(state, ctx):
+    """Backing out of a companion lobby returns to the Yokai Realm panel."""
+    if state["screen"] in ("companion_panel", "torii_menu"):
+        return "success", "out of the companion lobby"
+    return _other_limit(state, ctx)
+
+
 GUARDS = {"host_guard": host_guard, "visitor_guard": visitor_guard}
 CHECKS = {"host_check": host_check, "visitor_check": visitor_check,
-          "leave_check": leave_check}
+          "leave_check": leave_check, "leave_lobby_check": leave_lobby_check,
+          "lobby_check": lobby_check}
 
 
 # ---- relief: pause the other visitor(s) between steps ----
 def pause_cycle(slots, seconds=5.0, pause=2.0):
+    """SIGSTOP each slot's game for ``seconds``; returns the slots it paused."""
     paused = []
     for slot in slots:
         marker = f"HOME={os.path.join(RIG, f'home-{slot}')}"
-        drive.pause_process("nioh.exe", marker.encode(), seconds, pause,
-                            lambda why: print(f"coop: relief: {why}"))
-        paused.append(slot)
+        if drive.pause_process("nioh.exe", marker.encode(), seconds, pause,
+                               lambda why: print(f"coop: relief: {why}")):
+            paused.append(slot)
     return paused
 
 
@@ -185,9 +218,15 @@ def run_role(slot, role_name, profile, trace, *, dry_run=False, timeout=None,
         actuator = drive.XTestActuator(SLOTS[slot]["display"])
         if relieve:
             relief = profile["relief"]
-            actuator = drive.ReliefActuator(
-                actuator, lambda: pause_cycle(relieve, relief["seconds"], relief["pause"]))
-            print(f"coop: relief: pausing slot(s) {', '.join(relieve)} for "
+
+            def relief_pause():
+                paused = pause_cycle(relieve, relief["seconds"], relief["pause"])
+                if len(paused) != len(relieve):
+                    print(f"coop: relief: paused {', '.join(paused) or 'nothing'}; "
+                          f"asked for {', '.join(relieve)}")
+
+            actuator = drive.ReliefActuator(actuator, relief_pause)
+            print(f"coop: relief: will pause slot(s) {', '.join(relieve)} for "
                   f"{relief['seconds']:.0f} s after every step")
     driver = drive.Driver(
         table, perceive_step, actuator=actuator,
@@ -247,18 +286,24 @@ def main():
     whole.add_argument("--visitors", nargs="+", required=True, metavar="SLOT")
     leave = commands.add_parser("leave", help="leave the mission with the Himorogi Fragment")
     leave.add_argument("slot")
+    visit_lobby = commands.add_parser("visit-lobby",
+                                      help="join a host and stop inside its lobby")
+    visit_lobby.add_argument("slot")
+    lobby = commands.add_parser("leave-lobby",
+                                help="back out of a companion lobby without ending it")
+    lobby.add_argument("slot")
     one = commands.add_parser("decide", help="perceive one frame and print the action")
     one.add_argument("slot")
     one.add_argument("--role", choices=("host", "visitor", "leave"), default="host")
     backend = os.environ.get(BACKEND_ENV, perceive.DEFAULT_BACKEND).strip().lower()
     if backend not in perceive.BACKENDS:
         parser.error(f"{BACKEND_ENV} must be one of {', '.join(perceive.BACKENDS)}")
-    for sub in (host, visitor, whole, leave, one):
+    for sub in (host, visitor, whole, leave, lobby, visit_lobby, one):
         sub.add_argument("--profile", default=PROFILE_PATH)
         sub.add_argument("--backend", choices=perceive.BACKENDS, default=backend,
                          help="decision backend (default: %(default)s)")
         sub.add_argument("--model", help="override the backend model id")
-    for sub in (host, visitor, whole, leave):
+    for sub in (host, visitor, whole, leave, lobby, visit_lobby):
         sub.add_argument("--dry-run", action="store_true")
         sub.add_argument("--timeout", type=float, default=None)
     args = parser.parse_args()
@@ -281,35 +326,87 @@ def main():
         waves = [[(args.slot, "host", None)]]
     elif args.command == "leave":
         waves = [[(args.slot, "leave", None)]]
+    elif args.command == "leave-lobby":
+        waves = [[(args.slot, "leave_lobby", None)]]
+    elif args.command == "visit-lobby":
+        waves = [[(args.slot, "visit_lobby", None)]]
     else:
         waves = [[(args.slot, "visitor", args.relieve)]]
+    # A declared out_dir the proxy cannot write to leaves the run waiting for a
+    # log that is never written, and the roles without an oracle never touch the
+    # file at all: resolve every slot's log directory before anything starts.
+    try:
+        for slot in dict.fromkeys(slot for wave in waves for slot, _, _ in wave):
+            slot_log_dir(slot)
+    except RuntimeError as exc:
+        print(f"coop: {exc}", file=sys.stderr)
+        return 1
     trace = perceive.Trace(SHOTS)
     print(f"coop: trace {trace.path}")
-    results = []
+    # One entry per launched slot, filled in by its thread. A slot whose thread
+    # dies before it reports (SystemExit from nioh_nav, or any BaseException)
+    # keeps its None, so the run cannot pass on the strength of the other slots.
+    results = {}
 
     def one(slot, role_name, relieve):
         try:
-            ok, message = run_role(slot, role_name, profile, trace,
-                                   dry_run=args.dry_run, timeout=args.timeout,
-                                   backend=args.backend, model=args.model,
-                                   relieve=relieve)
-        except RuntimeError as exc:
-            ok, message = False, str(exc)
-        print(f"coop: slot {slot}: {'OK' if ok else 'FAILED'}: {message}")
-        results.append(ok)
+            status, message = run_role(slot, role_name, profile, trace,
+                                       dry_run=args.dry_run, timeout=args.timeout,
+                                       backend=args.backend, model=args.model,
+                                       relieve=relieve)
+        except SystemExit as exc:
+            # nioh_nav.py calls sys.exit() for a fatal navigation error. In this
+            # thread it killed the slot without a result, and the run reported
+            # success anyway.
+            status, message = False, f"slot {slot} died (SystemExit: {exc.code})"
+        except Exception as exc:
+            status, message = False, str(exc)
+        if status is True:
+            verdict = "OK"
+        elif status == drive.DRY_RUN:
+            verdict = "DRY-RUN"
+        else:
+            verdict = "FAILED"
+        print(f"coop: slot {slot}: {verdict}: {message}")
+        results[slot] = status
+
+    def passed():
+        """Every launched slot ran its role to the end (a dry run did not)."""
+        return bool(results) and all(status is True for status in results.values())
+
+    def dry_run_only():
+        """Nothing failed and at least one slot reported a dry run.
+
+        A dry run is neither a driven run nor a failure, so it gets its own exit
+        code: 0 says the drive happened, 3 says the caller asked for a dry run
+        (and the slots that reported are the ones it would have driven), 1 is
+        for a slot that failed or died.
+        """
+        values = list(results.values())
+        return (bool(values) and any(s == drive.DRY_RUN for s in values)
+                and all(s is True or s == drive.DRY_RUN for s in values))
 
     try:
         for wave in waves:
-            threads = [threading.Thread(target=one, args=item) for item in wave]
+            threads = []
+            for slot, role_name, relieve in wave:
+                results[slot] = None
+                threads.append(threading.Thread(target=one, args=(slot, role_name, relieve)))
             for thread in threads:
                 thread.start()
             for thread in threads:
                 thread.join()
-            if not all(results):
+            for slot, _, _ in wave:
+                if results[slot] is None:
+                    print(f"coop: slot {slot}: FAILED: the role thread ended "
+                          f"without a result")
+            if not passed():
                 break
     finally:
         trace.close()
-    return 0 if results and all(results) else 1
+    if passed():
+        return 0
+    return 3 if dry_run_only() else 1
 
 
 if __name__ == "__main__":

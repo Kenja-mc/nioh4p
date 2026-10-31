@@ -23,7 +23,9 @@ OPTIONAL_CHECKSUM_OFFSET = 64  # both PE32 and PE32+ optional headers
 
 
 def pe_checksum_offset(data):
-    if len(data) < 0x40 or data[:2] != b"MZ":
+    if len(data) < 0x40:
+        raise ValueError("%d bytes: shorter than the DOS header" % len(data))
+    if data[:2] != b"MZ":
         raise ValueError("not a PE file: missing MZ header")
     (e_lfanew,) = struct.unpack_from("<I", data, 0x3C)
     if e_lfanew + 24 + OPTIONAL_CHECKSUM_OFFSET + 4 > len(data):
@@ -40,13 +42,18 @@ def pe_checksum_offset(data):
 
 
 def compute_checksum(data, checksum_offset):
+    # Zero the checksum field explicitly before summing. The word stream is
+    # 16-bit aligned to the file, so when the field starts at an odd offset it
+    # shares a word with the byte before it: skipping whole words (as an
+    # even-aligned field allows) would leave two field bytes in the sum and
+    # make the result depend on the checksum that was already there.
+    buf = bytearray(data)
+    buf[checksum_offset:checksum_offset + 4] = b"\0\0\0\0"
     total = 0
-    n = len(data)
+    n = len(buf)
     for off in range(0, n, 2):
-        if checksum_offset <= off < checksum_offset + 4:
-            continue  # four zero bytes, so no words to add
-        lo = data[off]
-        hi = data[off + 1] if off + 1 < n else 0
+        lo = buf[off]
+        hi = buf[off + 1] if off + 1 < n else 0
         total += lo | (hi << 8)
         total = (total & 0xFFFF) + (total >> 16)
     total = (total & 0xFFFF) + (total >> 16)

@@ -13,9 +13,10 @@ Usage:
     tools/mergedump.py --out merged.bin dump1.bin dump2.bin ...
     tools/mergedump.py --report dump1.bin dump2.bin ...     # coverage only
 
-Pages that never differed from the on-disk bytes stay encrypted in the output
-(they are byte-identical to the file, not zeroed), so a merged image is still a
-valid module image to load at 0x140000000.
+The output keeps the on-disk headers, so it is a loadable module image to map at
+0x140000000 (and readable by `tools/rtti.py`). Pages that never differed from
+the on-disk bytes stay encrypted in the output (they are byte-identical to the
+file, not zeroed).
 """
 
 import argparse
@@ -31,6 +32,7 @@ GAME = os.environ.get("NIOH_DIR",
 
 
 def sections(d):
+    """([section dicts], end of the PE headers) for an on-disk image."""
     e = struct.unpack_from("<I", d, 0x3C)[0]
     nsec = struct.unpack_from("<H", d, e + 6)[0]
     optsz = struct.unpack_from("<H", d, e + 20)[0]
@@ -41,43 +43,54 @@ def sections(d):
         nm = s[:8].rstrip(b"\0").decode()
         vs, va, rs, ra = struct.unpack_from("<IIII", s, 8)
         out.append({"name": nm, "va": va, "vsize": vs, "raw": ra, "rsize": rs})
-    return out
+    return out, so + nsec * 40
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("dumps", nargs="+")
     ap.add_argument("--exe", default=os.path.join(GAME, "nioh.exe"))
-    ap.add_argument("--out")
-    ap.add_argument("--report", action="store_true")
+    mode = ap.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--out", help="write the merged module image here")
+    mode.add_argument("--report", action="store_true",
+                      help="print the per-section coverage only")
     a = ap.parse_args()
 
     disk = open(a.exe, "rb").read()
-    secs = sections(disk)
+    secs, hdr_end = sections(disk)
     size = max(s["va"] + s["vsize"] for s in secs)
     snaps = [open(p, "rb").read() for p in a.dumps]
     print(f"on-disk exe {len(disk):,} B, image {size:,} B, snapshots: "
           f"{', '.join(os.path.basename(p) for p in a.dumps)}")
 
-    merged = bytearray(disk[:1]) * 0  # empty
     merged = bytearray(size)
-    coverage = {s["name"]: [0, 0] for s in secs}   # [decrypted_pages, total]
+    # The headers sit at RVA 0 in a mapped image, so the byte copy is exactly
+    # what a loader maps. Without it the output has e_lfanew == 0 and is not a
+    # module image at all (rtti.py and any PE reader reject it).
+    merged[:hdr_end] = disk[:hdr_end]
+    coverage = {s["name"]: [0, 0] for s in secs}   # [decrypted, candidate pages]
     for s in secs:
-        total = (s["vsize"] + PAGE - 1) // PAGE
-        coverage[s["name"]][1] = total
         dstart = s["va"]
         if s["raw"] + s["rsize"] > len(disk):
+            print(f"warning: {s['name']}: raw data {s['raw']:#x}+{s['rsize']:#x} runs past "
+                  f"the end of the on-disk image; section skipped", file=sys.stderr)
             continue
-        disk_sec = disk[s["raw"]:s["raw"] + s["vsize"]]
+        # Only file-backed bytes can be the encrypted version of a page: where
+        # VSIZE > RSIZE the tail is zero-filled at load, so it has no on-disk
+        # counterpart to compare against (and the old read past the section
+        # counted neighbouring sections' bytes as "decrypted").
+        disk_sec = disk[s["raw"]:s["raw"] + s["rsize"]]
         merged[dstart:dstart + len(disk_sec)] = disk_sec
-        for pg in range(total):
+        cand = (min(s["vsize"], s["rsize"]) + PAGE - 1) // PAGE
+        coverage[s["name"]][1] = cand
+        for pg in range(cand):
             o = pg * PAGE
             dpg = disk_sec[o:o + PAGE]
             chosen = None
             for snap in snaps:
-                cand = snap[dstart + o:dstart + o + PAGE]
-                if len(cand) == len(dpg) and cand != dpg:
-                    chosen = cand
+                page = snap[dstart + o:dstart + o + len(dpg)]
+                if len(page) == len(dpg) and page != dpg:
+                    chosen = page
             if chosen is not None:
                 merged[dstart + o:dstart + o + len(chosen)] = chosen
                 coverage[s["name"]][0] += 1
@@ -92,6 +105,7 @@ def main():
             f.write(merged)
         h = hashlib.md5(merged).hexdigest()
         print(f"wrote {a.out} ({len(merged):,} B, md5 {h})")
+    return 0
 
 
 if __name__ == "__main__":

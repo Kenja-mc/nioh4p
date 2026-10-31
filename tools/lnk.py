@@ -56,11 +56,19 @@ class Archive:
         self.size = os.path.getsize(path)
         with open(path, "rb") as f:
             head = f.read(HDR)
+            if len(head) < HDR:
+                raise ValueError(f"{path}: truncated header ({len(head)} of {HDR} bytes)")
             magic, res, self.count, self.total, self.block = struct.unpack("<4sIQQQ", head)
             if magic != b"K300":
                 raise ValueError(f"{path}: not a K300 archive (magic {magic!r})")
             self.reserved = res
-            raw = f.read(self.count * ENT)
+            # The entry table must fit in the file: an unchecked count either
+            # short-reads (entries silently zeroed) or asks for a huge read.
+            table_bytes = self.count * ENT
+            if self.count > (self.size - HDR) // ENT:
+                raise ValueError(f"{path}: entry count {self.count} does not fit "
+                                 f"in {self.size - HDR:,d} bytes after the header")
+            raw = f.read(table_bytes)
         self.entries = []
         for i in range(self.count):
             off, size, size2, flags = struct.unpack_from("<QQQQ", raw, i * ENT)
@@ -123,6 +131,19 @@ def archives():
     return sorted(f for f in os.listdir(ARCHIVE_DIR) if f.endswith(".lnk"))
 
 
+def checked(path):
+    """Open `path` and validate it; raise ValueError if it is malformed.
+
+    Reading a corrupt archive short-reads or walks bytes past EOF, so every
+    command that reads entry payloads goes through here."""
+    a = Archive(path)
+    bad = a.check()
+    if bad:
+        raise ValueError(f"{path}: archive failed validation: " + "; ".join(bad[:4])
+                         + ("; ..." if len(bad) > 4 else ""))
+    return a
+
+
 def cmd_list():
     tot_e = tot_b = 0
     for name in archives():
@@ -133,13 +154,22 @@ def cmd_list():
         print(f"{name}  entries={a.count:5d}  size={a.size:13,d}  data@{a.data_start:#x}  "
               f"{'OK' if not bad else 'BAD: ' + '; '.join(bad[:2])}")
     print(f"total: {len(archives())} archives, {tot_e} entries, {tot_b:,d} bytes")
+    return 0
 
 
 def cmd_info(path):
     a = Archive(path)
     print(f"{path}: count={a.count} total={a.total:#x} block={a.block:#x} file={a.size:#x}")
-    print("check:", a.check() or "clean")
-    for e in a.entries[:4] + (["..."] if a.count > 8 else []) + a.entries[-4:]:
+    bad = a.check()
+    print("check:", bad or "clean")
+    if bad:
+        sys.stderr.write(f"{path}: corrupt archive, not reading entries\n")
+        return 1
+    # count<=8 fits whole; above that show the first and last four, and only
+    # then the marker (head and tail overlap below 9 entries, which listed the
+    # middle entries twice).
+    shown = a.entries[:4] + ["..."] + a.entries[-4:] if a.count > 8 else a.entries
+    for e in shown:
         if e == "...":
             print("  ...")
             continue
@@ -147,10 +177,14 @@ def cmd_info(path):
         h, t = sig16(blob)
         print(f"  [{e.index:4d}] off={e.offset:#010x} size={e.size:9,d} flags={e.flags} "
               f"entropy={entropy(blob[:4096]):.2f}  {h}  {t!r}")
+    return 0
 
 
 def cmd_scan(path):
-    a = Archive(path)
+    a = checked(path)
+    if not a.count:
+        print(f"{path}: 0 entries")
+        return 0
     sigs = Counter()
     ents = []
     for e in a.entries:
@@ -161,34 +195,57 @@ def cmd_scan(path):
           f"{min(ents):.2f}/{sum(ents)/len(ents):.2f}/{max(ents):.2f}")
     for s, n in sigs.most_common(12):
         print(f"  first4={s}  x{n}")
+    return 0
 
 
 def cmd_dump(path, i, out=None):
-    a = Archive(path)
-    blob = a.read(int(i))
-    out = out or f"entry_{int(i):04d}.bin"
+    a = checked(path)
+    if not 0 <= i < a.count:
+        sys.stderr.write(f"{path}: entry {i} out of range (0..{a.count - 1})\n")
+        return 2
+    blob = a.read(i)
+    out = out or f"entry_{i:04d}.bin"
     with open(out, "wb") as f:
         f.write(blob)
     print(f"wrote {out} ({len(blob)} bytes) from {path} entry {i}")
+    return 0
 
 
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
         return 2
-    cmd = sys.argv[1]
-    if cmd == "list":
-        cmd_list()
-    elif cmd == "info":
-        cmd_info(sys.argv[2])
-    elif cmd == "scan":
-        cmd_scan(sys.argv[2])
-    elif cmd == "dump":
-        cmd_dump(sys.argv[2], sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else None)
-    else:
-        print(__doc__)
-        return 2
-    return 0
+    cmd, args = sys.argv[1], sys.argv[2:]
+    try:
+        if cmd == "list":
+            return cmd_list()
+        if cmd == "info":
+            if len(args) != 1:
+                sys.stderr.write("usage: lnk.py info <archive>\n")
+                return 2
+            return cmd_info(args[0])
+        if cmd == "scan":
+            if len(args) != 1:
+                sys.stderr.write("usage: lnk.py scan <archive>\n")
+                return 2
+            return cmd_scan(args[0])
+        if cmd == "dump":
+            # args is [archive, index, out?]: the index is not optional, so a
+            # shorter list must print usage here rather than raise IndexError.
+            if not 2 <= len(args) <= 3:
+                sys.stderr.write("usage: lnk.py dump <archive> <index> [out]\n")
+                return 2
+            try:
+                i = int(args[1])
+            except ValueError:
+                sys.stderr.write("usage: lnk.py dump <archive> <index> [out]\n")
+                return 2
+            return cmd_dump(args[0], i, args[2] if len(args) > 2 else None)
+    except ValueError as exc:
+        sys.stderr.write(f"lnk.py: {exc}\n")
+        return 1
+    print(__doc__)
+    return 2
 
 
 if __name__ == "__main__":

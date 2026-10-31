@@ -30,15 +30,12 @@
 
 static unsigned long long g_last_create_max;
 static int g_last_setmax;
-static int g_create_calls;
-static int g_setmax_calls;
 
 static uint64_t sc_create_lobby(void *self, int lobby_type, int cMaxMembers)
 {
     (void)self;
     (void)lobby_type;
     g_last_create_max = (unsigned long long)(unsigned)cMaxMembers;
-    g_create_calls++;
     return 1;
 }
 
@@ -48,7 +45,6 @@ static uint8_t sc_set_lobby_member_limit(void *self, uint64_t lobby, int cMaxMem
     if (lobby != 0x0180000103C821A2ull)
         return 0;
     g_last_setmax = cMaxMembers;
-    g_setmax_calls++;
     return 1;
 }
 
@@ -212,15 +208,7 @@ static void sc_init(void)
 __declspec(dllexport) void *nioh3p_sc_iface(void) { sc_init(); return g_iface; }
 __declspec(dllexport) unsigned long long nioh3p_sc_create_max(void) { return g_last_create_max; }
 __declspec(dllexport) int nioh3p_sc_setmax(void) { return g_last_setmax; }
-__declspec(dllexport) int nioh3p_sc_calls(void) { return g_create_calls + g_setmax_calls; }
 __declspec(dllexport) int nioh3p_sc_members_calls(void) { return g_members_calls; }
-__declspec(dllexport) void nioh3p_sc_reset(void)
-{
-    g_last_create_max = 0;
-    g_last_setmax = 0;
-    g_create_calls = 0;
-    g_setmax_calls = 0;
-}
 
 BOOL WINAPI DllMain(HINSTANCE self, DWORD reason, LPVOID reserved)
 {
