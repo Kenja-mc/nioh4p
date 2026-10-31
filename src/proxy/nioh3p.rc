@@ -1,7 +1,7 @@
 /* nioh3p resource script: version info + application manifest for the proxy.
  * The DLL is otherwise a resource-less, unsigned image, which is what makes
  * generic AV heuristics (Evo-gen and friends) suspicious. Built by build.sh
- * with llvm-rc and llvm-cvtres; the manifest becomes .rsrc type 24, id 1.
+ * with llvm-rc and llvm-cvtres; the manifest becomes .rsrc type 24, id 2.
  * Note: llvm-rc escapes a quote inside a string by doubling it, not with \". */
 
 #define RT_MANIFEST 24
@@ -36,9 +36,12 @@ BEGIN
 END
 
 /* Application manifest: asInvoker (the game is userland), Windows 10/11
- * compatibility, per-monitor DPI awareness. Stored as RT_MANIFEST/1 so the
- * loader applies it and the startup log can prove it is present. */
-1 RT_MANIFEST
+ * compatibility, per-monitor DPI awareness. Stored as RT_MANIFEST/2 =
+ * ISOLATIONAWARE_MANIFEST_RESOURCE_ID. In a DLL that is the id the loader
+ * honours; id 1 (CREATEPROCESS_MANIFEST_RESOURCE_ID) is the executable's own
+ * manifest id and is ignored here, so an id-1 resource left the image with a
+ * manifest that never took effect. */
+2 RT_MANIFEST
 BEGIN
     "<?xml version=""1.0"" encoding=""UTF-8"" standalone=""yes""?>"
     "<assembly xmlns=""urn:schemas-microsoft-com:asm.v1"" manifestVersion=""1.0"">"

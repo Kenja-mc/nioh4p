@@ -40,7 +40,8 @@ import signal
 import sys
 import time
 
-DEFAULT_LOG = "/home/<you>/.cache/nioh3p/out/nioh3p.log"
+DEFAULT_LOG = os.path.expanduser("~/.cache/nioh3p/out/nioh3p.log")
+MIN_WATCH_INTERVAL = 0.05         # floor for --watch-interval (0 polled as fast as possible)
 WATCH_TAIL_READ = 262144          # bytes of history scanned for --watch --tail
 
 SECTION_ORDER = [
@@ -62,8 +63,11 @@ SECTION_TITLES = {
     "other": "unclassified lines",
 }
 
-# Categories kept while following a live session (--watch).
-WATCH_SECTIONS = ("iface", "callbacks", "mm", "site", "eos", "friends", "p2p", "data")
+# Categories kept while following a live session (--watch). session/hooks are
+# included so a crash or a failed hook install is visible live, not only in the
+# timeline pass.
+WATCH_SECTIONS = ("session", "hooks", "iface", "callbacks", "mm", "site", "eos",
+                  "friends", "p2p", "data")
 
 MM_PREFIXES = (
     "Steam_ISteamMatchmaking", "Steam matchmaking interface", "Steam CreateLobby",
@@ -191,7 +195,8 @@ KV_ARROW_RE = re.compile(r'key="([^"]*)"\s*->\s*"([^"]*)"\s*$')
 EOS_ATTR_RE = re.compile(r'key="([^"]*)"\s+(bool|int64|double|string)=(?:"([^"]*)"|(\S+))')
 PAYLOAD_RE = re.compile(r"^steam cb: payload:\s*((?:[0-9a-fA-F]{2}[ \t]*)+)$")
 IFACE_RE = re.compile(r'Steam FindOrCreateUserInterface\("([^"]*)"\) -> (\S+)$')
-RUN_RE = re.compile(r"steam cb: Run id=(-?\d+) obj=(\S+)(?: class (.+?))? param=(\S+)$")
+RUN_RE = re.compile(r"steam cb: Run id=(-?\d+) obj=(\S+)(?: class (.+?))? param=(\S+)"
+                    r"(?: ioFailure=\d+ call=\d+)?$")
 REG_RE = re.compile(r"steam cb: (RegisterCallback|RegisterCallResult) id=(-?\d+) obj=(\S+) "
                     r"vtbl=(\S+) run=(\S+)(?: class (.+))?$")
 REG_AT_RE = re.compile(r"steam cb: Run at (\S+) watched \(cb (-?\d+)\)")
@@ -407,7 +412,8 @@ def render_summary(path, recs, shown, truncated, win, match, note=None):
                % (len(recs), len(times), sum(r.cont for r in recs)))
     if times:
         out.append("span      : %s .. %s" % (times[0], times[-1]))
-    loads = [r.tstr for r in recs if r.msg.startswith("=== nioh3p proxy loading")]
+    loads = [r.tstr or "(no time)" for r in recs
+             if r.msg.startswith("=== nioh3p proxy loading")]
     if loads:
         out.append("sessions  : %d proxy load(s): %s" % (len(loads), " ".join(loads)))
     out.append("partial   : %s" % ("YES - last line has no trailing newline (marked [partial])"
@@ -467,8 +473,8 @@ def build_timeline(recs, args, win, match, sections):
                        % (key, ops, first, note, clip(val, max(24, args.width - 78))))
         if rows:
             out.append("")
-        return out, shown, pairs
-    return out, shown, 0
+        return out, shown
+    return out, shown
 
 
 SITE_RE = re.compile(r"^site:\s*(\S+)\s+from\s+(\S+)$")
@@ -639,6 +645,8 @@ def build_decode(recs, args, win, match):
 # ------------------------------------------------------------------- --watch
 
 WATCH_TAG = {
+    "session": "sess ",
+    "hooks": "hook ",
     "iface": "iface",
     "callbacks": "cb   ",
     "mm": "mm   ",
@@ -685,6 +693,26 @@ def watch_lines(rec, args):
     return out
 
 
+def denied_error(path):
+    return "cannot read %s: permission denied (check the file's mode)" % path
+
+
+def read_error(path, exc):
+    """'cannot read PATH: why' - shared by the one-shot and --watch paths."""
+    if isinstance(exc, PermissionError):
+        return denied_error(path)
+    return "cannot read %s: %s" % (path, exc.strerror or exc)
+
+
+def unreadable_state(path, exc):
+    """(state key, notice line) for a log that cannot be read right now."""
+    if isinstance(exc, FileNotFoundError):
+        return "missing", "%s not present yet, waiting for it to appear" % path
+    if isinstance(exc, PermissionError):
+        return "denied", denied_error(path)
+    return "io", read_error(path, exc)
+
+
 def watch(path, args, win, match):
     secs = float(args.watch_seconds or 0)
     interval = float(args.watch_interval)
@@ -704,60 +732,80 @@ def watch(path, args, win, match):
           % (path, interval, args.tail, ", auto-stop after %gs" % secs if secs else ""),
           flush=True)
 
-    pos = 0
-    if args.tail > 0 and os.path.exists(path):
-        size = os.path.getsize(path)
-        start = max(0, size - WATCH_TAIL_READ)
-        with open(path, "rb") as fh:
-            fh.seek(start)
-            chunk = fh.read()
-        if start:
-            nl = chunk.find(b"\n")
-            chunk = chunk[nl + 1:] if nl >= 0 else b""
-        lines = chunk.split(b"\n")
-        if lines and lines[-1] == b"":
-            lines.pop()
-        picked = []
-        for raw in reversed(lines):
-            rec = make_rec(decode_line(raw), False)
-            if rec.cat not in WATCH_SECTIONS or not keep(rec, win, match):
-                continue
-            picked.append(rec)
-            if len(picked) >= args.tail:
-                break
-        picked.reverse()
-        shown = 0
-        for rec in picked:
-            for line in watch_lines(rec, args):
-                print(line, flush=True)
-            shown += 1
-        if shown:
-            print("--- (last %d interesting line(s) above; following new ones) ---" % shown,
-                  flush=True)
-        pos = size
+    state = ["ok"]                    # last reported readability, see notice()
+
+    def notice(kind, text):
+        """Report a read failure/recovery once; unchanged polls stay silent."""
+        if state[0] == kind:
+            return
+        state[0] = kind
+        print("--- %s ---" % text, flush=True)
+
+    def size_now():
+        """Current size, or None (after reporting why) when it cannot be read."""
+        try:
+            size = os.path.getsize(path)
+        except OSError as exc:
+            notice(*unreadable_state(path, exc))
+            return None
+        if not os.access(path, os.R_OK):
+            # stat() succeeds on an unreadable file, so without this the
+            # failure would only surface once new data arrived -- with
+            # --tail 0 that is never, which reads as "no events".
+            notice("denied", denied_error(path))
+            return None
+        return size
+
+    # Start at the end of the file: --tail 0 means "no history", and the --tail
+    # scan below needs the current size anyway. Reading resumes at `pos`, so
+    # replayed history never reaches the live event count.
+    pos = size_now() or 0
+    if args.tail > 0 and pos > 0:
+        start = max(0, pos - WATCH_TAIL_READ)
+        chunk = None
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(start)
+                chunk = fh.read()
+        except OSError as exc:
+            notice(*unreadable_state(path, exc))
+        if chunk:
+            if start:
+                nl = chunk.find(b"\n")
+                chunk = chunk[nl + 1:] if nl >= 0 else b""
+            lines = chunk.split(b"\n")
+            if lines and lines[-1] == b"":
+                lines.pop()
+            picked = []
+            for raw in reversed(lines):
+                rec = make_rec(decode_line(raw), False)
+                if rec.cat not in WATCH_SECTIONS or not keep(rec, win, match):
+                    continue
+                picked.append(rec)
+                if len(picked) >= args.tail:
+                    break
+            picked.reverse()
+            for rec in picked:
+                for line in watch_lines(rec, args):
+                    print(line, flush=True)
+            if picked:
+                print("--- (last %d interesting line(s) above; following new ones) ---"
+                      % len(picked), flush=True)
     print("--- following ---", flush=True)
 
     deadline = time.time() + secs if secs else None
     pending = b""
-    announced_wait = False
     unknown = set()
     while not stopped["flag"]:
         if deadline is not None and time.time() >= deadline:
             break
-        if not os.path.exists(path):
-            if not announced_wait:
-                print("--- %s not present yet, waiting for it to appear ---" % path, flush=True)
-                announced_wait = True
+        size = size_now()
+        if size is None:               # not readable: noticed once by `notice`
             time.sleep(interval)
             continue
-        if announced_wait:
-            print("--- %s appeared ---" % path, flush=True)
-            announced_wait = False
-        try:
-            size = os.path.getsize(path)
-        except OSError:
-            time.sleep(interval)
-            continue
+        if state[0] != "ok":
+            notice("ok", "%s appeared" % path if state[0] == "missing"
+                   else "%s is readable again" % path)
         if size < pos:                     # log rotated or truncated
             print("--- log truncated (size %d < offset %d), reading from the start ---"
                   % (size, pos), flush=True)
@@ -768,7 +816,8 @@ def watch(path, args, win, match):
                 with open(path, "rb") as fh:
                     fh.seek(pos)
                     chunk = fh.read(size - pos)
-            except OSError:
+            except OSError as exc:
+                notice(*unreadable_state(path, exc))
                 time.sleep(interval)
                 continue
             pos = size
@@ -841,10 +890,19 @@ def main(argv=None):
     win = make_window(args.since, args.until)
 
     if args.watch:
+        if not (args.watch_interval >= MIN_WATCH_INTERVAL):     # NaN fails this
+            print("logtriage: --watch-interval %g is below the %.2fs floor, using %.2fs"
+                  % (args.watch_interval, MIN_WATCH_INTERVAL, MIN_WATCH_INTERVAL),
+                  file=sys.stderr)
+            args.watch_interval = MIN_WATCH_INTERVAL
         watch(path, args, win, match)
         return 0
 
-    recs, truncated = load_records(path)
+    try:
+        recs, truncated = load_records(path)
+    except OSError as exc:                 # same wording as the --watch path
+        print("logtriage: " + read_error(path, exc), file=sys.stderr)
+        return 1
 
     if args.decode:
         body = build_decode(recs, args, win, match)
@@ -864,7 +922,7 @@ def main(argv=None):
     else:
         sections = [s for s in SECTION_ORDER if s != "other"]
 
-    body, shown, pairs = build_timeline(recs, args, win, match, sections)
+    body, shown = build_timeline(recs, args, win, match, sections)
     print("\n".join(render_summary(path, recs, shown, truncated, win, match)))
     print("\n".join(body))
     hidden = [r for r in recs if r.cat not in sections and r.partial]

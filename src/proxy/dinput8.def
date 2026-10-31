@@ -1,9 +1,18 @@
 LIBRARY dinput8
 EXPORTS
-    DirectInput8Create
-    DllCanUnloadNow
-    DllGetClassObject
-    DllInstall
-    DllRegisterServer
-    DllUnregisterServer
-    GetdfDIJoystick
+    ; Explicit ordinals, in the order and numbering of Microsoft's own
+    ; dinput8.def: a name-only EXPORTS block lets the linker hand out ordinals
+    ; by position, so a later reorder moves every export for consumers that
+    ; import by ordinal. Wine's builtin dinput8.dll exports only five of these,
+    ; DirectInput8Create @1, DllCanUnloadNow @2, DllGetClassObject @3,
+    ; DllRegisterServer @4 and DllUnregisterServer @5 (it has no DllInstall and
+    ; no GetdfDIJoystick), so the two agree on @1..@3 and @4..@7 are ours to
+    ; keep stable. Wine's list read with `llvm-readobj --coff-exports` on
+    ; files/lib/wine/x86_64-windows/dinput8.dll (Proton 11.0).
+    DirectInput8Create @1
+    DllCanUnloadNow @2
+    DllGetClassObject @3
+    DllInstall @4
+    DllRegisterServer @5
+    DllUnregisterServer @6
+    GetdfDIJoystick @7
