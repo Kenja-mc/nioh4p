@@ -1,6 +1,6 @@
 # EOS lobby call sites in the game image (static analysis)
 
-Target: `/home/<you>/.cache/nioh3p/dumps/nioh3p_image_merged.bin` (50,779,928 B runtime
+Target: `~/.cache/nioh3p/dumps/nioh3p_image_merged.bin` (50,779,928 B runtime
 image, **file offset == RVA**, VA = `0x140000000 + offset`, `SizeOfImage` 0x306D718).
 All addresses below are VAs unless the row says `rva`; `rva X` == VA `0x140000000+X`.
 
@@ -474,8 +474,8 @@ frame address `nioh.exe+0x5d915d`, which is a real `EOS_Lobby_CreateLobby` call 
 ```sh
 # import table (headers are zeroed in the dump -> reconstruct from .rdata)
 python3 - <<'EOF'
-import struct
-d = open('/home/<you>/.cache/nioh3p/dumps/nioh3p_image_merged.bin','rb').read()
+import os, struct
+d = open(os.path.expanduser('~/.cache/nioh3p/dumps/nioh3p_image_merged.bin'),'rb').read()
 oft, _, _, nm, ft = struct.unpack_from('<IIIII', d, 0x1761f08)   # EOSSDK descriptor
 i = 0
 while (v := struct.unpack_from('<Q', d, oft + 8*i)[0]):
@@ -486,7 +486,7 @@ EOF
 
 # a call site window (recipe from the task ticket)
 nice -n 10 objdump -D -b binary -m i386:x86-64 --adjust-vma=0x140000000 \
-  /home/<you>/.cache/nioh3p/dumps/nioh3p_image_merged.bin \
+  "$HOME/.cache/nioh3p/dumps/nioh3p_image_merged.bin" \
   --start-address=0x1405d90c0 --stop-address=0x1405d91a0
 ```
 

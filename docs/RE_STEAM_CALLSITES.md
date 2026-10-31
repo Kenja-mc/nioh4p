@@ -1,6 +1,6 @@
 # RE: Steam API call sites in `nioh.exe` (friends / P2P / matchmaking)
 
-Offline static analysis of the **runtime image dump** `/home/<you>/.cache/nioh3p/dumps/nioh3p_image_merged.bin` (50,779,928 bytes, `file offset == RVA`, image base `0x140000000`, so `VA = 0x140000000 + RVA`).
+Offline static analysis of the **runtime image dump** `~/.cache/nioh3p/dumps/nioh3p_image_merged.bin` (50,779,928 bytes, `file offset == RVA`, image base `0x140000000`, so `VA = 0x140000000 + RVA`).
 All RVAs below are file/RVA values; `VA = 0x140000000 + RVA`.
 
 The on-disk `nioh.exe` was used **only** for the PE section table (it is intact on disk) and for cross-checking; the dump was used for every byte that matters. Its first `0x300` bytes (DOS/NT headers) are zeroed, so the header parse comes from the on-disk section table; the import directory *data* comes from the dump.
@@ -9,7 +9,7 @@ Disassembly recipe used throughout (windowed only):
 
 ```
 nice -n 10 objdump -D -b binary -m i386:x86-64 --adjust-vma=0x140000000 \
-  /home/<you>/.cache/nioh3p/dumps/nioh3p_image_merged.bin \
+  "$HOME/.cache/nioh3p/dumps/nioh3p_image_merged.bin" \
   --start-address=0x1405edcd0 --stop-address=0x1405edd60
 ```
 

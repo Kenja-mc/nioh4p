@@ -3,7 +3,7 @@
 Two extra Nioh instances run with no window on the desktop. They use no dGPU, and they write nothing anywhere in the user's Steam root, library or Proton prefix. The three-player tests need this setup. A host and a second player come up on demand while the machine stays usable.
 
 ```
-$RIG = ~/nioh3p-test
+$RIG = ~/Projects/gaming/nioh-mp-mod-rig
 ├── home-a/.local/share/Steam/     slot a: own Steam root (COW clone of the client)
 │     ├── steamapps/common/Nioh/   the game, with dinput8.dll + nioh3p.ini (mod)
 │     ├── steamapps/common/Proton - Experimental
@@ -35,9 +35,22 @@ tools/rig/rig.py collect NAME     # copy every slot's logs, launch output and th
 tools/rig/rig.py down             # stop all games (--client also stops the slot b Steam client)
 ```
 
+`down --settle S` also waits until the slot has no process left, so the next `up` starts from an empty prefix. It reports anything that outlived the wait.
+
 `down` sends SIGTERM to `nioh.exe` first, then to the rest of the slot's Wine and compositor processes, then SIGKILL to what is left. It decides ownership by the `HOME` in `/proc/<pid>/environ`, so the user's own Steam can never match.
 
 The lower-level commands below remain for the Steam-library slots and for input:
+
+Before running setup, provide the two Steam login names locally as `ACCOUNT_A`
+and `ACCOUNT_B` environment variables. Setup resolves each account's userdata
+from the cloned `loginusers.vdf`; it does not store names or IDs in the source.
+Setup disables `AllowAutoLogin` on each cloned login record to retain the
+account picker; it leaves `RememberPassword` and `MostRecent` unchanged. Older
+setup runs may already have cleared those fields; this change does not restore
+them or credentials. Picker appearance and stored-login behavior after this
+change have not been verified with Steam.
+The login helper assumes slot a's tile is on the left and slot b's on the right.
+Confirm the picker layout locally before using it.
 
 ```sh
 tools/rig/setup.sh            # build/refresh the clones (idempotent, fast)
@@ -57,7 +70,7 @@ Start the client before `run.sh … game`. The raw Steam binary forwards a reque
 In each rig client's Nioh Properties, select Proton Experimental. Set Launch Options to the command below, and adjust the repository path if necessary.
 
 ```sh
-NIOH3P_HEADLESS=1 NIOH3P_SCOPE=0 NIOH3P_GPU=RAPHAEL_MENDOCINO NIOH3P_VK_DEVICE=1002:13c0 /home/<you>/Projects/nioh3p/tools/quiet-launch.sh %command%
+NIOH3P_HEADLESS=1 NIOH3P_SCOPE=0 NIOH3P_GPU=RAPHAEL_MENDOCINO NIOH3P_VK_DEVICE=1002:13c0 /path/to/nioh-mp-mod/tools/quiet-launch.sh %command%
 ```
 
 The wrapper clears inherited display and WSI overrides before it starts gamescope. The isolated runtime has no systemd user bus, hence `NIOH3P_SCOPE=0`. This value disables the CPU and RAM scope limits of the wrapper. Keep Steam Cloud disabled in the test roots. For a diagnostic run, prepend `PROTON_LOG=1`. The log is in that slot's HOME.
@@ -65,8 +78,8 @@ The wrapper clears inherited display and WSI overrides before it starts gamescop
 Gamescope chooses its own Xwayland display. Read `Starting Xwayland on :N` in its output, then use `DISPLAY=:N` for game input. Xvfb screenshots capture Steam, not the game. Capture the actual frame of the compositor instead:
 
 ```sh
-XDG_RUNTIME_DIR="$HOME/nioh3p-test/run-a" GAMESCOPE_WAYLAND_DISPLAY=gamescope-0 \
-  gamescopectl screenshot "$HOME/nioh3p-test/shots/game-a.png"
+XDG_RUNTIME_DIR="$HOME/Projects/gaming/nioh-mp-mod-rig/run-a" GAMESCOPE_WAYLAND_DISPLAY=gamescope-0 \
+  gamescopectl screenshot "$HOME/Projects/gaming/nioh-mp-mod-rig/shots/game-a.png"
 ```
 
 Use the Wayland display that gamescope prints if it is not `gamescope-0`. Xwayland's XTest pointer input here uses client-window coordinates, not the offset of the window on the root. The input helper holds keys across game frames. Nioh's polled input missed an instantaneous down/up.
@@ -116,6 +129,11 @@ python3 tools/rig/coop.py host b --dry-run --backend luna  # perceive + print ac
 
 `decide` captures one frame. It prints the perception and the action that the guard or table selects as JSON. It exits 0 without sending anything.
 
+The exit code separates the two outcomes: 0 after a driven run, 1 when a slot
+failed or its thread died, 3 when the slot reported `DRY-RUN` (nothing was sent,
+`--dry-run`). A dry run prints `coop: slot <slot>: DRY-RUN: <action>` instead of
+`OK`, so a caller is never told that a run happened when none did.
+
 Safety rules:
 
 - On the title menu, the driver sends `Return` only when `highlight` is `continue` with confidence ≥ 0.9. `new_game` gets `Down` and `load_or_system` gets `Up`. Anything else, including `uncertain`, waits 1.5 s. This rule keeps a run from starting a new game.
@@ -139,7 +157,7 @@ The table below gives each test and the evidence that it passed. Each row stands
 | what | evidence |
 |---|---|
 | iGPU Vulkan under headless X | `MESA_VK_DEVICE_SELECT=1002:13c0! vulkaninfo` → RADV `RAPHAEL_MENDOCINO`, Vulkan 1.4, Mesa 26.2.5; `vkcube` renders |
-| second Steam client in its own root | `.steampid`/`.steampath` created inside `$RIG/home-a`; logs `Logged On … U:1:<accountid-a>` |
+| second Steam client in its own root | `.steampid`/`.steampath` created inside `$RIG/home-a`; the connection log recorded a successful login |
 | clone adopted without download | client log: `Loaded 7 apps`, `AppID 485510 state changed : Fully Installed`, `scheduler finished … No Error` |
 | mod loads in the rig | `logs-a/nioh3p.log`: `EOS_Lobby_CreateLobby hooked through the import table (14119b1e0 …)`, callbacks for `CCallback<CSessionP2pSteam, LobbyDataUpdate_t>` |
 | Nioh renders on the iGPU | gamescope selected RADV `RAPHAEL_MENDOCINO`; compositor screenshot `shots/a-nioh-composited.png` shows the opening movie, and `shots/a-startup-confirmed.png` shows interactive brightness setup |
@@ -160,12 +178,17 @@ The table below lists faults that each cost a debugging session. Each row gives 
 | no video settings, first run on a fresh prefix | `config.xml` is written by the launcher, and `nioh.exe` reads it | `setup.sh` seeds a 720p windowed low-detail one |
 | `Proton: Error while copying … amdxcffx64.dll` | Proton 11.0's own tool prefix fails to build from a clone | pin `proton_experimental` and drop the broken tool clones |
 | Steam UI window never maps (black display) | hand-editing `config/config.vdf` with a bad regex | restore it from the original (`cp --reflink=auto`; COW protects the source) |
-| client loses window when the rig client is killed | the account picker re-appears on every start | `AutoLoginUser` + `MostRecent` pins in `setup.sh` |
+| LAN game exits silently ~60 s after preflight; no `DirectInput8Create`, no SEH | the cloned Steam client is running but logged off (the stored login did not survive a restart), so the game's DRM handshake fails | log the client in first (`login.sh b`; if the saved credential died, QR-sign-in and pick the account tile) and only then `rig.py up` |
+| rig game audio plays on the desktop | the slot's isolated runtime dir has no pulse socket, so wine falls back to raw ALSA and opens `/dev/snd/pcmC0D0p` directly | standing rule: `run.sh` exports a dead `PULSE_SERVER` for the client and additionally `ALSA_CONFIG_PATH=/dev/null` for the game; verify with `fuser /dev/snd/pcmC0D0p` |
 
 ## Boundaries
 
 - Authenticated Steam tests require distinct licensed Steam accounts. The LAN experiment instead uses separate local emulator identities and prefixes. That does not demonstrate three authenticated Steam accounts playing online. The owned game executable is unchanged, and no DRM-bypass patch is applied.
-- Every authenticated Steam account that the rig uses must be Invisible. Make sure that the label shows in its private-display Friends window before you use the account. `-silent` only hides the client and does not set presence. The active cloned client (`home-b`, display `:10`, account PlayerTwo) showed Invisible in `shots/steam-b-invisible-verified.png`.
+- The rig stays inaudible and unseen on the desktop: clients run Invisible on
+  their private Xvfb display with a dead `PULSE_SERVER`, games additionally
+  get `ALSA_CONFIG_PATH=/dev/null` (`tools/rig/run.sh`), and no slot audio
+  path may reach the user's session.
+- Every authenticated Steam account that the rig uses must be Invisible. Make sure that the label shows in its private-display Friends window before you use the account. `-silent` only hides the client and does not set presence. The active cloned client showed Invisible in the recorded screenshot.
 - Removals inside the rig go through `trash` or `trash-put`, never `rm`.
 
 ## Direct LAN launch status (2026-10-20)
@@ -176,9 +199,14 @@ Both LAN clients joined Wreathed in Flame and rendered the characters of each ot
 
 Slot c uses its own `HOME`, runtime directory, `compat-c/pfx`, save account and LAN identity. It reuses the cloned Proton and client installation of slot b. Prepare `home-c/.steam/sdk64` and `sdk32` as symlinks to the `linux64` and `linux32` directories of that installation. Without them, Proton's `steam.exe` reports `steamclient_init unable to load native steamclient library` and asserts `!status`. Setting `STEAM_COMPAT_CLIENT_INSTALL_PATH` alone did not supply them.
 
-The third LAN identity is SteamID `<steamid-lan-c>` (`Nioh-LAN-C`), with a distinct Epic emulator ID ending in `03`. Its save account directory is `<accountid-c>`. The save transfer used the original [Nioh Savedata Decryption Tool v1.3](https://github.com/pawREP/Nioh-Savedata-Decryption-Tool/releases/tag/1.3). The command was `-i source/SAVEDATA.BIN -sid <accountid-c> -o SAVEDATA.BIN`, for both the system and character save. Run the tool with the destination save folder as its working directory. The tool discards directory components from `-o`. Do not disable checksum checks and do not change source saves.
-
-The fourth LAN identity is SteamID `<steamid-lan-d>` (`Nioh-LAN-D`), with a distinct Epic emulator ID ending in `04` (epicid `00000000000000000000000000000004`, productuserid `<productuserid-lan-d>`). Its save account directory is `<accountid-d>`. The same tool converted slot c's `<accountid-c>` saves for slot d. Run it as `-i <c file> -sid <accountid-d> -o SAVEDATA.BIN`. Use the destination save folder as the working directory. The tool writes the output and then waits on stdin. Give it Enter or stop it once the file exists. While the tool runs, Proton also starts its Xalia helper process next to the game.
+The third and fourth LAN slots use distinct emulator identities and save
+accounts. The save transfer used the original [Nioh Savedata Decryption Tool
+v1.3](https://github.com/pawREP/Nioh-Savedata-Decryption-Tool/releases/tag/1.3).
+For both system and character saves, run
+`-i source/SAVEDATA.BIN -sid "$DESTINATION_ACCOUNT_ID" -o SAVEDATA.BIN`
+with the destination save folder as the working directory. The tool discards directory components from `-o`,
+writes its output, and waits on stdin; give it Enter or stop it once the file
+exists. Do not disable checksum checks or change source saves.
 
 The navigation harness discovers displays and compositor sockets from the environment of each live `nioh.exe`. Use `nioh_nav.py -s <slot> shot name.png`; the harness lists a, b, c and d. Actual keyboard controls: BackSpace returns to the previous menu. Escape opens the equipment and system overlay. At a shrine, hold E for about 1.5 seconds to pray rather than tapping it.
 
@@ -186,7 +214,7 @@ Enable process tracing without changing the files of Proton:
 
 ```sh
 WINEDEBUG=+timestamp,+pid,+tid,+process \
-  bash "$HOME/nioh3p-test/scripts/run-b.sh"
+  bash "$HOME/Projects/gaming/nioh-mp-mod-rig/scripts/run-b.sh"
 ```
 
 The launcher already sets `PROTON_LOG=1`. The resulting log is `$RIG/home-b/steam-485510.log`. This Proton version preserves an explicit `WINEDEBUG` value (`env.setdefault` in its logging setup).
@@ -197,15 +225,15 @@ If the title animates but ignores XTest input, inspect the compositor output. On
 
 ## Windows 11 VM (Defender test)
 
-A Windows 11 Pro VM runs in Docker with `dockurr/windows`. The container `nioh3p-winvm` uses the local image `nioh3p/windows:6.06-trustfix`, built from `~/nioh3p-test/winvm/image-trustfix/Dockerfile`. The stopped container `nioh3p-winvm-6.06-orig` is the rollback copy. Do not start both, because they share the VM disk. Its disk, OEM script and SSH key live in `~/nioh3p-test/winvm`. No sudo and no Steam account are needed. The OEM script enables OpenSSH, so you can run commands with the key in that folder.
+A Windows 11 Pro VM runs in Docker with `dockurr/windows`. The container `nioh3p-winvm` uses the local image `nioh3p/windows:6.06-trustfix`, built from `~/Projects/gaming/nioh-mp-mod-rig/winvm/image-trustfix/Dockerfile`. The stopped container `nioh3p-winvm-6.06-orig` is the rollback copy. Do not start both, because they share the VM disk. Its disk, OEM script and SSH key live in `~/Projects/gaming/nioh-mp-mod-rig/winvm`. No sudo and no Steam account are needed. The OEM script enables OpenSSH, so you can run commands with the key in that folder.
 
 ```bash
 docker start nioh3p-winvm                       # boot the VM; the screen is at http://127.0.0.1:8006/
-ssh -i ~/nioh3p-test/winvm/key -p 2222 Docker@127.0.0.1 'Get-MpComputerStatus'   # PowerShell in the VM
+ssh -i ~/Projects/gaming/nioh-mp-mod-rig/winvm/key -p 2222 Docker@127.0.0.1 'Get-MpComputerStatus'   # PowerShell in the VM
 docker stop -t 120 nioh3p-winvm                 # shut it down cleanly
 ```
 
-`~/nioh3p-test/winvm/shared` is `\\host.lan\Data` in the VM. The rig copy `lan-a` is mounted read-only under it as `nioh-lan-a`. Programs that need the desktop (for example `nioh.exe`) run through the scheduled task `nioh3p-run`, which starts `C:\Games\run-nioh.bat` in the signed-in session. The VM already has the Visual C++ runtime and the DirectX June 2010 runtime. The game itself stops with code 53 in the VM because no Steam client runs there. Results are in `FINDINGS.md`, "Windows 11 VM test".
+`~/Projects/gaming/nioh-mp-mod-rig/winvm/shared` is `\\host.lan\Data` in the VM. The rig copy `lan-a` is mounted read-only under it as `nioh-lan-a`. Programs that need the desktop (for example `nioh.exe`) run through the scheduled task `nioh3p-run`, which starts `C:\Games\run-nioh.bat` in the signed-in session. The VM already has the Visual C++ runtime and the DirectX June 2010 runtime. The game itself stops with code 53 in the VM because no Steam client runs there. Results are in `FINDINGS.md`, "Windows 11 VM test".
 
 ## Operational boundaries
 
@@ -226,7 +254,7 @@ This rig ran three-player co-op: host B plus visitors A and C in one mission. Ea
 - Player/research split (build `48415ff0…`, player DLL 38,400 bytes, write window RWX then RX): B, A and C in one mission again. Both visitors joined (JoinLobby 23:35 and 23:39), the metadata guard installed at the second join, and each log stayed under 5 KB. Shots: `shots/split-3p.png`, `shots/split-*-move.png`.
 - `tools/rig/coop.py run --host b --visitors a c` took all three cold-booted slots into one mission with no manual input. It took 6 min 17 s and 72 Mercury Decide decisions (B 25, A 26, C 21 with A relieved). Trace: `shots/coop-20261021-194424.jsonl`. Host view: `shots/drv-final-b-3p.png`.
 - If a visitor accidentally starts a solo mission from the map, leave it with Items, Himorogi Fragment, Use. That forfeits Amrita gained in the mission. On the world map, `BackSpace` jumps the cursor to Starting Point.
-- Read-only rig probes live in `$RIG/tools-tmp` (freestanding Win64). Run each with `proton runinprefix` from the HOME and prefix environment of the target slot. `admission-poll3.exe` is a 10 ms poller for session root, slots, allowance and loader phase. `peek.exe SIZE [*]ADDR[+OFF]`, `rip-sample.exe` and `memdump.exe` are the other probes. Diagnostic writers: `poke.exe`, `budget-set.exe` and `codepatch.exe`. `budget-set.exe` sets the host allowance to 2 and is used to reopen recruitment between rejoin tests. `codepatch.exe` refuses to write unless the expected bytes match.
+- Read-only rig probes live in `$RIG/tools-tmp` (freestanding Win64). Run each with `proton runinprefix` from the HOME and prefix environment of the target slot. `admission-poll3.exe` is a 10 ms poller for session root, slots, allowance and loader phase. `peek.exe SIZE [*]ADDR[+OFF]`, `scan.exe QWORD [MAXHITS]` (8-byte-aligned qword search over the readable memory of `nioh.exe`, for finding live objects such as a vtable instance), `rip-sample.exe` and `memdump.exe` are the other probes. Diagnostic writers: `poke.exe`, `budget-set.exe` and `codepatch.exe`. `budget-set.exe` sets the host allowance to 2 and is used to reopen recruitment between rejoin tests. `codepatch.exe` refuses to write unless the expected bytes match.
 - Do not attach a Win32 debugger to an in-mission client: `DebugActiveProcess` made A exit silently. The old breakpoint and watchpoint probes stay only as reference sources.
 - Shutdown this session: all three games quit through their native dialog (exit 0). Steam showed Invisible (`shots/steam-b-invisible-stop5.png`) and shut down normally. Xvfb `:10` stopped, and a final scan found no live process with a rig HOME. The 4.7 GB research-era `logs-*/nioh3p.log` files went to trash.
 

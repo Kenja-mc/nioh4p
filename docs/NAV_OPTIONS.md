@@ -254,18 +254,17 @@ XTest or uinput still misbehaves.
 The rig's saves are not in Steam `userdata`. Those `485510/ac/WinMyDocuments`
 trees are empty. The saves live in each prefix's Documents:
 
-| slot | path (under `~/nioh3p-test`) | account dir |
+| slot | path (under `~/Projects/gaming/nioh-mp-mod-rig`) | account dir |
 |---|---|---|
-| a | `home-a/.local/share/Steam/steamapps/compatdata/485510/pfx/drive_c/users/steamuser/Documents/KoeiTecmo/NIOH/Savedata/` | `<accountid-a>` |
-| b | `home-b/.../compatdata/485510/pfx/.../KoeiTecmo/NIOH/Savedata/` | `<accountid-b>` |
-| c | `compat-c/pfx/drive_c/users/steamuser/Documents/KoeiTecmo/NIOH/Savedata/` | `<accountid-c>` |
+| a | `home-a/.local/share/Steam/steamapps/compatdata/485510/pfx/drive_c/users/steamuser/Documents/KoeiTecmo/NIOH/Savedata/` | account-specific |
+| b | `home-b/.../compatdata/485510/pfx/.../KoeiTecmo/NIOH/Savedata/` | account-specific |
+| c | `compat-c/pfx/drive_c/users/steamuser/Documents/KoeiTecmo/NIOH/Savedata/` | account-specific |
 
 Each account dir holds `SAVEDATA00/SAVEDATA.BIN`, the character save
 (2,043,288 B), and `SYSTEMSAVEDATA00/SAVEDATA.BIN` (9,824 B). Both were
 written at 2026-10-21 19:02. The dir also holds a 51-byte
 `steam_autocloud.vdf`. A pristine pre-test copy already exists at
-`~/nioh3p-test/save-b-bak/Savedata/<accountid-b>/` (dated 2026-10-18). Steam Cloud
-must stay off. It is off, as `docs/RIG.md:57` records.
+`$RIG/save-b-bak/Savedata/` (dated 2026-10-18). Steam Cloud must stay off.
 
 ### 4.2 What it buys
 
