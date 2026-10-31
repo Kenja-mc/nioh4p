@@ -497,9 +497,14 @@ static int hud_row3_visibility(void *row, uint8_t on, int second)
     const int bound = *(const uint32_t *)(g_hud_row3_block + HUD_ROW3_STATE_OFF) != 0;
     if (!on || bound) {
         if (container) set(container, on);
-        if (s48) set(s48, on);
-        if (s50) set(s50, on);
     }
+    /* The four block sprites stay hidden. Their fill is driven from the
+     * id-selected STATIC block (id 0x73 maps to block A, row 1's): with one
+     * damaged companion every client's gauge showed the same slow partial
+     * fill while the bound characters were full (2026-10-31 runs). The row
+     * renders as the natives do: container with name and bar. */
+    if (s48) set(s48, 0);
+    if (s50) set(s50, 0);
     if (s58) set(s58, 0);
     if (s60) set(s60, 0);
     return ((int (*)(void *, uint8_t))(g_base + (second ? 0xbf3dd0 : 0xbf3af0)))(row, on);
@@ -1318,19 +1323,16 @@ static int hud_row3_store_pos(void *entry, const float v[3])
  * 0x5f/0x60 anchors of the ROOT element's container sprite give rows 1/2, the
  * result goes into group 0 of OUR container, plus the 0x10 dirty bit that makes
  * the UI consume it. Written only when the value changes (or every 30th call).
- *
- * The gauge bar sprites do not follow the container: each resolves its own
- * group-0 entry, and an element id the layout data does not define leaves them
- * at the fallback above row 1 — the 1031 run's frames show the name in the
- * stack with the blue gauge floating. Each visible bar's target is the row
- * position plus the offset measured between row 1's container entry and that
- * index's own bar entry, so the gauge keeps the native name-to-bar geometry
- * whatever the resolution does. */
+ * Only the container is placed: the block sprites resolve their own group-0
+ * entries, but the rendered row ignores writes there (the 2026-10-31 run wrote
+ * them with the dirty bit and the gauge never moved), and those sprites are
+ * force-hidden anyway — see hud_row3_visibility. */
 static void hud_row3_place(void *row3, void *row1, void *row2)
 {
+    (void)row1;
     (void)row2;
-    static float last[3], last_bar[2][3];
-    static int since_write, logged, cal_logged, bar_logged;
+    static float last[3];
+    static int since_write, logged;
     if (!readable(row3, HUD_ROW3_CONTAINER_OFF + 8))
         return;
     void *const sprite3 = *(void **)((uint8_t *)row3 + HUD_ROW3_CONTAINER_OFF);
@@ -1401,111 +1403,26 @@ static void hud_row3_place(void *row3, void *row1, void *row2)
     for (int i = 0; i < 3 && !changed; i++)
         if (v3[i] > last[i] + 0.001f || v3[i] < last[i] - 0.001f)
             changed = 1;
-    int wrote = 0;
-    if (changed || ++since_write >= 30) {
-        if (!hud_row3_store_pos(entry3, v3)) {
-            if (!logged) {
-                logged = 1;
-                LOG("hud row3: place: our entry not writable (entry %p)", entry3);
-            }
-            return;
-        }
-        g_hud_row3_have_pos = 1;
-        since_write = 0;
-        wrote = 1;
-        for (int i = 0; i < 3; i++)
-            last[i] = v3[i];
+    if (!changed && ++since_write < 30)
+        return;
+    if (!hud_row3_store_pos(entry3, v3)) {
         if (!logged) {
             logged = 1;
-            LOG("hud row3: position root 0x5f=(%d,%d) 0x60=(%d,%d) row3=(%d,%d) "
-                "(x1000); wrote entry %p sprite %p + dirty flag",
-                (int)(v1[0] * 1000.0f), (int)(v1[1] * 1000.0f),
-                (int)(v2[0] * 1000.0f), (int)(v2[1] * 1000.0f),
-                (int)(v3[0] * 1000.0f), (int)(v3[1] * 1000.0f), entry3, sprite3);
-        }
-    }
-    /* The bar sprites: row 1's block (A) holds its sprites in creation order,
-     * so bar i of row 1 is the geometry twin of our bar i. */
-    if (!row1)
-        return;
-    void *const cont1 = *(void **)((uint8_t *)row1 + HUD_ROW3_CONTAINER_OFF);
-    if (!cont1)
-        return;
-    float c1[3];
-    if (!hud_row3_anchor(cont1, HUD_ROW3_GROUP_POS, c1, NULL) ||
-        !hud_row3_vec_sane(c1)) {
-        if (!cal_logged) {
-            cal_logged = 1;
-            LOG("hud row3: place: row 1's container entry not readable (%p); "
-                "the gauge keeps its fallback position", cont1);
+            LOG("hud row3: place: our entry not writable (entry %p)", entry3);
         }
         return;
     }
-    for (int bi = 0; bi < 2; bi++) {
-        void *const twin = *(void **)(hud_row3_a() + HUD_ROW3_SPRITES_OFF +
-                                      (size_t)bi * 8);
-        if (!twin)
-            continue;
-        float b1[3];
-        if (!hud_row3_anchor(twin, HUD_ROW3_GROUP_POS, b1, NULL) ||
-            !hud_row3_vec_sane(b1)) {
-            if (!cal_logged) {
-                cal_logged = 1;
-                LOG("hud row3: place: row 1's bar %d entry not readable (%p); "
-                    "the gauge keeps its fallback position", bi, twin);
-            }
-            continue;
-        }
-        void *const s = hud_c_sprite(bi);
-        if (!s)
-            continue;
-        void *eb = NULL;
-        float cur[3];
-        if (!hud_row3_anchor(s, HUD_ROW3_GROUP_POS, cur, &eb) || !eb) {
-            if (!bar_logged) {
-                bar_logged = 1;
-                LOG("hud row3: place: our bar %d entry not resolvable (sprite %p)",
-                    bi, s);
-            }
-            continue;
-        }
-        if (eb == entry1 || eb == entry2 || eb == entry3) {
-            if (!bar_logged) {
-                bar_logged = 1;
-                LOG("hud row3: place: our bar %d's entry %p is a shared anchor "
-                    "node; refusing to write", bi, eb);
-            }
-            continue;
-        }
-        float target[3];
-        for (int i = 0; i < 3; i++)
-            target[i] = v3[i] + (b1[i] - c1[i]);
-        if (!hud_row3_vec_sane(target))
-            continue;
-        int bar_changed = wrote;
-        for (int i = 0; i < 3 && !bar_changed; i++)
-            if (target[i] > last_bar[bi][i] + 0.001f ||
-                target[i] < last_bar[bi][i] - 0.001f)
-                bar_changed = 1;
-        if (!bar_changed)
-            continue;
-        if (!hud_row3_store_pos(eb, target)) {
-            if (!bar_logged) {
-                bar_logged = 1;
-                LOG("hud row3: place: our bar %d's entry %p not writable", bi, eb);
-            }
-            continue;
-        }
-        memcpy(last_bar[bi], target, sizeof target);
-        if (!bar_logged) {
-            bar_logged = 1;
-            LOG("hud row3: place: bar %d twin (%d,%d) - row1 container (%d,%d) = "
-                "offset (%d,%d), target (%d,%d) (x1000); wrote entry %p + dirty",
-                bi, (int)(b1[0] * 1000.0f), (int)(b1[1] * 1000.0f),
-                (int)(c1[0] * 1000.0f), (int)(c1[1] * 1000.0f),
-                (int)((b1[0] - c1[0]) * 1000.0f), (int)((b1[1] - c1[1]) * 1000.0f),
-                (int)(target[0] * 1000.0f), (int)(target[1] * 1000.0f), eb);
-        }
+    g_hud_row3_have_pos = 1;
+    since_write = 0;
+    for (int i = 0; i < 3; i++)
+        last[i] = v3[i];
+    if (!logged) {
+        logged = 1;
+        LOG("hud row3: position root 0x5f=(%d,%d) 0x60=(%d,%d) row3=(%d,%d) "
+            "(x1000); wrote entry %p sprite %p + dirty flag",
+            (int)(v1[0] * 1000.0f), (int)(v1[1] * 1000.0f),
+            (int)(v2[0] * 1000.0f), (int)(v2[1] * 1000.0f),
+            (int)(v3[0] * 1000.0f), (int)(v3[1] * 1000.0f), entry3, sprite3);
     }
 }
 
