@@ -619,8 +619,8 @@ tools/lnk.py scan  <archive>     # payload signatures and entropy per entry
 tools/lnk.py dump  <archive> <n> # extract one entry
 python3 tools/symtab.py stats    # symbol names from the readable sections
 python3 tools/symtab.py find CSessionP2p
-python3 tools/analyze.py         # IAT/EOS reference map from the on-disk exe
-python3 tools/rtti.py            # RTTI -> vtables -> methods (needs an image dump)
+python3 tools/analyze.py [dump]  # IAT/EOS reference map from a runtime dump
+python3 tools/rtti.py <dump>     # RTTI -> vtables -> methods (needs an image dump)
 tools/sites.py                   # classmap -> nioh3p.sites.txt (call-site names for the proxy)
 tools/sites.py --probe 0x5ef800  # what name would a caller at this RVA get?
 python3 tools/logtriage.py       # grouped timeline of a proxy log
@@ -892,8 +892,9 @@ The final build was installed into slot a and relaunched through the persistent
 `ioFailure=0` are visible in `logs-a/nioh3p.log`. This is a live callback smoke,
 not a lobby result. The same verified DLL was then installed into the main Nioh
 installation, and its existing INI settings were preserved.
-`~/nioh3p-test/shots/a-title-ready.png` captures the corrected build at Nioh
-1.24.08's “PRESS ANY BUTTON” title screen after first-run setup.
+`~/Projects/gaming/nioh-mp-mod-rig/shots/a-title-ready.png` captures the
+corrected build at Nioh 1.24.08's “PRESS ANY BUTTON” title screen after
+first-run setup.
 
 ## Rig boot investigation: corrected evidence (2026-10-20)
 
@@ -907,7 +908,7 @@ A fresh direct-launch trace used the existing slot-b launcher with:
 
 ```sh
 WINEDEBUG=+timestamp,+pid,+tid,+process \
-  bash "$HOME/nioh3p-test/scripts/run-b.sh"
+  bash "$HOME/Projects/gaming/nioh-mp-mod-rig/scripts/run-b.sh"
 ```
 
 The first fresh run's `steam-485510.log` recorded this sequence (later runs
@@ -960,8 +961,7 @@ visit. The live trace records:
 - `19:15:17.429`: `CreateLobby(type=2, maxMembers=2)` clamped to 3.
 - `19:15:17.512`: successful `LobbyCreated_t` (`EResult=1`), lobby
   `0x018600001e4b44dd`.
-- Published owner `Nioh-LAN-A`, SteamID `<steamid-lan-a>`, and unlocked
-  session metadata.
+- Published owner `Nioh-LAN-A` and unlocked session metadata.
 
 The game stayed at “Searching for a companion…” while it owned that lobby.
 This proves that the emulator-compatible hooks work in the game, and that the
@@ -983,7 +983,7 @@ Gate → Random Encounters → Become a Visitor → Without Conditions → Searc
   `shots/a-two-player-visitor.png`.
 - Moving A backward changed A's position in B's view, captured in
   `shots/b-visitor-movement-observed.png`. P2P packets were exchanged between
-  distinct identities `<steamid-lan-a>` (A) and `<steamid-lan-b>` (B).
+  distinct emulator identities for A and B.
 
 This is a gameplay join and movement-sync result, not merely emulator peer
 discovery or a lobby callback. The third participant is not yet verified.
@@ -1045,8 +1045,7 @@ Bounded Win32 debugger probes on C then established more than a lobby callback:
 - `CPacketJoinResponse::Execute` at `0x14060B090` received status 1, local index
   2, owner index 0, ten metadata attributes and three member records.
 - The records at response `+0x438`, stride `0xa8`, held distinct B/A/C IDs
-  `<steamid-lan-b>`, `<steamid-lan-a>`, `<steamid-lan-c>` and their correct
-  `Nioh-LAN-B/A/C` names. Response `+0x2c` counts metadata descriptors, and
+  and their correct `Nioh-LAN-B/A/C` emulator names. Response `+0x2c` counts metadata descriptors, and
   `+0x430` counts members. `+0x4cc` is a field within the first member, not
   the start of the member array.
 - At `0x14060B38C`, the executor wrote latch value 1 to
@@ -1426,7 +1425,7 @@ A custom scan found no new detection. The threat count stayed at zero.
 Definitions were `1.461.144.0`, not updated for this run. This was a harness
 test, not Windows multiplayer gameplay. No public scan or upload was made.
 The Windows console output is saved privately at
-`~/nioh3p-test/runs/integrated-windows-smoke.out`.
+`~/Projects/gaming/nioh-mp-mod-rig/runs/integrated-windows-smoke.out`.
 The test directory was removed from the guest, and the VM shut down cleanly.
 
 ### Launch-command and filesystem limits
@@ -1479,14 +1478,21 @@ Build hardening was added in response (2026-10-21, behavior unchanged). The DLL
 now has a `.rsrc` section built from `src/proxy/nioh3p.rc`. It holds a
 `VERSIONINFO` block (ProductName `nioh3p`, FileDescription "DirectInput 8 proxy
 (Nioh three-player co-op mod)", OriginalFilename `dinput8.dll`, version
-1.0.0.0). It also holds an embedded application manifest (`RT_MANIFEST` id 1:
-`asInvoker`, Windows 10/11 `supportedOS`, per-monitor DPI). A resource-less,
-version-less unsigned DLL is a standard Evo-gen trigger. Code patches now
-follow W^X. The metadata guard and the five visitor-allowance immediate writes
-use `PAGE_READWRITE` for the store, then `FlushInstructionCache`, then an
-explicit `PAGE_EXECUTE_READ`. No `VirtualProtect` call requests
-`PAGE_EXECUTE_READWRITE` any more, and the constant survives only in read-only
-`VirtualQuery` bitmask tests. The PE optional-header checksum, previously 0, is
+1.0.0.0). It also holds an embedded application manifest under `RT_MANIFEST`
+id 2 (`ISOLATIONAWARE_MANIFEST_RESOURCE_ID`, `src/proxy/nioh3p.rc`): a DLL
+manifest is honoured only at that id, while id 1
+(`CREATEPROCESS_MANIFEST_RESOURCE_ID`) is the executable's own manifest id, so
+the earlier builds shipped an id-1 resource the loader ignored. The manifest
+itself is unchanged: `asInvoker`, Windows 10/11 `supportedOS`, per-monitor DPI.
+A resource-less, version-less unsigned DLL is a standard Evo-gen trigger.
+Data-pointer patches (IAT and vtable slots) are written through a
+`PAGE_READWRITE` window. Code-site writes keep the page executable for the
+whole window - `PAGE_EXECUTE_READWRITE` for the store, `FlushInstructionCache`,
+then `PAGE_EXECUTE_READ` again - because other game threads can execute
+anywhere in that 4 KB page and a non-executable mapping would fault. That
+applies to the metadata guard's `cmpxchg16b`, the visitor-allowance immediates
+and the setter cap in `install_game_visitor_allowance`, and the `inline_install`
+trampoline patch. The PE optional-header checksum, previously 0, is
 recomputed by `tools/pechecksum.py` after the link. The log is opened with
 `FILE_SHARE_READ`, so another process cannot rewrite it. The proxy logs
 `build: resource manifest present` at startup as proof that the manifest
@@ -1523,10 +1529,10 @@ vendor reports as the fix. Report: https://www.virustotal.com/gui/file/1003e4e73
 #### Windows 11 VM test of the player build `48415ff0…` (2026-10-21)
 
 The VM is `dockurr/windows` (Windows 11 Pro 10.0.26200, KVM, NAT) with its
-files in `~/nioh3p-test/winvm`. Defender ran at its defaults: real-time,
-behavior and IOAV protection on, cloud reporting on, tamper protection on, and
-no exclusions. The definitions were updated before the test to 1.461.144.0,
-engine 1.1.26090.9. No Steam account was used.
+files in `~/Projects/gaming/nioh-mp-mod-rig/winvm`. Defender ran at its
+defaults: real-time, behavior and IOAV protection on, cloud reporting on,
+tamper protection on, and no exclusions. The definitions were updated before
+the test to 1.461.144.0, engine 1.1.26090.9. No Steam account was used.
 
 | Step | Result |
 |---|---|
@@ -1560,6 +1566,36 @@ clean, so the `Wacatac.C!ml` verdict on `1003e4e7…` did not carry over. The CA
 sandbox reported 0 malicious behavior. Zenbox and CAPE were still running at the
 time of writing. Report:
 https://www.virustotal.com/gui/file/48415ff045d11e34cb8e76ca9fc17afa2c8965b3d4f1c447ad96e01c646223a7
+
+Security audit before release (2026-10-31), current player artifacts
+(`55853a1c…`, 78,336 bytes, the modular core and the five add-on DLLs):
+
+- Import tables (tools/pe.py) across all eight built binaries: every DLL
+  imports only from `KERNEL32.dll` (42 functions in the core, 3-8 in the
+  2026-10-31 add-ons). No socket, HTTP, URL-download, registry, service,
+  process-creation, `SetWindowsHookEx`, or remote-injection import
+  (`CreateProcess*`, `VirtualAllocEx`, `WriteProcessMemory`,
+  `CreateRemoteThread` all absent).
+- Strings: the only URI in any binary is the Microsoft manifest namespace
+  (same finding as the source-level review); no URLs, IPs or pipe names.
+- Two independent adversarial model reviews (read-only, separate models)
+  of the same tree: 13 of 14 attack surfaces clean. Remaining findings: a
+  medium local-write symlink/junction edge on the log paths and `out_dir`
+  (requires an attacker who can already write to the game folder, where
+  replacing `dinput8.dll` itself would be the easier attack), a medium
+  stale-value nuance in the HUD block-A borrow/return (a display-stability
+  concern inside the host game, not a downloader risk), and low notes on
+  log growth under `trace=1` (stripped in the player build). No critical or
+  high finding; no repo change required.
+- VirusTotal: reCAPTCHA Enterprise blocks anonymous uploads from
+  automation; the owner uploads the current build manually (copies staged
+  in `~/Downloads`). The Windows 11 VM Defender retest of this build was
+  attempted and blocked: the rebuilt trustfix image runs but its guest
+  OpenSSH never answers (port 2222 banner timeout for 20+ minutes), and no
+  keyboard route (noVNC in a headless browser, XTest, wtype) reached the
+  guest; the owner declined the manual console fallback. The 2026-10-21 VM
+  procedure and its 0-detection result still cover the predecessor build
+  `48415ff0…`; retest before any public release of `55853a1c…`.
 
 ## 15. Four-player static research (2026-10-23)
 
@@ -1687,12 +1723,9 @@ walked, the visitor shots `4p-hostmove-a.png`, `4p-hostmove-c.png` and
 
 ### Slot d identity and its save conversion
 
-Slot d runs as SteamID `<steamid-lan-d>`, name `Nioh-LAN-D`, with an
-Epic emulator id ending in 04 (epicid
-`00000000000000000000000000000004`, productuserid
-`<productuserid-lan-d>`) and save account `<accountid-d>`. The Nioh
-Savedata Decryption Tool v1.3 converted slot c's `<accountid-c>` saves for
-slot d. Run it as `-i <c file> -sid <accountid-d> -o SAVEDATA.BIN`. Use the
+Slot d uses a distinct emulator identity and save account. The Nioh Savedata
+Decryption Tool v1.3 converted slot c's saves for slot d. Run it as
+`-i <c file> -sid <destination-account-id> -o SAVEDATA.BIN`. Use the
 destination save folder as the working directory. The tool writes the output
 and then waits on stdin. Give it Enter or stop it once the file exists.
 While the tool runs, Proton also starts its Xalia helper process next to
@@ -1713,3 +1746,450 @@ timeout of 600 s is too short for a fourth client's load. Pass
 `--timeout 900` for four-player runs. Mission finish, deaths, revives,
 rewards and a new offering after a visitor leaves are untested at
 four. d's join needed the relief pauses on a and c.
+
+## Live three-player session on real Steam (2026-10-25)
+
+First co-op session over Steam with real accounts, the released player build
+`632684d0`, three Windows clients, Torii Gate search with `Without Conditions`
+and stock filters. Evidence: the host's log and the slot-2 client's log, plus
+the host-side trace of a later session; all in
+`~/Projects/gaming/nioh-mp-mod-rig/runs/live-20261025-3p/`.
+
+What the logs show, with times from the host log:
+
+- `…512731` created at 19:18:35, joined by the other two clients at 19:18:38
+  and 19:18:39, and the fan-out ran: `packet 76` 19:18:43, `74` 19:18:59,
+  `17` 19:19:08, `75` 19:19:23, each `also sent to companion slot 2`.
+- The slot-2 client logged `companion slot 2 leaves the shared wait counter to
+  slot 1` at 19:19:22, 19:19:24 and 19:19:28, so the counter fix was doing its
+  job in a live session.
+- `…7847749` ran three mission cycles in one lobby without recreating it:
+  `76/74/17/75` at 19:36:47-19:37:08, 19:41:48-19:44:47 and
+  19:49:52-19:50:14, every one fanning out to slot 2.
+- The host's session survives a companion leaving: the third client left at
+  20:01:13 and the host stayed until 20:04:10, then created `…9894445`.
+
+Still unproven after this session: mission completion, the result screen, death
+and revival, and rewards. The three-client party entered and played, which is
+the claim the README may make; anything past that is not.
+
+## Rejoin after leaving (2026-10-25)
+
+The third client could not get back into a session it had left. Four joins,
+four different lobby ids, never the same one twice:
+
+```
+19:17:30 join …510141   19:18:14 leave
+19:18:38 join …512731   19:30:22 leave
+19:31:16 join …7431299  19:35:50 leave
+19:36:47 join …7847749  20:01:13 leave
+```
+
+Two mechanisms were ruled out from the logs and the trace:
+
+- **The lock filter is not the cause.** The host publishes
+  `ktol_lock_status = ktol_session_unlock` at creation and never changes it,
+  including during two missions (trace, 20:03:54 and 20:07:00 onward).
+- **The slots filter is not in play.** No `AddRequestLobbyListFilterSlotsAvailable`
+  call appears in any of the five logs, so `drop_slots_filter` cannot matter here.
+
+The remaining suspect is the admission counter. The departure path at
+`0x140d7b234` decrements `root+0x39c` and clamps it at zero, so a host that
+loses a companion consumes allowance instead of restoring it. The research
+build now logs that counter and the slot table on raw 16 and raw 7, which is
+the measurement the fix needs.
+
+A host-side trace also showed `integer_79` published as the member count (1 at
+creation, 2 after the visitor joined) and the host's own `integer_82` change
+from 0 to 228 after one session in another host's lobby; both are equality or
+range filters in the search, so they are the second suspect if the counter
+turns out not to be the blocker.
+
+## Release verification on the rig (2026-10-25, evening)
+
+The player build `7e19577b` (source `7bcf2d0` plus the fan-out and thread
+changes) ran a three-player Torii Gate formation on the LAN rig: host `d` plus
+visitors `a` and `c`, `max_players=3`, stock search filters, `trace=0`.
+
+- All three reached the mission: `loader=12`, `state=14`, `mode=1`,
+  `own` slot 0/2/1, `waitn=2`.
+- The host logged `game create request: raising max members 2 -> 3 before
+  allocation` and `packet 76/74/17/75 also sent to companion slot 2`.
+- Every client logged `2/2 companion hook(s) installed` and
+  `recruitment opens 2 visitor slot(s); 7/7 site(s) patched`.
+
+The four-player path is unchanged between the build that passed on the rig at
+13:44 (`632684d0`) and this one. The fan-out bound now reads `max_players`
+instead of the literal 4, which selects slots 2 and 3 in both builds, and the
+other changes are the trace throttle, the research-only probes and the hook
+thread exit. The harness covers `max_players=4` separately.
+
+## The admission counter is not consumed per visitor (2026-10-25)
+
+The research build's probe settles a question that the earlier reading got
+wrong. With host `a` holding an open companion lobby:
+
+```
+22:10:09 session: recv id=16 peer=1 allow=2 mode=1 own=0 sel=0xffffffff
+         prof=0 slot_e8=[0,0,0,0]
+```
+
+That is the admission request itself, and the allowance is the full 2, with no
+slot marked as a member yet. Once the visitor was inside the lobby the host
+still read `allow=2` through `rig.py state`. So the counter is not decremented
+per admission in this flow, and the departure path at `0x140d7b234` is not what
+blocked the live rejoin.
+
+Leaving an open lobby through the UI is also not what it looked like. Backing
+out with BackSpace did not cancel; the game moved into the mission
+(`notice` -> `lore`, `loader` 1->2, `state=9`). A companion lobby appears to
+have no cancel once it is in preparation.
+
+That reframes the live report: the third player left ten minutes into a running
+mission and could not get back in, which is the documented "join before the
+preparation countdown ends" limit, not a counter bug. The counter instrumentation
+stays in the research build and the limit is what the release notes say.
+
+## Research build dies at startup on some slots (2026-10-25)
+
+The research build `fd6e7c07` exited seconds after `preflight:` on slots `d`
+(twice, 21:42 and 21:45) and `a` (22:16, 22:19), and ran normally on `c` in the
+same batch. The log stops right after the mode line, so the crash is in a
+worker that the player build does not have. Relaunching the same binary on the
+same slot succeeded once earlier (a at 21:35), so it is intermittent.
+
+The player build `7e19577b` never showed this: three-player formation passed on
+it minutes earlier, and the smoke matrix runs it eight times per pass.
+
+Consequence: invite-path testing, which needs the research build, is blocked
+until this is understood. Invites are compiled out of the player build, so the
+release is unaffected.
+
+A later attempt to reproduce it deliberately did not: the same binary on the
+same slot started normally (game alive after 75 s). Every observed failure
+followed a force-killed predecessor on that slot (`rig.py down` reports a few
+processes that needed SIGKILL), every success followed a clean one. That pointed
+at the Wine prefix or a half-stopped wineserver rather than at the proxy.
+
+### Resolved: the Steam client, not the proxy (2026-10-26)
+
+Two boots of the same research DLL on slot `a` separate the cases, and the
+cause is the Steam client, not a restarted prefix. This is the LAN slot `a`
+copy (`lan-a`, `trace=1`, `max_players=3`); the log sits in `lan-a/nioh3p.log`
+because `out_dir` is empty.
+
+| 20:37, no Steam client | 20:44 and 20:45, slot-b client up |
+| --- | --- |
+| `preflight: exe=ok eos=6/6 …` at 20:37:24.692, then nothing: no allowance sites, no companion hooks | `preflight:` then `game visitor allowance: 7/7 site(s) patched` and `game tokoyo: 3/3 companion hook(s) installed` |
+| `rig.py up a` reported `exited after 133 s`; no `nioh.exe` left | `rig.py up --client a` reported ready; `nioh.exe` stayed up |
+
+The proxy is loaded in both runs; the clientless run stops one line after
+`preflight:`, which is the game exiting during Steam initialisation. The reason
+the game needs a client at all is the DRM stub: RIG.md records a cold direct
+launch requesting `steam://run/485510//` and exiting with code 53. Slots `c` and
+`d` reuse slot b's client files, so one running client serves the whole rig.
+
+Consequence: a rig boot needs `tools/rig/rig.py up --client …` (or a client that
+is already up). The earlier "force-killed predecessor" correlation was the
+client state, not the prefix state. `down --settle S` now waits for the slot to
+empty and reports what survived, which is still the right way to start from an
+empty prefix, but it is not what made the difference.
+
+## Party HUD: both companion rows (2026-10-26)
+
+Three players in a Torii Gate mission on the rig, host `b` plus visitors `a`
+and `c`. The mission HUD builds two `MultiPlayerGauge@Menu` rows, element ids
+`0x74` and `0x75`, on every client, and draws only the first. Both rows carry a
+live copy of a companion's HP and each row shows its own companion's name.
+
+Poking the hidden row's state word at `+0x28` from `0x01000000` to
+`0x01010001` made the second row appear with the other companion's name and bar
+(`runs/hud-probe-1026/rowB-gate.png`). Filling the row state blocks at
+`0x141b46a90` / `0x141b46b08` did nothing on its own; those are outputs, and the
+first one is rewritten from the shown companion within seconds.
+
+The proxy now hooks the row constructor `0x140c1e230`, registers rows whose id
+is not `0x74`, and keeps the two bits set while Tokoyo mode is on. Verified with
+the player build `99076046` (`build/dinput8.dll`, 46,592 bytes): the host logged
+`game hud: companion row id=0x75 built`, and all three clients showed two rows
+with the right names (`runs/hud-probe-1026/hud-two-rows-b.png`). Limit: two
+rows exist, so at four players one companion still has none.
+
+## Four players, a death and the result screen (2026-10-25, late)
+
+Same build `7e19577b`, `max_players=4` in all four inis, stock search filters.
+Host `b` plus visitors `a`, `c`, `d`.
+
+- Entry passed. Slots came out 0/2/3/1 with `allow=3`, `waitn=3`, and the host
+  logged `packet 74/17/75 also sent to companion slot 3`.
+- The party HUD named one companion (`Nioh-LAN-C`) in both the host's and the
+  visitor's view, which is the known cosmetic limit, not a new fault.
+- A visitor (`a`) died in the cave: `0/1526` HP, body on the ground, the blue
+  gauge still shown. Nobody was near enough to revive, and after about sixty
+  seconds the client showed `You and your companion Nioh-LAN-B have parted
+  ways.` Then all four landed on the result screen together:
+
+```
+Yokai Realm with a Companion: Failed
+Companion                      Nioh-LAN-C
+Amrita obtained                0
+Yokai Realm ... Failed  x0.25
+Objective                      Not completed
+Reward                         2 / 0 / 0
+```
+
+So a single death fails the run for the whole party once the revive window
+passes, and the result screen itself works at four players. Reviving a fallen
+companion was not exercised, because that needs a player to walk to the body.
+Mission completion on the success path is also still unexercised.
+
+Evidence: `~/Projects/gaming/nioh-mp-mod-rig/runs/rel-4p-death/`
+(`combat-a2.png`, `dead-a.png`, `dead-b.png`, `after-death-b.png`,
+`result-b.png`).
+
+## Windows harness and Defender on the release build (2026-10-25)
+
+`7e19577b` ran from the host share on the Windows 11 VM (`nioh3p-winvm`, the
+same image and settings as before):
+
+| Check | Result |
+|---|---|
+| DLL hash in the guest | `7E19577B…`, matches the build |
+| `testgame.exe` with the fake Steam DLLs and the real EOS SDK | exit 0, 6 PASS, `max_players=3` clamp honoured |
+| Defender real-time and behavior protection | both on, definitions 1.461.144.0 |
+| Custom scan of the folder | 0 detections before, 0 after |
+
+The VM was shut down afterwards (`docker stop -t 120`).
+
+## rc2: four players on the HUD build, smoke matrix, publish (2026-10-26, late)
+
+Four-player Torii Gate formation on the candidate build, host `b` plus visitors
+`a`, `c` and `d`, every slot at `max_players=4`: the host logged
+`game visitor allowance: recruitment opens 3 visitor slot(s); 7/7 site(s)
+patched; setter cap raised` and `game create request: raising max members
+2 -> 4 before allocation`, and the driver verified all three visitors in the
+host mission (`shots/coop-20261026-223123.jsonl`). Host state showed `own=0..3`
+with `allow=3` on every slot. The party HUD still has exactly two rows: the
+host frame shows `Nioh-LAN-D` and `Nioh-LAN-C`, and the third companion has no
+row (`runs/hud-probe-1026/hud-4p-two-rows-b.png`), which matches the two-row
+limit measured in the probe.
+
+The recorded same-source builds produced `99076046` (the afternoon
+three-player HUD evidence) and `750785b5`. The cause of the hash difference is
+not established: the earlier DLL was not located for byte comparison. The
+shipped DLL has a PE reproducible-build marker; that marker alone does not
+prove the build is reproducible. The four-player deploy raced the candidate
+repack, so the rig verified exactly the shipped bytes.
+
+The six-run smoke matrix passed on `750785b5` (exit 0 each; artifacts under
+`~/.cache/nioh3p/rc2-*`): player proxy and research proxy at `max_players` 3
+and 4, plus the ownership run at both counts. EOS and Steam raises logged
+`2 -> 3` and `2 -> 4` as configured.
+
+Published `v1.1.0-rc2` on GitHub with `build/live-test/nioh3p-live-test.zip`
+(zip `0ef866bf…`, DLL `750785b5…`). The `build/live-test` folder now holds this
+candidate, including `SHA256SUMS`.
+
+The [public rc2 tag](https://github.com/Kenja-mc/nioh4p/releases/tag/v1.1.0-rc2)
+points to commit `0287498caa2ca4eefba698f8c2a32f1a39213b62`, whose commit
+message identifies the older `632684d0` candidate. Its proxy source blob is
+`e8486627855ba51162d091e6aa95355fec870e1b`, not the proxy blob
+`790a4a7804de2d684a33967772eb5e13780a92de` at recorded candidate source
+`8622d20` (the same blob is present at local commit `7843025`). Thus the
+tagged source does not correspond to the HUD candidate. GitHub's release API
+reports zip digest `0ef866bf…`, matching the local zip; its `dinput8.dll` member
+hashes to `750785b5…`. The asset itself was not independently downloaded.
+
+The README inside that zip asks for `game tokoyo: 2/2 companion hook(s)
+installed`, whereas the recorded player source has three inline hooks and
+reports `3/3` when all install. The public release page says `3/3`, but claims
+both companion rows show on every client: the three-client evidence above is
+for `99076046`, while the four-client `750785b5` evidence above establishes
+the host's two named rows, not every client's rows or live HP. These release
+claims and the source/tag mismatch need correction with explicit publication
+approval; do not replace the frozen asset as part of this investigation.
+
+## The frozen dist zip was overwritten and restored (2026-10-26)
+
+`tools/package.sh` was run without checking `NEXT.md`, and it overwrote the
+frozen `dist/nioh3p-player.zip` (`48415ff0…` DLL) with the candidate build.
+`dist/` is gitignored, so git had no copy. Restored from surviving members:
+the DLL came from the home-a rig Steam library (hash matches `48415ff0…`), the
+ini from `be5cc94` and the README from `c189667`. The zip bytes differ from
+the original (`50bc324f…`); no hash of the original zip was ever recorded, so
+member-level identity is the best possible. The staging copy went to the trash
+with `trash-put`.
+
+## Third HUD row: first live trial (2026-10-26, night)
+
+Build `9d394e24` (player), four players, host `b` plus visitors `a`, `c`, `d`.
+The vtable-thunk third row (id `0x73`, private vtable `0x1412729c0` copy with
+seven block-swapping thunks, proxy block `C`) built cleanly on every client:
+`element slot 0x73 is free`, the seven `thunk at slot` lines, `init done,
+block C carries 4/4 sprites`, `registered in element slot 0x73`. No crash: all
+four clients stayed in the mission to the end. This confirms the creation
+sequence (menu factory, ctor `0x140c1e230`, init slot `0x08`, register
+`0x140bfacc0`) and the block-swap machinery under live fire.
+
+Two problems, both visible in the logs:
+
+1. The frame slot (`0x50`) is called exactly once per element, at build time -
+   `the game drives the frame slot on the game thread` logged once and never
+   again. Registration in the element registry alone does not put a row into
+   the per-frame update iteration, so the worker's placement flag was never
+   consumed and the row was never placed or shown. Whatever drives rows 1/2
+   every frame is still unidentified (menu attach path is the suspect).
+2. The game's companion assigner re-parks characters into the native rows: about
+   five seconds after `companion slot 3 character ... bound to block C`, a
+   native row took the same character and the bind never recovered, so the
+   acceptance test in the proxy is stricter than the assigner's.
+
+An earlier build crashed all four games at mission entry when the worker thread
+called the anchor helpers (`0x140c58930`/`0x140dda790`) directly; placement now
+runs only on the game thread from the frame thunk.
+
+## Third HUD row: piggyback trials (2026-10-26, late)
+
+Trial 2 (`c9ec01e6`) died within one second of the row3 build on every client:
+`game-*.out` shows the gamescope child shutting down in the same second as the
+build log lines. Trial 3 (`afbe0929`, instrumented) separated the stages:
+
+- The piggyback works: with the class vtable's update slot patched, the log
+  shows `the native update slot (0x18) runs per frame` on every client. The
+  frame slot (`0x50`) is still a one-shot call at build time, so the update
+  slot is the per-frame driver.
+- The block argument the game passes in `r8` is `0x140bfb5a0`, a .text address
+  near the base ctor - not block A or B, so the update's third-argument
+  semantics are still unresolved.
+- The element gets created in the companion PREP screen as well (the prep gauge
+  also builds rows `0x74`/`0x75`), and after the build the worker went silent -
+  consistent with `hud_row_wanted()` (the Tokoyo byte) flipping off outside the
+  mission.
+- All four clients then died at mission entry, when the mission HUD rebuilds
+  and the globally patched update slot drives the stale prep-era element
+  through `hud_row3_drive`, which had no Tokoyo gate or freshness check.
+
+A party-slot-only companion pick found no candidate in the prep screen; the
+walk of the static companion set at `0x18a0590` ran guarded and found nothing
+there either.
+
+## Third HUD row: the row renders (2026-10-27, early)
+
+Trial 7 (`7525af6d`): with placement disabled, the full chain ran on host `b`
+and visitor `c` - `registered ... gauge generation 1`, companion bound from the
+party slots, `drive: bound update returned`, `per-frame drive confirmed`, row
+shown with state word `0x1010001` - and both clients stayed alive in the
+mission. The host frame shows the third row's blue HP bar at the top screen
+edge (factory default position; the layout anchor call is disabled), with the
+two native rows below showing the other two visitors
+(`runs/hud-probe-1026/row3-trial7-b-hud.png`). The bound class update
+therefore survives with a proxy-filled block C.
+
+Visitors `a` and `d` died inside that same first bound update (last line
+`drive: running the bound update (...)`), while `b`/`c` survived it - the
+crash is data- or timing-dependent, not structural. Trial 6 had already
+pinned the earlier placement crash to the game's layout-table reader
+(`0x140c58930` -> `0x140dd6ce0`, which dereferences `[obj+0xd8]` unguarded);
+the write/read chain has since been mapped end to end (sprite-id keyed
+`obj -> [+0xd8] -> [+0x428] name table -> per-sprite node list ->
+handle+0x30/0x34/0x38 = vec3`), so placement can be reimplemented with plain
+guarded reads and stores, no game calls.
+
+Also fixed along the way: the update slot's third argument is dead register
+content (the update derives its block from the element id; `r8` only matters
+for the assigner's internal call), the companion acceptance test had the
+`+0x430` polarity inverted, `hud_row_wanted()` gating was refactored around a
+logged Tokoyo transition, creation is mission-only (loader `0xC`), and a gauge
+generation counter now separates prep-era elements from mission elements
+after the trial-4 lesson (a prep-created element must never be driven by
+mission-entry frames).
+
+## Third HUD row: experimental placement and gating (2026-10-27, night)
+
+Trials 8-10 (`1100b399`, `dd9291df`): with `hud_row3` enabled, all four
+clients reached the mission in three runs. Screenshots show names and a gauge;
+they do not prove that gauge belongs to the third companion, that its values
+change with that companion's HP/Ki, or that row 1 remains correct.
+
+The group mystery resolved empirically: the ids the assigner passes to the
+game's anchor helper are not indices into the sprite's group-name table (37
+entries; group 0 is `"Null_player_gauge_ALL_pos"`). Reading group 0 for all
+three rows resolves and writes cleanly, but the rendered row ignores that
+handle - the natives' true anchor source for `0x5f`/`0x60` is still being
+traced through `0x140dd8d50`, so the row currently renders at the layout
+fallback position above row 1 instead of one pitch below row 2.
+
+Stability note: the earlier bound-update crash (two of four clients, trial 7)
+did not recur in trials 8-10; a vectored exception handler logs
+`exception 0x... at exe+0x...` for any in-image fault while `hud_row3=1`, so
+a recurrence now names its instruction.
+
+## Third HUD row: three name rows on screen (2026-10-27, night)
+
+Trial 11 (`76d49c95`): the host frame shows three names and a gauge showing
+HP `1651 / 1651` and Ki `104 / 104`. Its owner and live behavior are not
+established; it may be the local player's gauge. Logs show an anchor write:
+the root sprite (`registry[0]`, not the row sprites) holds the named anchors
+(`player_01_pos` for `0x5f`, `player_02_pos` for `0x60`, 97 entries), the
+write target is the third row's own group-0 entry, and the UI consumes it only
+when the dirty bit `[entry+0xec] |= 0x10` is set - the write helper
+`0x1405478f0` sets that bit; without it the value is ignored.
+
+The gauge appears above the name stack rather than aligned with a name.
+First identify which player it represents and test changing HP/Ki on each
+client; only then determine whether and how a third companion gauge is placed.
+
+Trial log highlights (all four clients reached mission in trials 8-11):
+`piggyback installed on the native row slots 0x18/0x50`, `bound update
+returned`, `per-frame drive confirmed`, `wrote entry ... + dirty flag`. The
+bound-update crash from trial 7 never recurred across trials 8-11; the
+vectored exception handler stays armed under `hud_row3=1`.
+
+## Third HUD row: renders in a live four-player mission (2026-10-31)
+
+The live formation (host b, visitors a/c/d, build `55853a1c`) was captured
+again with a fixed `tools/rig/shot.sh`: the old script screenshotted the
+slot's Xvfb (the Steam client UI), never the game; it now reads the live
+game's runtime dir and wayland display from `/proc` and captures through
+`gamescopectl` like `nioh_nav.shot`. Real game frames: `shots/4p2-{b,a,c}.png`.
+A blue-pixel scan (B>140, R,G<110, B-R>50) finds a band at rows 90-179 on
+host and visitor (895 and 827 px; zero in the other bands), and vision review
+of that band confirms a blue UI health bar with p=0.97 (host) and p=0.93
+(visitor) - the third row's blue bar renders in a real mission, not only in
+the HUD probe. Counting companion rows on the same frames leans two of three
+(p(2)=0.55 on the visitor), so the full rows-for-every-companion goal is
+still short one row. Game-side, all four slots bound and drove the row
+through the mission (78-79 `shown word` lines each, reaching `0x1010001`,
+`runs/fourp-live-1031/`). The earlier same-night note that no bar was
+visible was an artifact of the broken capture, not the game.
+
+## Synthetic invite factory guard
+
+The synthetic invite test first dropped the request at the open-task factory
+guard. The decrypted executable starts that factory with `40 57 48 83 ec 40`,
+but the guard omitted the first byte. The guard now checks the complete
+prologue.
+
+A second LAN test created the open-task object and posted the join request.
+The test stopped before it observed a `JoinLobby` call. The result does not
+establish a completed join or a working Steam invitation.
+
+## Four-player experimental HUD fault
+
+Four LAN players entered a mission with `hud_row3=1` and saves converted from
+one cloud backup. Two visitors logged access violations at executable offset
+`0x532647` while the third-row bound update ran. Both visitors then exited.
+At that instruction, the game dereferences an object plus `0x1c8`; the access
+address was `0x1c8`, which indicates a null object. The host later logged an
+access violation at `0x765ba0` and exited. The host and one visitor
+screenshots showed two companion rows, not three.
+
+The fault log does not prove why the game accessed invalid memory. The
+experimental row remains off by default. Do not infer that the normal
+configuration has the same fault from this test.
+
+With `hud_row3=0`, a repeat LAN run used the same converted save source.
+All four players entered a mission. The host saw a visitor move, and all four
+game processes were still running after the movement check. The host showed
+two companion health rows. The run did not test damage, revival, mission
+completion, or four distinct Steam accounts.

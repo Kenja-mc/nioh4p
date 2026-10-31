@@ -12,7 +12,7 @@ the mod was run, built or touched. Re-runnable with `tools/ktol_refs.py`.
 | Import names are real | the `IMAGE_IMPORT_DESCRIPTOR` array in `.rdata` (0x1761EE0..) is intact; only the IAT is patched with resolved addresses (slot 0x14119B2A0 holds `0x6FFFFC164560`, i.e. a loaded-module pointer). Slot → name mapping used throughout, e.g. `0x14119B2A0 = EOS_LobbyModification_AddAttribute`, `0x14119B2B8 = EOS_Lobby_JoinLobby` |
 | `.text` is plaintext here (unlike the on-disk exe) | `objdump` at the mod's own backtrace frames decodes cleanly (e.g. `0x1405EDCD0: push %rbx; sub $0x20,%rsp`) |
 | `analysis/symbols.txt` | **is a name pool without addresses** (see `tools/symtab.py` docstring: "Addresses are *not* in this table: it is a name pool"). It corroborates *names* only. Class↔code address pairs come from `analysis/classmap.txt` |
-| Live log | `/home/<you>/.cache/nioh3p/out/nioh3p.log` line 161 `Steam SetLobbyData: key="ktol_lock_status" value="ktol_session_unlock"` is used as the ground-truth anchor for key direction |
+| Live log | `~/.cache/nioh3p/out/nioh3p.log` line 161 `Steam SetLobbyData: key="ktol_lock_status" value="ktol_session_unlock"` is used as the ground-truth anchor for key direction |
 
 Reproduce any line of this report with:
 

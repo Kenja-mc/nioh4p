@@ -87,3 +87,7 @@ python3 tools/rig/coop.py host b --dry-run          # one full driven step, no k
 ```
 
 `decide` exits 0 after it prints JSON: the screen and highlight of the model with confidences, the predicates, the raw answers, and the action that the guard or table selects. Use it to make sure that a new profile is correct before you let the loop send keys.
+
+`host b --dry-run` prints `coop: slot b: DRY-RUN: <action>` for the step it would
+have sent and then exits 3 - 0 means a driven run finished, 1 a slot failed, 3
+that nothing was sent. A dry run is a smoke check of the profile, not a run.
