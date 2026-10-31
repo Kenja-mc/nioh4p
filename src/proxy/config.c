@@ -35,7 +35,7 @@ Config g_cfg = {
     .force_unlock      = 0,
     .drop_slots_filter = 0,
     .trace             = 0,
-    .hud_row3          = 0,
+    .hud_row3          = 1,
 };
 
 /* cfg_load runs before the log is open, so it only records the outcome here;

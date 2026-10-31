@@ -1104,6 +1104,79 @@ static void *hud_row3_sprite_data(const void *sprite)
     return *(void *const *)(n2 + 0x28);
 }
 
+#ifdef NIOH3P_RESEARCH
+/* One-shot node dump, research builds only. The blue gauge that renders at the
+ * fallback position is a sub-element of the container sprite (layout id
+ * 0x27761, shared with rows 1/2). Their containers hold the same node list, so
+ * the dump of ours next to row 1's names the gauge and shows what a laid-out
+ * node looks like — the fix then hides or repositions it. Pure reads. */
+static void hud_row3_dump_nodes(const char *who, const void *row)
+{
+    if (!row || !readable(row, HUD_ROW3_CONTAINER_OFF + 8))
+        return;
+    const void *const sprite =
+        *(void *const *)((const uint8_t *)row + HUD_ROW3_CONTAINER_OFF);
+    const uint8_t *const link =
+        sprite && readable(sprite, 0x30)
+            ? *(const uint8_t *const *)((const uint8_t *)sprite + 0x28) : NULL;
+    const uint8_t *const cont = link && readable(link, 0x30)
+        ? *(const uint8_t *const *)(link + 0x28) : NULL;
+    if (!cont || !readable(cont, 0x50))
+        return;
+    const uint8_t *head = *(const uint8_t *const *)(cont + 0x28);
+    const uint8_t *const tail = cont + 0x48;
+    for (int i = 0; i < 80 && head && head != tail && readable(head, 0x18); i++) {
+        const uint8_t *const node = *(const uint8_t *const *)(head + 0x10);
+        head = *(const uint8_t *const *)(head + 0x08);
+        if (!node || !readable(node, 0xf0))
+            continue;
+        char nm[28];
+        const char *const raw = *(const char *const *)(node + 0xa8);
+        int n = 0;
+        if (raw && readable(raw, 1)) {
+            for (; n < (int)sizeof nm - 1 && readable(raw + n, 1) && raw[n]; n++) {
+                const char c = raw[n];
+                nm[n] = (c >= 0x20 && c < 0x7f) ? c : '?';
+            }
+        }
+        nm[n] = 0;
+        const int live = *(const uint64_t *)(node + 0xb8) != 0;
+        const uint8_t *const handle = live ? *(const uint8_t *const *)(node + 0xc8)
+                                           : *(const uint8_t *const *)(node + 0xd0);
+        int x = 0, y = 0, z = 0;
+        uint32_t h[4] = {0, 0, 0, 0};
+        if (handle && readable(handle, 0x3c)) {
+            x = (int)(*(const float *)(handle + 0x30) * 1000.0f);
+            y = (int)(*(const float *)(handle + 0x34) * 1000.0f);
+            z = (int)(*(const float *)(handle + 0x38) * 1000.0f);
+            for (int k = 0; k < 4; k++)
+                h[k] = *(const uint32_t *)(handle + (size_t)k * 4);
+        }
+        LOG("hud row3: nodes %s [%02d] node %p \"%s\" live %d handle %p "
+            "pos (%d,%d,%d)x1000 h %08x %08x %08x %08x e %08x %08x %08x %08x",
+            who, i, node, nm, live, handle, x, y, z,
+            h[0], h[1], h[2], h[3],
+            *(const uint32_t *)(node + 0xe0), *(const uint32_t *)(node + 0xe4),
+            *(const uint32_t *)(node + 0xe8), *(const uint32_t *)(node + 0xec));
+    }
+}
+
+/* Dump our row's container, row 1's (the laid-out reference) and the root's
+ * (the anchor holder the fallback position sits in). Once per build. */
+static void hud_row3_dump_nodes_once(const void *row3, const void *row1,
+                                     const void *root)
+{
+    static int done;
+    if (done)
+        return;
+    done = 1;
+    LOG("hud row3: node dump (ours / row1 / root)");
+    hud_row3_dump_nodes("ours", row3);
+    hud_row3_dump_nodes("row1", row1);
+    hud_row3_dump_nodes("root", root);
+}
+#endif
+
 /* Trace of one chain walk. Filled only for the first few placement attempts so
  * a broken link names itself in the log instead of failing silently. */
 typedef struct {
@@ -1300,6 +1373,81 @@ static int hud_row3_anchor(void *sprite, int group, float out[3], void **entry_o
     return 1;
 }
 
+/* The row's own container child nodes that draw origin-anchored when the
+ * layout never wrote their transforms. Without a layout entry for id 0x73 the
+ * wide host gauge (and the return-timer group) keep their transforms at
+ * (0,0,0) and paint at the fallback position — the stray blue bar (node dump,
+ * 2026-10-31: ours all (0,0,0), row 1's carry real positions). The name and
+ * the thin bar follow the root transform instead, so they must not be moved. */
+static const char *const hud_row3_hide_nodes[] = {
+    "Null_host_gauge", "host_gauge_bace", "host_gauge", "Null_enemy_gauge_ani",
+    "Null_return_timer_all", "return_timer_bg", "return_timer_circle_L",
+    "return_timer_circle_R", "timer_mark_bg", "Null_roll_ani", "timer_mark_C00",
+};
+
+/* Park those nodes' handles far off screen. The anchor reader 0x140dd8d50
+ * takes the live handle from node+0xc8 when node+0xb8 != 0 (every dumped
+ * child) and only falls back to node+0xd0 otherwise, so both are written;
+ * the 0x10 dirty bit is what makes the UI consume the new transform — the
+ * same write the root placement proved. Skipped once the position already
+ * sits beyond -2000, so steady state costs a name walk only. */
+static void hud_row3_hide_fallback_draws(void *row3)
+{
+    static const float off[3] = { -3000.0f, -3000.0f, 0.0f };
+    if (!readable(row3, HUD_ROW3_CONTAINER_OFF + 8))
+        return;
+    const void *const sprite =
+        *(void *const *)((const uint8_t *)row3 + HUD_ROW3_CONTAINER_OFF);
+    const uint8_t *const link =
+        sprite && readable(sprite, 0x30)
+            ? *(const uint8_t *const *)((const uint8_t *)sprite + 0x28) : NULL;
+    const uint8_t *const cont = link && readable(link, 0x30)
+        ? *(const uint8_t *const *)(link + 0x28) : NULL;
+    if (!cont || !readable(cont, 0x50))
+        return;
+    const uint8_t *head = *(const uint8_t *const *)(cont + 0x28);
+    const uint8_t *const tail = cont + 0x48;
+    for (int i = 0; i < 80 && head && head != tail && readable(head, 0x18); i++) {
+        const uint8_t *const node = *(const uint8_t *const *)(head + 0x10);
+        head = *(const uint8_t *const *)(head + 0x08);
+        if (!node || !readable(node, 0xf0))
+            continue;
+        const char *const name = *(const char *const *)(node + 0xa8);
+        if (!name || !readable(name, 1))
+            continue;
+        int hit = 0;
+        for (size_t k = 0; k < sizeof hud_row3_hide_nodes /
+                                sizeof hud_row3_hide_nodes[0]; k++) {
+            const char *const want = hud_row3_hide_nodes[k];
+            int j = 0;
+            while (want[j] && readable(name + j, 1) && name[j] == want[j])
+                j++;
+            if (!want[j] && readable(name + j, 1) && !name[j]) {
+                hit = 1;
+                break;
+            }
+        }
+        if (!hit)
+            continue;
+        int moved = 0;
+        for (int which = 0; which < 2; which++) {
+            uint8_t *const handle =
+                *(uint8_t *const *)(node + (which ? 0xc8 : 0xd0));
+            if (!handle || !readable(handle + 0x30, 0xc))
+                continue;
+            if (*(const float *)(handle + 0x30) <= -2000.0f)
+                continue;
+            *(float *)(handle + 0x30) = off[0];
+            *(float *)(handle + 0x34) = off[1];
+            *(float *)(handle + 0x38) = off[2];
+            moved = 1;
+        }
+        if (moved)
+            *(uint32_t *)((uint8_t *)node + HUD_ROW3_ENTRY_FLAGS) |=
+                HUD_ROW3_ENTRY_DIRTY;
+    }
+}
+
 /* Store the position the way 0x1405478f0 does: the three floats at
  * [entry+0xd0]+0x30/0x34/0x38 plus the 0x10 bit in [entry+0xec], which is what
  * makes the UI pick the new transform up. */
@@ -1412,6 +1560,7 @@ static void hud_row3_place(void *row3, void *row1, void *row2)
         }
         return;
     }
+    hud_row3_hide_fallback_draws(row3);
     g_hud_row3_have_pos = 1;
     since_write = 0;
     for (int i = 0; i < 3; i++)
@@ -1612,6 +1761,9 @@ static void hud_row3_drive(void *arg, void *r8)
         LOG("hud row3: all five sprites resolved after %d frames",
             g_hud_row3_wait_frames);
         g_hud_row3_wait_frames = -1;
+#ifdef NIOH3P_RESEARCH
+        hud_row3_dump_nodes_once(row3, row1, root);
+#endif
     }
 
     void *const char_a = *(void *const *)(hud_row3_a() + HUD_ROW3_CHAR_OFF);
