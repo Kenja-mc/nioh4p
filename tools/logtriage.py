@@ -195,7 +195,8 @@ KV_ARROW_RE = re.compile(r'key="([^"]*)"\s*->\s*"([^"]*)"\s*$')
 EOS_ATTR_RE = re.compile(r'key="([^"]*)"\s+(bool|int64|double|string)=(?:"([^"]*)"|(\S+))')
 PAYLOAD_RE = re.compile(r"^steam cb: payload:\s*((?:[0-9a-fA-F]{2}[ \t]*)+)$")
 IFACE_RE = re.compile(r'Steam FindOrCreateUserInterface\("([^"]*)"\) -> (\S+)$')
-RUN_RE = re.compile(r"steam cb: Run id=(-?\d+) obj=(\S+)(?: class (.+?))? param=(\S+)$")
+RUN_RE = re.compile(r"steam cb: Run id=(-?\d+) obj=(\S+)(?: class (.+?))? param=(\S+)"
+                    r"(?: ioFailure=\d+ call=\d+)?$")
 REG_RE = re.compile(r"steam cb: (RegisterCallback|RegisterCallResult) id=(-?\d+) obj=(\S+) "
                     r"vtbl=(\S+) run=(\S+)(?: class (.+))?$")
 REG_AT_RE = re.compile(r"steam cb: Run at (\S+) watched \(cb (-?\d+)\)")

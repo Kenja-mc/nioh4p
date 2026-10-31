@@ -110,20 +110,26 @@ int vfmt(char *dst, int cap, const char *f, va_list ap)
             tmp[len++] = '%';
         } else if (spec == 'd' || spec == 'i' || spec == 'u' || spec == 'x' || spec == 'X' || spec == 'p') {
             unsigned long long v;
+            int neg = 0;
             if (spec == 'p') {
                 v = (unsigned long long)(uintptr_t)va_arg(ap, void *);
                 spec = 'x';
+            } else if (spec == 'd' || spec == 'i') {
+                /* Fetch with the argument's own signed type. Read as unsigned,
+                 * a negative int is already a large positive number before any
+                 * sign test runs (role -1 was logged as 4294967295). Negating
+                 * in unsigned arithmetic keeps INT_MIN/LLONG_MIN defined. */
+                long long sv = longs >= 2 ? va_arg(ap, long long)
+                             : longs == 1 ? va_arg(ap, long)
+                             : va_arg(ap, int);
+                neg = sv < 0;
+                v = neg ? 0ull - (unsigned long long)sv : (unsigned long long)sv;
             } else if (longs >= 2) {
                 v = va_arg(ap, unsigned long long);
             } else if (longs == 1) {
                 v = va_arg(ap, unsigned long);
             } else {
                 v = (unsigned long long)va_arg(ap, unsigned int);
-            }
-            int neg = 0;
-            if ((spec == 'd' || spec == 'i') && (long long)v < 0) {
-                neg = 1;
-                v = (unsigned long long)(-(long long)v);
             }
             char digits[24];
             int dn = 0;

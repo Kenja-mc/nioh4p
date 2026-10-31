@@ -281,8 +281,13 @@ int inline_install(const InlineHook *h)
     FlushInstructionCache(GetCurrentProcess(), tramp, 64);
     uint8_t expected[16], patch[16];
     memcpy(expected, site, sizeof expected);
-    /* The memcmp above proved bytes 0..n-1 equal the site, so the site bytes
-     * are exactly the comparison word cmpxchg16b needs. */
+    /* Bytes 0..n-1 of the comparison word are the verified plaintext, not
+     * whatever the site holds at this instant. The memcmp above is not atomic
+     * with this copy, and VMProtect rewrites these pages lazily: the compare
+     * below must fail if the site changed since, instead of adopting the new
+     * bytes and branching over code the trampoline does not replay. Bytes
+     * n..15 stay native and come from the snapshot. */
+    memcpy(expected, h->bytes, h->n < 16 ? h->n : 16);
     memcpy(patch, expected, sizeof patch);
     abs_jmp(patch, h->detour);
     /* Bytes 14 onward stay native. The detour jumps past the complete
