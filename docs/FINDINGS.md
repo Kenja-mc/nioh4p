@@ -2710,3 +2710,36 @@ local record:
 
 Reload the same save after the run and compare the collection id list and
 count; a count that does not survive reload is not persistence evidence.
+
+## Implicit state machines
+
+Three flows still track their state as flag combinations. Each has a worked-out
+explicit shape; the rewrite waits for a session with rig access, because the
+transitions are load-bearing and deserve live re-verification.
+
+- Lobby authority (`rules.c`): `join`, `owned`, `published`, `join_self`,
+  `member`, `create_hint` and `host_ok` form the real machine
+  IDLE / HOST_PENDING / OWNED / JOIN_PENDING / JOINED; `generation` guards
+  commits issued after out-of-lock Steam calls. Shape: one enum, with
+  `host_ok` as the data-quality flag inside JOINED.
+- Third-row element lifecycle (`hud.c`): `g_hud_row3_active`, `_dead`,
+  `_failed`, `_attempts`, `_settle`, `_wait_frames` and the HUD generation
+  pair encode OFF / SETTLING / BUILDING / WAIT_SPRITES / LIVE / STALE.
+  `g_hud_row3_settle` serves two different waits (foreign-slot countdown and
+  sprite settle) and is reset in three places. Shape: one enum on the game
+  thread plus two named counters; keep the generation pair.
+- Preparation roster cache (`prep.c`): `g_prep_rendered_sprite` NULLness plus
+  the snapshot compare encode NO_WIDGET / STOCK_CAPTURED / RENDERED_CURRENT,
+  identified by raw sprite pointer. Shape: one state struct behind a single
+  invalidate function.
+
+Deliberately left as flags: the one-shot log latches, the
+`hud_a20_borrow`/`hud_a20_return` shadow-write protocol around block A +0x20,
+and the shrine-respawn once-per-pending latch, which is only correct against
+the game's own respawn state numbering.
+
+Performance notes from the same review, deferred as behavior-adjacent: the
+row-3 placement walks re-resolve layout anchors every frame (a per-region
+`readable` cache would cut every probe path at once), the shrine poll
+re-derives the manager twice per call, and the row-3 acceptance log writes
+synchronously on the game thread every 2 s during a live mission.

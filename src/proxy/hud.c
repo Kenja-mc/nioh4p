@@ -1,4 +1,3 @@
-/* nioh3p core: hud (split from nioh3p_proxy.c) */
 #include "nioh3p_internal.h"
 
 /* ------------------------------------------- party HUD: the second row -- */
@@ -59,10 +58,12 @@ static int hud_row_tokoyo(void)
     int on = -1;
     if (readable(manager, 8) && *manager && readable(*manager + 0x660, 1))
         on = *(*manager + 0x660) ? 1 : 0;
-    if (g_cfg.hud_row3 && on != (int)InterlockedExchange(&g_hud_row_tokoyo_last, on))
+    if (g_cfg.hud_row3 && on != (int)g_hud_row_tokoyo_last) {
+        InterlockedExchange(&g_hud_row_tokoyo_last, on);
         LOG("game hud: tokoyo mode %s (byte %d, manager %p)",
             on < 0 ? "unreadable" : on ? "on" : "off", on,
             readable(manager, 8) ? (void *)*manager : NULL);
+    }
     return on == 1;
 }
 
@@ -832,7 +833,7 @@ static int thunk_frame(void *self)
     const int r = hud_row3_frame_native(self);
     /* The game itself calls the registered element's frame slot on the game
      * thread; placement and showing are done by the drive, after the update. */
-    if (!InterlockedExchange(&g_hud_row3_frame_fired, 1))
+    if (!g_hud_row3_frame_fired && !InterlockedExchange(&g_hud_row3_frame_fired, 1))
         LOG("hud row3: the game drives the frame slot on the game thread");
     return r;
 }
@@ -1413,16 +1414,21 @@ static void hud_row3_hide_fallback_draws(void *row3)
         if (!node || !readable(node, 0xf0))
             continue;
         const char *const name = *(const char *const *)(node + 0xa8);
-        if (!name || !readable(name, 1))
+        char namebuf[32];
+        /* One range probe per node instead of one per compared character. */
+        if (!name || !readable(name, sizeof namebuf))
             continue;
+        for (int c = 0; c < (int)sizeof namebuf; c++)
+            namebuf[c] = name[c];
         int hit = 0;
         for (size_t k = 0; k < sizeof hud_row3_hide_nodes /
                                 sizeof hud_row3_hide_nodes[0]; k++) {
             const char *const want = hud_row3_hide_nodes[k];
             int j = 0;
-            while (want[j] && readable(name + j, 1) && name[j] == want[j])
+            while (want[j] && j < (int)sizeof namebuf - 1 &&
+                   namebuf[j] == want[j])
                 j++;
-            if (!want[j] && readable(name + j, 1) && !name[j]) {
+            if (!want[j] && j < (int)sizeof namebuf && !namebuf[j]) {
                 hit = 1;
                 break;
             }
@@ -1880,7 +1886,7 @@ static void hud_row3_drive(void *arg, void *r8)
         hud_row3_visibility(row3, 1, 1);
     }
     hud_row_show(row3);
-    if (!InterlockedExchange(&g_hud_row3_driven, 1))
+    if (!g_hud_row3_driven && !InterlockedExchange(&g_hud_row3_driven, 1))
         LOG("hud row3: per-frame drive confirmed through a native row, "
             "state word %#x, container sprite %p",
             *(const uint32_t *)((const uint8_t *)row3 + HUD_ROW_FLAGS_OFF),
@@ -1906,7 +1912,7 @@ static void hud_row_keep_shown(void *self)
 static int piggy_update(void *self, void *arg, void *block)
 {
     const int r = ((hud_row_arg_fn)g_hud_row3_native_orig[0])(self, arg, block);
-    if (!InterlockedExchange(&g_hud_row3_seen_update, 1))
+    if (!g_hud_row3_seen_update && !InterlockedExchange(&g_hud_row3_seen_update, 1))
         LOG("hud row3: piggyback: native update slot (0x18) runs per frame "
             "(self %p, arg %p, r8 %p)", self, arg, block);
     hud_row_keep_shown(self);
@@ -1917,7 +1923,7 @@ static int piggy_update(void *self, void *arg, void *block)
 static int piggy_frame(void *self)
 {
     const int r = ((hud_row_bool_fn)g_hud_row3_native_orig[1])(self);
-    if (!InterlockedExchange(&g_hud_row3_seen_frame, 1))
+    if (!g_hud_row3_seen_frame && !InterlockedExchange(&g_hud_row3_seen_frame, 1))
         LOG("hud row3: piggyback: native frame slot (0x50) runs per frame "
             "(self %p)", self);
     hud_row_keep_shown(self);
@@ -2043,11 +2049,18 @@ static LONG WINAPI hud_row3_veh(EXCEPTION_POINTERS *ep)
     if (!ep || !ep->ExceptionRecord || !ep->ContextRecord)
         return EXCEPTION_CONTINUE_SEARCH;
     const EXCEPTION_RECORD *const er = ep->ExceptionRecord;
+    /* Only an in-image access violation is ever reported; every other
+     * first-chance exception (C++ EH, guard pages, VMProtect's unpacking)
+     * must leave through the cheapest path - this handler runs first for the
+     * whole process. */
+    if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
+        return EXCEPTION_CONTINUE_SEARCH;
     const uintptr_t rip = (uintptr_t)ep->ContextRecord->Rip;
-    const size_t size = hud_row3_image_size();
     int reported = 0;
-    if (g_base && size && rip >= (uintptr_t)g_base &&
-        rip < (uintptr_t)g_base + size) {
+    if (g_base && rip >= (uintptr_t)g_base) {
+        const size_t size = hud_row3_image_size();
+        if (!size || rip >= (uintptr_t)g_base + size)
+            goto done;
         const LONG n = g_hud_row3_veh_n;
         int seen = 0;
         for (LONG i = 0; i < n && i < 4; i++)
@@ -2089,6 +2102,7 @@ static LONG WINAPI hud_row3_veh(EXCEPTION_POINTERS *ep)
         g_hud_row3_veh = NULL;
         LOG("hud row3: fault reporter removed; the crash continues as before");
     }
+done:
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
@@ -2100,12 +2114,10 @@ static void hud_row3_veh_install(void)
     LOG("hud row3: fault reporter %s", g_hud_row3_veh ? "installed" : "failed");
 }
 
-/* The second row used to be kept alive by a worker thread that wrote the row's
- * state word from outside the game thread and kept raw pointers to rows the
- * game later destroyed. Every row action now runs on the game thread, inside
- * the per-frame slots of the native rows (piggy_update / piggy_frame), so no
- * row pointer is stored and nothing touches the HUD from another thread.
- * This hook only counts HUD generations and arms the piggyback. */
+/* Every row action runs on the game thread, inside the per-frame slots of the
+ * native rows (piggy_update / piggy_frame): no row pointer is stored and
+ * nothing touches the HUD from another thread. This hook only counts HUD
+ * generations and arms the piggyback. */
 void *det_HudRow(void *self, int id, int index)
 {
     void *const row = g_hud_row_ctor(self, id, index);

@@ -1,4 +1,3 @@
-/* nioh3p core: eos (split from nioh3p_proxy.c) */
 #include "nioh3p_internal.h"
 
 /* ------------------------------------------------------------- EOS detours */
@@ -300,6 +299,13 @@ static uint8_t g_eos_nocall[NEOS];  /* resolved, but this build never calls it *
 /* Entries that count towards the preflight ratio: export resolved and the
  * build actually calls it. A name the game never references cannot be hooked
  * and is not a defect, so it is excluded and reported on its own line. */
+/* The poll counter doubles as "the module was mapped at least once"; this
+ * accessor is its named form. */
+int eos_module_seen(void)
+{
+    return g_eos_polls != 0;
+}
+
 int eos_expected(void)
 {
     int n = 0;

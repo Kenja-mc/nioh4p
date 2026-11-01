@@ -1,4 +1,3 @@
-/* nioh3p core: gamepatch (split from nioh3p_proxy.c) */
 #include "nioh3p_internal.h"
 
 /* ------------------------------------------------- game-side host capacity */
@@ -309,7 +308,9 @@ uint8_t *game_manager_ptr(void)
  *      step 0x140d65740 creates it through factory 0x140d66910). The same
  *      factory runs here first, so an invite works from a fresh boot. */
 static uint64_t g_invite_lobby_storage;
-static int g_invite_installed;
+#ifdef NIOH3P_RESEARCH
+static int g_invite_installed;  /* gates the rig trigger below */
+#endif
 
 static void game_invite_join(uint64_t lobby)
 {
@@ -423,7 +424,9 @@ void install_game_invite_hooks(void)
     if (!VirtualProtect(imm, 1, PAGE_EXECUTE_READ, &old))
         LOG("game invite: cannot restore execute protection at %#x (err %lu)",
             0x5ef005, GetLastError());
+#ifdef NIOH3P_RESEARCH
     g_invite_installed = 1;
+#endif
     LOG("game invite: friend invites join directly (callback hooked, error state neutralised)");
 }
 

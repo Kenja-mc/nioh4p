@@ -1,4 +1,3 @@
-/* nioh3p core: rules (split from nioh3p_proxy.c) */
 #include "nioh3p_internal.h"
 
 /* ---------------------------------------------------------- lobby rules ---

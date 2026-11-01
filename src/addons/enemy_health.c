@@ -40,8 +40,10 @@ static const Nioh4pCoreApi *g_core;
 static void (*g_recalc_orig)(void *status);
 /* Written only by rules_changed through InterlockedExchange. */
 static volatile LONG g_enemy_pct = 100;
-static volatile LONG g_unscaled_seen;
-static volatile LONG g_enemy_seen;
+/* Plain counters: the recalc hook runs on the game thread only, and the
+ * values only set the log cadence. */
+static int g_unscaled_seen;
+static int g_enemy_seen;
 
 static int character_is_player(const uint8_t *ch)
 {
@@ -125,7 +127,7 @@ static void det_status_recalc(void *status)
         return;
     if (character_is_player(ch) || character_is_party(ch) ||
         !character_is_opposing_side(ch)) {
-        if (InterlockedIncrement(&g_unscaled_seen) <= 4)
+        if (++g_unscaled_seen <= 4)
             g_core->log("enemy-health: actor HP left at %llu/%llu "
                         "(player, party, friendly or unknown side)",
                         (unsigned long long)*(const uint64_t *)(st + 0x18),
@@ -148,7 +150,7 @@ static void det_status_recalc(void *status)
         *curp = prior_cur < scaled ? prior_cur : scaled;
     else if (cur == base || cur > scaled)
         *curp = scaled;
-    const LONG n = InterlockedIncrement(&g_enemy_seen);
+    const int n = ++g_enemy_seen;
     if (n <= 8 || n % 500 == 0)
         g_core->log("enemy-health: enemy HP %llu -> %llu (%d%%, current "
                     "%llu -> %llu)",
