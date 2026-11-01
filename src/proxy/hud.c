@@ -497,14 +497,14 @@ static int hud_row3_visibility(void *row, uint8_t on, int second)
     const int bound = *(const uint32_t *)(g_hud_row3_block + HUD_ROW3_STATE_OFF) != 0;
     if (!on || bound) {
         if (container) set(container, on);
+        /* s48/s50 follow the row. They were force-hidden in 7f92248 as gauge
+         * fills, but the live four-player frames since that build show the
+         * whole third row gone — they carry the row's visible name/bar, not
+         * only a fill. The wrong-fill gauge problem returns with them and is
+         * handled below the row renders at all. */
+        if (s48) set(s48, on);
+        if (s50) set(s50, on);
     }
-    /* The four block sprites stay hidden. Their fill is driven from the
-     * id-selected STATIC block (id 0x73 maps to block A, row 1's): with one
-     * damaged companion every client's gauge showed the same slow partial
-     * fill while the bound characters were full (2026-10-31 runs). The row
-     * renders as the natives do: container with name and bar. */
-    if (s48) set(s48, 0);
-    if (s50) set(s50, 0);
     if (s58) set(s58, 0);
     if (s60) set(s60, 0);
     return ((int (*)(void *, uint8_t))(g_base + (second ? 0xbf3dd0 : 0xbf3af0)))(row, on);
@@ -1437,6 +1437,14 @@ static void hud_row3_hide_fallback_draws(void *row3)
                 continue;
             if (*(const float *)(handle + 0x30) <= -2000.0f)
                 continue;
+            /* Only the origin-anchored fallback copies: their positions are
+             * zero because the layout data defines no entry for our element
+             * id. The row's own live nodes carry real positions — parking
+             * those erased the whole third row (the 2026-11-01 frames). */
+            if (*(const float *)(handle + 0x30) != 0.0f ||
+                *(const float *)(handle + 0x34) != 0.0f ||
+                *(const float *)(handle + 0x38) != 0.0f)
+                continue;
             *(float *)(handle + 0x30) = off[0];
             *(float *)(handle + 0x34) = off[1];
             *(float *)(handle + 0x38) = off[2];
@@ -1788,6 +1796,43 @@ static void hud_row3_drive(void *arg, void *r8)
         hud_row3_assign(row3, arg);
         g_hud_row3_have_pos = 0;    /* the assigner moved the row to row 1's anchor */
         bound = *(void *const *)(g_hud_row3_block + HUD_ROW3_CHAR_OFF);
+        /* The assigner's leftover check does not skip the dead: after a death
+         * it re-binds the fallen companion (hp 0 in the character block), and
+         * the row renders as an empty nameless skeleton. Unbind and assign
+         * once more — the next leftover is the living unassigned companion.
+         * If it is still dead, hide the row instead of showing a lying bar. */
+        if (bound) {
+            const uint8_t *const data =
+                readable((const uint8_t *)bound + 0x240, 8)
+                    ? *(const uint8_t *const *)((const uint8_t *)bound + 0x240)
+                    : NULL;
+            if (data && readable(data + 0x20, 8) &&
+                *(const uint64_t *)(data + 0x20) == 0) {
+                LOG("hud row3: assign picked the dead companion %p; "
+                    "re-assigning for a living one", bound);
+                hud_row3_unbind();
+                hud_row3_assign(row3, arg);
+                bound = *(void *const *)(g_hud_row3_block + HUD_ROW3_CHAR_OFF);
+                if (bound) {
+                    const uint8_t *const data2 =
+                        readable((const uint8_t *)bound + 0x240, 8)
+                            ? *(const uint8_t *const *)((const uint8_t *)bound + 0x240)
+                            : NULL;
+                    if (data2 && readable(data2 + 0x20, 8) &&
+                        *(const uint64_t *)(data2 + 0x20) == 0) {
+                        LOG("hud row3: the re-assign is dead too; hiding "
+                            "the row");
+                        hud_row3_unbind();
+                        hud_row_hide(row3);
+                        return;
+                    }
+                } else {
+                    hud_row_hide(row3);
+                    return;
+                }
+                LOG("hud row3: re-bound to living companion %p", bound);
+            }
+        }
         if (!bound)
             return;
         LOG("hud row3: bound companion %p natively (state %u, node prev %p next %p)",
