@@ -3,24 +3,20 @@
 Three- and four-player co-op for Nioh: Complete Edition on Steam.
 Every player needs the same game build and core mod.
 
-This source build is still under test. Four local instances entered one Torii
-Gate mission and showed three companion bars on every screen. Four-account
-Steam play, mission completion, and the optional gameplay changes remain unproven.
-Released packages can differ from this source. Follow the instructions inside your package.
+A four-player group has entered one Torii Gate mission on a four-instance
+test setup, with three companion bars on every screen. Four-account play over
+the internet, mission completion, and the gameplay add-ons' combat behavior
+remain unproven. Follow the instructions inside your package.
 
 ## Install and play
 
 1. Back up your saves and close Nioh.
 2. In Steam, open Nioh's local files.
-3. Copy `dinput8.dll` and `nioh3p.ini` from the core package beside `nioh.exe`.
+3. Extract `nioh4p-all.zip` into the game folder - or copy `dinput8.dll` and
+   `nioh3p.ini` from `nioh4p-player.zip` beside `nioh.exe`.
    If another mod uses `dinput8.dll`, read the [plugin instructions](package/README.md#install-the-core-as-a-plugin) first.
-4. For four players, set these values in every player's `nioh3p.ini`:
-
-   ```ini
-   [nioh3p]
-   max_players=4
-   hud_row3=1
-   ```
+4. The defaults fit four players. For a three-player group, set
+   `max_players=3` in every player's `nioh3p.ini`.
 
 5. Start the game from Steam on every computer.
 6. Open Torii Gate, then Yokai Realm with a Companion.
