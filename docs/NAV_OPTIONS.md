@@ -3,7 +3,7 @@
 Scope: this document ranks ways to move the host and the visitors from a cold
 client into co-op. It also covers the return to a state you can test again.
 Every option removes part of the current screenshot, OCR and fixed-sleep loop.
-All measurements were read-only on this machine on 2026-10-21. No game was
+All measurements were read-only on this machine on. No game was
 launched and no repo file was changed. Everything not directly observed is
 tagged **[INFERENCE]**.
 
@@ -34,14 +34,14 @@ B1, but only if input still flakes.
 
 | cost | where | measured / stated |
 |---|---|---|
-| fixed 2.0 s sleep before every screenshot | `shot()` line 108–113 | pure sleep, not needed (see §5) |
+| fixed 2.0 s sleep before every screenshot | `shot` line 108–113 | pure sleep, not needed (see §5) |
 | screenshot | `gamescopectl screenshot` | **62–71 ms** end-to-end at 1280×720, PNG complete on first poll (5 runs, gamescope 3.16.31 headless + vkcube) |
 | OCR preprocess | `magick -resize 200% -colorspace Gray -sharpen` | **0.656 s** |
 | OCR | `tesseract --psm 6` | **0.191 s** |
-| `classify()` | full frame, then top-left crop, then footer crop | up to **3 OCR passes ≈ 2.5 s** |
-| `wait_state()` | classify + `time.sleep(2.5)` (line 212) | ~5–8 s per poll |
-| `goto()` | classify + `time.sleep(3)` (line 236) | ~5.5 s per iteration, 40 max |
-| `map_select()` | screenshot (2 s settle) + panel OCR + 1.2 s sleep (lines 245–255) | ~3.5 s/step, 24 steps max ≈ 84 s |
+| `classify` | full frame, then top-left crop, then footer crop | up to **3 OCR passes ≈ 2.5 s** |
+| `wait_state` | classify + `time.sleep(2.5)` (line 212) | ~5–8 s per poll |
+| `goto` | classify + `time.sleep(3)` (line 236) | ~5.5 s per iteration, 40 max |
+| `map_select` | screenshot (2 s settle) + panel OCR + 1.2 s sleep (lines 245–255) | ~3.5 s/step, 24 steps max ≈ 84 s |
 
 The classifier has three concrete bugs. The problem is not only noisy OCR:
 
@@ -58,7 +58,7 @@ The classifier has three concrete bugs. The problem is not only noisy OCR:
    `"region" in low and "level" not in low`. The same screen's footer says
    “Level up, make offerings…”, so the condition can never be true on the real
    map footer.
-3. `goto()` taps Return at `title_menu` blindly (`nioh_nav.py:230`). In
+3. `goto` taps Return at `title_menu` blindly (`nioh_nav.py:230`). In
    `shots/a-lan-main-menu.png` the highlighted row is NEW GAME. In
    `shots/a-recovery-title-menu.png` it is CONTINUE. A blind Return starts a new
    game half the time. The code must read the selected row and must not assume
@@ -169,12 +169,12 @@ and `0x120CF90–0x120F8C0`. Extraction yields 1,462 pairs and 1,384 unique
 names:
 
 ```python
-d = open(dump, 'rb').read(); base = 0x140000000
+d = open(dump, 'rb').read; base = 0x140000000
 for off in range(0, len(d) - 16, 8):
     a, b = struct.unpack_from('<QQ', d, off)
     raw = d[a-base:a-base+130].split(b'\0')[0] if base <= a < base+len(d) else b''
     if b'::' in raw and base + 0x1000 <= b < base + len(d):
-        print(raw.decode(), hex(b))
+        print(raw.decode, hex(b))
 ```
 
 Validation: the extraction reproduces the address that `docs/FINDINGS.md:1167`
@@ -200,12 +200,11 @@ without calling anything. The analysis above did this for `IsPlayerHost` and
 Every binding function has the same generated prologue:
 
 ```
-mov  %rcx,%rdx                 ; original args
+mov  %rcx,%rdx; original args
 lea  0x30(%rsp),%rcx
-call 0x140DDF4E0               ; script VM argument marshaler
-...
-call 0x140DDFD00 / 0x140DDFD50 ; push result into the VM frame
-call 0x1410F58B0               ; stack cookie
+call 0x140DDF4E0; script VM argument marshaler...
+call 0x140DDFD00 / 0x140DDFD50; push result into the VM frame
+call 0x1410F58B0; stack cookie
 ```
 
 `rcx` is not a plain C++ `this` or value. It is a script-VM argument frame. A
@@ -262,9 +261,9 @@ trees are empty. The saves live in each prefix's Documents:
 
 Each account dir holds `SAVEDATA00/SAVEDATA.BIN`, the character save
 (2,043,288 B), and `SYSTEMSAVEDATA00/SAVEDATA.BIN` (9,824 B). Both were
-written at 2026-10-21 19:02. The dir also holds a 51-byte
+written at 19:02. The dir also holds a 51-byte
 `steam_autocloud.vdf`. A pristine pre-test copy already exists at
-`$RIG/save-b-bak/Savedata/` (dated 2026-10-18). Steam Cloud must stay off.
+`$RIG/save-b-bak/Savedata/` (dated). Steam Cloud must stay off.
 
 ### 4.2 What it buys
 
@@ -313,8 +312,8 @@ negligible at 2 MB per role, with reflinks.
 | full OCR (preprocess+tesseract) | 0.85 s | current path |
 
 Per-check budget: about 110–150 ms end to end (screenshot, decode and one or
-two crops). That is 25–45× faster than `classify()` and about 50× faster than a
-`wait_state()` poll. If a step can be verified from memory (A), it needs no
+two crops). That is 25–45× faster than `classify` and about 50× faster than a
+`wait_state` poll. If a step can be verified from memory (A), it needs no
 screenshot at all.
 
 ### 5.2 Proven fingerprints and thresholds (tested on the real shots)
@@ -396,7 +395,7 @@ or its prefix.
   only ole32 `CoCreateInstance` for playback, with no wmvcore or DirectShow
   import. The rig starts `nioh.exe` directly, so the launcher is already
   bypassed.
-* `Documents/KoeiTecmo/NIOH/nioh.ini` (45 B, dated 2026-07-03) contains
+* `Documents/KoeiTecmo/NIOH/nioh.ini` (45 B, dated) contains
   `[MOVIE] bUseRecommendedCodec=1 / nUseDXVA=1`. Those literal keys are in
   neither `nioh.exe` nor `nioh_launcher.exe`. Which component consumes them is
   unverified. It can be the launcher's encoded data.

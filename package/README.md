@@ -44,7 +44,7 @@ Compatibility with a specific external loader is not proven.
 
 Each add-on has its own DLL and configuration file in `DLLMods` beside the game.
 The core loads these add-ons. No separate loader is needed for them.
-Their purposes are listed below. Rig-verified on 2026-11-01: every add-on
+Their purposes are listed below. Rig-verified: every add-on
 loads and is accepted by the core on four clients, and the host's
 enemy-health, assist-gauge and shrine-respawn values publish to the
 session and are accepted by every visitor. In-combat behavior (scaled
