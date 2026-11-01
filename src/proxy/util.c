@@ -1,4 +1,3 @@
-/* nioh3p core: util (split from nioh3p_proxy.c) */
 #include "nioh3p_internal.h"
 
 /* ------------------------------------------------------- freestanding libc */

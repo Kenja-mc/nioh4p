@@ -1,4 +1,3 @@
-/* nioh3p core: main (split from nioh3p_proxy.c) */
 #include "nioh3p_internal.h"
 #define DIRECTINPUT_VERSION 0x0800
 #include <dinput.h>
@@ -110,7 +109,7 @@ static DWORD WINAPI worker(LPVOID unused)
                 install_eos_hooks();
             if (!g_steam_ready && tries < 600)      /* Steam is optional: 3 s */
                 install_steam_hooks();
-            int eos_waiting = eos_unresolved() && !g_eos_polls;  /* module not mapped */
+            int eos_waiting = eos_unresolved() && !eos_module_seen();
             if (!eos_waiting && (g_steam_ready || tries >= 600))
                 break;
             Sleep(5);
@@ -119,7 +118,7 @@ static DWORD WINAPI worker(LPVOID unused)
             char names[400];
             eos_unresolved_names(names, (int)sizeof names);
             LOG("eos: giving up on %d hook(s) (module %s): %s",
-                eos_unresolved(), g_eos_polls ? "mapped" : "not mapped", names);
+                eos_unresolved(), eos_module_seen() ? "mapped" : "not mapped", names);
         }
         /* Informational, not a degradation: the build simply never calls these
          * exports, so there is no call site to hook. */

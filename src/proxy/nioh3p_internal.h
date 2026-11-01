@@ -1,74 +1,28 @@
 /*
- * nioh3p - Nioh: Complete Edition online research / co-op player-cap mod
+ * nioh4p - Nioh: Complete Edition co-op player-cap mod, loaded as a dinput8
+ * proxy: nioh.exe statically imports dinput8.dll, so this DLL maps before the
+ * game's entry point, before the VMProtect stub decrypts .text.
  *
- * Loaded as a dinput8.dll proxy: nioh.exe statically imports dinput8.dll, so the
- * Windows loader maps this DLL before the game's entry point - i.e. before the
- * VMProtect stub unpacks the encrypted .text section.
+ * It forwards every real dinput8 export, hooks the EOS lobby API to raise
+ * MaxLobbyMembers/MaxMembers (IAT slot plus a main-module scan fallback),
+ * patches the game's two-player assumptions once .text is plaintext (visitor
+ * allowance, Torii Gate companion hooks, host-authoritative lobby rules), and
+ * in the research build dumps the runtime image and traces Steam/EOS calls.
+ * Nothing is faked; docs/FINDINGS.md and docs/RE_TOKOYO_COOP.md carry the
+ * evidence.
  *
- * What it does (nothing is faked):
- *   1. Forwards every real dinput8 export to the system dinput8.
- *   2. Research build only, with dump_image=1: waits for VMProtect to decrypt
- *      .text, then dumps the *runtime* module image. nioh.exe ships with an
- *      encrypted .text (entropy 8.0), so the game's code can neither be
- *      analysed nor patched statically - this dump is the prerequisite for any
- *      code-level mod.
- *   3. Hooks the EOS lobby API and raises MaxLobbyMembers / MaxMembers to the
- *      configured player count. EOSSDK-Win64-Shipping.dll and the game's import
- *      table are not encrypted, so this works without knowing the netcode.
- *      Two mechanisms: the documented IAT slot, plus a fallback that scans the
- *      main module for stored copies of the EOS entry point (a rebuilt or
- *      protected import table would defeat the first one).
- *   4. Patches the game's own two-player assumptions once .text is plaintext:
- *      the visitor allowance (shrine and Torii Gate recruitment) and, for the
- *      Torii Gate companion mode, two inline hooks (the host mirrors the
- *      preparation packets to every companion; later companions leave the
- *      shared mission-start counter to slot 1). See docs/RE_TOKOYO_COOP.md.
- *   5. Host-authoritative lobby rules (enemy_hp_percent,
- *      assist_drain_percent, respawn_at_shrine): the host publishes one lobby
- *      data value and a client of that lobby uses it instead of its own file;
- *      the local file applies only to a lobby this process confirmed it owns,
- *      and solo play keeps the stock numbers. Three small native detours apply
- *      the values (character status max HP, the inline assist drain, and the
- *      pending respawn point). See docs/FINDINGS.md, "Lobby gameplay rules".
+ * Freestanding: no CRT and no api-ms-win-crt-* imports - Proton's Wine ships
+ * none, so a CRT-linked DLL stops the game from starting. Kernel32 only.
  *
- * Built freestanding: no CRT and no api-ms-win-crt-* imports, because Proton's
- * Wine (like plain Wine) does not ship those apisets - a CRT-linked DLL would
- * stop the game from starting. Only KERNEL32 is imported.
+ * Config: nioh3p.ini next to this DLL. The log goes to out_dir when set, else
+ * next to the DLL, else %TEMP%; an existing nioh3p.log moves to
+ * nioh3p.prev.log at startup. Image dumps never follow the log to %TEMP%.
+ * The player build compiles the trace instrumentation and dumper out entirely;
+ * -DNIOH3P_RESEARCH=1 produces the research build whose `trace` key selects
+ * player mode (0, default) or full instrumentation (1) at runtime.
  *
- * Config: nioh3p.ini next to this DLL. Log: nioh3p.log in out_dir when that
- * key is set, otherwise next to this DLL. When the log cannot be written
- * there, the proxy retries next to this DLL and finally in %TEMP% (the
- * directory GetTempPathA reports, never the Windows directory), so a read-only
- * install still leaves a log.
- *
- * Two build variants. The default build is the player build that
- * tools/package.sh and install.sh ship: the trace-only instrumentation and the
- * image dumper are compiled out entirely. -DNIOH3P_RESEARCH=1 produces the
- * research build (build/research/dinput8.dll, built by the same ./build.sh).
- *
- * Within the research build, two runtime modes are selected by the `trace`
- * key in nioh3p.ini:
- *   trace=0 (player mode, the default): only the hooks that change behaviour
- *     (lobby capacity, filter drops, force_unlock, the metadata guard, the
- *     companion hooks) plus the rare lobby events (create/join/leave) and the
- *     numerical search filter (forwarded unchanged, but its key names go to
- *     the log) are installed. The
- *     per-P2P-packet, friends, socket and callback instrumentation is not
- *     installed at all - no hook, no log line - so the network path is
- *     untouched and a multi-hour session writes a small log.
- *   trace=1 (research mode): the full instrumentation of the original build:
- *     every hooked Steam/EOS call, its call-site note and a stack backtrace.
- *     The log grows by ~2,000 lines per second during a mission.
- * The log is opened once per process: an existing nioh3p.log is moved to
- * nioh3p.prev.log first, so the current and the previous launch can both be
- * sent. Image dumps always stay in out_dir (or the game directory); they never
- * follow the log to %TEMP%.
- *
- * Source layout: the former single-translation-unit nioh3p_proxy.c is split
- * along its section seams into the modules next to this header (util, log,
- * config, pe, patch, eos, steam, rules, gamepatch, gamehooks, hud, prep,
- * main). This header is the only thing they share; every symbol that crosses
- * a module boundary is declared here and loses its `static`.
+ * This header is the only shared declaration point: every symbol crossing a
+ * module boundary is declared here.
  */
 
 #ifndef NIOH3P_INTERNAL_H
@@ -86,10 +40,6 @@
 #define EOS_CALL __stdcall
 #endif
 
-/* -DNIOH3P_RESEARCH=1 builds the research instrumentation (trace-only hooks,
- * backtraces, call-site names, image dumper). The player build leaves all of
- * it out of the binary; build.sh writes it to build/research/dinput8.dll. */
-
 /* ------------------------------------------------------------------ config */
 
 typedef struct {
@@ -98,18 +48,13 @@ typedef struct {
     int redump_after_s;
     int dump_every_s;
     int hook_eos;
-    /* 0 = keep the game's own search filters (stock behaviour): the stock
-     * "locked" filter still hides hosting sessions. 1 is an opt-in workaround
-     * for a host that cannot be found and swallows the ktol_*lock_status
-     * filter. drop_slots_filter is the same opt-in workaround for the stock
-     * "free slots" filter that hides full sessions. */
+    /* 1 = opt-in workaround that swallows the stock "locked" and "free slots"
+     * search filters, which hide hosting and full sessions. 0 keeps stock. */
     int drop_lock_filter;
     int force_unlock;       /* host: advertise the session as unlocked */
     int drop_slots_filter;
     int trace;              /* 0 = player mode, 1 = full research instrumentation */
-    /* 0 = off (default): the third companion row does not exist at all, so a
-     * 4-player session behaves exactly like the shipped two-row build. 1 opts
-     * into the third row (element 0x73, private vtable, block C). */
+    /* 1 = the third companion row (element 0x73, private vtable, block C). */
     int hud_row3;
 } Config;
 
@@ -239,6 +184,7 @@ int inline_install(const InlineHook *h);
 extern int g_eos_hooks;     /* successfully installed EOS entry-point hooks */
 extern int g_eos_polls;     /* install_eos_hooks calls that saw the module */
 
+int eos_module_seen(void);
 int eos_expected(void);
 int eos_nocall_count(void);
 void eos_nocall_names(char *dst, int cap);

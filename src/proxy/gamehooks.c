@@ -1,4 +1,3 @@
-/* nioh3p core: gamehooks (split from nioh3p_proxy.c) */
 #include "nioh3p_internal.h"
 
 typedef uint8_t (*PFN_GameSend)(unsigned, const uint8_t *, unsigned, int);
@@ -177,22 +176,21 @@ DWORD WINAPI tokoyo_hooks_worker(LPVOID unused)
     enum { HOOK_TRIES = 4 };
     const unsigned n = (unsigned)HOOKS_MAX;
     unsigned ok = 0;
-    int state[HOOKS_MAX] = {0};     /* 0 pending, 1 installed, -1 failed */
+    int state[HOOKS_MAX] = {INSTALL_WAIT};
     int tries[HOOKS_MAX] = {0};     /* failed attempts so far */
     int roster = 0;
-    /* Stop once nothing can change any more: "bytes are not plaintext yet" (0)
-     * keeps polling for the whole window, because VMProtect decrypts lazily,
-     * while a failed install (-1) used to count as settled and so gave up on
-     * the first allocation or protection hiccup. */
+    /* INSTALL_FAIL stays unsettled until HOOK_TRIES: allocation and
+     * protection errors can clear once .text is plaintext. */
     for (int waited = 0; waited < 600000; waited += 50) {
         unsigned pending = 0;
         for (int i = 0; i < HOOKS_MAX; i++) {
-            if (state[i] > 0 || (state[i] < 0 && tries[i] >= HOOK_TRIES))
+            if (state[i] == INSTALL_OK ||
+                (state[i] == INSTALL_FAIL && tries[i] >= HOOK_TRIES))
                 continue;
             state[i] = inline_install(&g_inline_hooks[i]);
-            if (state[i] > 0) {
+            if (state[i] == INSTALL_OK) {
                 ok++;
-            } else if (state[i] < 0 && ++tries[i] >= HOOK_TRIES) {
+            } else if (state[i] == INSTALL_FAIL && ++tries[i] >= HOOK_TRIES) {
                 LOG("game tokoyo: %s hook failed %d time(s), giving up",
                     g_inline_hooks[i].name, tries[i]);
             } else {

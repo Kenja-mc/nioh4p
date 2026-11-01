@@ -175,7 +175,8 @@ static void det_respawn_state(void *manager)
         const int state = *(const int32_t *)(mgr + N4P_MGR_STATE);
         const int point_id = *(const int32_t *)(mgr + N4P_MGR_POINT);
         /* States 1..4 are the pending/respawn cycle; state 0 is idle. */
-        if (state == 0 || state >= 3 || point_id >= 0)
+        if (g_respawn_replaced &&
+            (state == 0 || state >= 3 || point_id >= 0))
             InterlockedExchange(&g_respawn_replaced, 0);
         if (g_respawn_on && core->max_players >= 3 &&
             *(const uint8_t *)(mgr + N4P_MGR_TOKOYO)) {

@@ -140,15 +140,14 @@ void nioh4p_addons_rules_changed(const Nioh4pRules *rules)
 DWORD WINAPI nioh4p_addons_worker(LPVOID unused)
 {
     (void)unused;
-    /* -1 is an allocation or protection hiccup, not a final answer: the
-     * add-ons cache only success so that a later call can succeed, and the
-     * combined proxy retried a failed drain stub. Bounded, like
-     * tokoyo_hooks_worker; 0 (bytes not plaintext yet) polls for the whole
-     * window because VMProtect decrypts lazily. */
+    /* FAIL is an allocation or protection hiccup, not a final answer: the
+     * add-ons cache only success so that a later call can succeed. Bounded,
+     * like tokoyo_hooks_worker; WAIT (bytes not plaintext yet) polls for the
+     * whole window because VMProtect decrypts lazily. */
     enum { ADDON_TRIES = 4 };
-    int state[NIOH4P_MAX_ADDON_HOOKS] = {0};
+    int state[NIOH4P_MAX_ADDON_HOOKS] = {INSTALL_WAIT};
     int tries[NIOH4P_MAX_ADDON_HOOKS] = {0};
-    int patch_state[NIOH4P_ADDON_COUNT] = {0};
+    int patch_state[NIOH4P_ADDON_COUNT] = {INSTALL_WAIT};
     int patch_tries[NIOH4P_ADDON_COUNT] = {0};
     for (unsigned waited = 0; waited < 600000; waited += 50) {
         unsigned pending = 0;
@@ -157,13 +156,14 @@ DWORD WINAPI nioh4p_addons_worker(LPVOID unused)
             const Nioh4pAddon *addon = loaded->descriptor;
             for (unsigned j = 0; j < addon->hook_count; j++) {
                 const unsigned k = loaded->first_hook + j;
-                if (state[k] > 0 || (state[k] < 0 && tries[k] >= ADDON_TRIES))
+                if (state[k] == INSTALL_OK ||
+                    (state[k] == INSTALL_FAIL && tries[k] >= ADDON_TRIES))
                     continue;
                 state[k] = g_install_hook(&addon->hooks[j]);
-                if (state[k] > 0) {
+                if (state[k] == INSTALL_OK) {
                     g_api.log("addons: %s/%s installed", loaded->name,
                               addon->hooks[j].name);
-                } else if (state[k] < 0) {
+                } else if (state[k] == INSTALL_FAIL) {
                     if (++tries[k] >= ADDON_TRIES)
                         g_api.log("addons: %s/%s installation failed %d time(s), giving up",
                                   loaded->name, addon->hooks[j].name, tries[k]);
@@ -173,10 +173,10 @@ DWORD WINAPI nioh4p_addons_worker(LPVOID unused)
                     pending++;
                 }
             }
-            if (addon->install_patch && patch_state[i] <= 0 &&
+            if (addon->install_patch && patch_state[i] != INSTALL_OK &&
                 patch_tries[i] < ADDON_TRIES) {
                 patch_state[i] = addon->install_patch();
-                if (patch_state[i] < 0) {
+                if (patch_state[i] == INSTALL_FAIL) {
                     if (++patch_tries[i] >= ADDON_TRIES)
                         g_api.log("addons: %s custom patch installation failed %d time(s), giving up",
                                   loaded->name, patch_tries[i]);

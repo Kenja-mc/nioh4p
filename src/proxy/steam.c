@@ -1,4 +1,3 @@
-/* nioh3p core: steam (split from nioh3p_proxy.c) */
 #include "nioh3p_internal.h"
 
 /* ------------------------------------------------------- Steam matchmaking */
