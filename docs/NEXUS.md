@@ -125,7 +125,10 @@ modded play can save game changes, for example collected Kodama.
 - [ ] Freeze the release hash: core `dinput8.dll` SHA-256
       `ff1fd7b7dbdb0f4216ec56ead3d4c91219a4b93faaf6dd8c2f99c35c727d68bb`.
 - [ ] Scan that DLL on VirusTotal and put the link in the description. Expect
-      a handful of generic-heuristic flags like the predecessor's 5/71.
+      a handful of generic-heuristic flags like the predecessor's 5/71. The
+      `virustotal-scan` workflow uploads every release zip and DLL
+      automatically once the repository has the `VT_API_KEY` secret; its run
+      summary carries the report links.
 - [ ] File the false-positive reports (Avast/AVG, Avira, WithSecure, Cynet -
       drafts in `docs/FP_REPORTS.md`) and keep the ticket numbers.
 - [ ] Ask one Windows friend to install the mod and send their `preflight:`

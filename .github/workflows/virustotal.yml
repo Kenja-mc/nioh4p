@@ -1,0 +1,29 @@
+name: virustotal-scan
+
+# Scans every zip and DLL of a release with VirusTotal's free public API and
+# posts the verdict table to the job summary. Runs on release publish, or
+# manually for an existing tag. Needs the VT_API_KEY secret; without it the
+# job warns and succeeds.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to scan (e.g. v1.1.1)
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan release assets
+        env:
+          VT_API_KEY: ${{ secrets.VT_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: .github/scripts/vt-scan.sh "${{ github.event.release.tag_name || inputs.tag }}"
