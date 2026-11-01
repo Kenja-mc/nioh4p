@@ -9,6 +9,9 @@ Four-account Steam play, mission completion, and the gameplay add-ons remain unp
 The preparation screen lists all four players. Companion information and results still use the limited stock layout.
 Do not treat this build as a finished release.
 
+The all-in-one zip `nioh4p-all.zip` carries the core and every add-on together:
+extract it into the game folder and skip the per-package steps below.
+
 ## Install the core
 
 1. Back up your saves and close Nioh.
