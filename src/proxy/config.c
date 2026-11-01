@@ -25,7 +25,7 @@ static int atoi_a(const char *s)
  * the two drops are opt-in workarounds only. Designated init: a field reorder
  * or addition can never move a value to the wrong key. */
 Config g_cfg = {
-    .max_players       = 3,
+    .max_players       = 4,
     .dump_image        = 0,
     .redump_after_s    = 0,
     .dump_every_s      = 0,
@@ -165,7 +165,7 @@ void cfg_load(const char *dir)
     if (g_cfg.max_players != 0 && (g_cfg.max_players < 2 || g_cfg.max_players > 4)) {
         g_cfg_max_players_raw = (int)g_cfg.max_players;
         g_cfg_max_players_bad = 1;
-        g_cfg.max_players = 3;
+        g_cfg.max_players = 4;
     }
     g_cfg_status = CFG_LOADED;
 }
@@ -190,7 +190,7 @@ void cfg_report(void)
     if (g_cfg_unknown_keys)
         LOG("config: %d unknown key(s) ignored", g_cfg_unknown_keys);
     if (g_cfg_max_players_bad)
-        LOG("config: max_players=%d out of range; using 3", g_cfg_max_players_raw);
+        LOG("config: max_players=%d out of range; using 4", g_cfg_max_players_raw);
     LOG("config: max_players=%u dump_image=%d redump_after_s=%d hook_eos=%d out_dir=%s "
         "dump_every_s=%d drop_lock_filter=%d force_unlock=%d drop_slots_filter=%d trace=%d "
         "hud_row3=%d",

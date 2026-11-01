@@ -7,7 +7,6 @@ Use matching add-ons across the group.
 This source build is still under test. Four local instances entered one mission with three companion bars on each screen.
 Four-account Steam play, mission completion, and the gameplay add-ons remain unproven.
 The preparation screen lists all four players. Companion information and results still use the limited stock layout.
-Do not treat this build as a finished release.
 
 The all-in-one zip `nioh4p-all.zip` carries the core and every add-on together:
 extract it into the game folder and skip the per-package steps below.
@@ -18,17 +17,13 @@ extract it into the game folder and skip the per-package steps below.
 2. In Steam, right-click Nioh: Complete Edition. Choose Manage, then Browse local files.
 3. Copy `dinput8.dll` and `nioh3p.ini` from `nioh4p-player.zip` beside `nioh.exe`.
    If another mod uses `dinput8.dll`, use the plugin route below instead of overwriting it.
-4. For four players, set these values in every player's `nioh3p.ini`:
-
-   ```ini
-   [nioh3p]
-   max_players=4
-   hud_row3=1
-   ```
+4. The supplied `nioh3p.ini` already allows four players and shows the third
+   companion bar (the fourth player's health bar). A three-player group can
+   keep both: set `max_players=3`, or leave everything as it is - the extra
+   bar stays hidden until a fourth player is present.
 
 5. Start Nioh from Steam on every computer.
 
-The supplied configuration uses three players and disables the experimental third companion bar.
 On Linux or Steam Deck, if the mod does not load, use this Steam launch option:
 
 ```sh
