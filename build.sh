@@ -108,6 +108,9 @@ cp build/dinput8.dll build/nioh4p.dll
 mkdir -p build/research
 build_dll build/research/dinput8.dll -DNIOH3P_RESEARCH=1 \
     "${CORE_SOURCES[@]}" src/proxy/dinput8.def
+# The research counterpart of the player plugin copy above: same bytes,
+# plugin name, or the pechecksum sweep below walks off a missing file.
+cp build/research/dinput8.dll build/research/nioh4p.dll
 
 # The five gameplay add-ons. Each links only its own feature source, the
 # shared add-on runtime (which also provides DllMain) and the freestanding
