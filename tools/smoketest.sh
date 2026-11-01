@@ -21,7 +21,9 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 GAME="$HOME/.local/share/Steam/steamapps/common/Nioh"
-PROTON="$HOME/.local/share/Steam/steamapps/common/Proton - Experimental/proton"
+# NIOH3P_PROTON overrides the runner (CI points it at a plain-wine shim that
+# accepts Proton's `runinprefix` calling convention).
+PROTON="${NIOH3P_PROTON:-$HOME/.local/share/Steam/steamapps/common/Proton - Experimental/proton}"
 STEAM="$HOME/.local/share/Steam"
 MODE="${1:-proxy}"
 SMOKE="${SMOKE_DIR:-$HOME/.cache/nioh3p/smoke}"

@@ -1,0 +1,67 @@
+name: build-and-test
+
+# Builds every DLL the way build.sh ships them and runs the two self-contained
+# harness fixtures (ownership, enemy-health in both modes) under plain wine.
+# The proxy fixture and the game itself need the real Steam install and stay
+# rig-side; this is the regression net, not the gameplay gate.
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-fixtures:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cross toolchain, LLVM binutils, wine
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends \
+            mingw-w64 llvm llvm-18-tools wine64 xvfb unzip
+      - name: Build all DLLs and the harness fixtures
+        env:
+          LLVM_RC: llvm-rc-18
+          LLVM_CVTRES: llvm-cvtres-18
+        run: ./build.sh --harness
+      - name: "Fixture: EOS CopyInfo ownership (research build)"
+        env:
+          NIOH3P_PROTON: .github/scripts/wine-proton.sh
+          SMOKE_WRAPPER: xvfb-run -a
+          SMOKE_DIR: /tmp/smoke
+        run: |
+          tools/smoketest.sh ownership
+          out=/tmp/smoke/proton.out
+          grep -q '^PASS' "$out" && ! grep -q '^FAIL' "$out"
+      - name: "Fixture: enemy-health add-on (player build)"
+        env:
+          NIOH3P_TRACE: '0'
+          NIOH3P_PROTON: .github/scripts/wine-proton.sh
+          SMOKE_WRAPPER: xvfb-run -a
+          SMOKE_DIR: /tmp/smoke
+        run: |
+          tools/smoketest.sh enemy-health
+          out=/tmp/smoke/proton.out
+          [ "$(grep -c '^PASS' "$out")" -ge 15 ] && ! grep -q '^FAIL' "$out"
+      - name: "Fixture: enemy-health add-on (research build)"
+        env:
+          NIOH3P_TRACE: '1'
+          NIOH3P_PROTON: .github/scripts/wine-proton.sh
+          SMOKE_WRAPPER: xvfb-run -a
+          SMOKE_DIR: /tmp/smoke
+        run: |
+          tools/smoketest.sh enemy-health
+          out=/tmp/smoke/proton.out
+          [ "$(grep -c '^PASS' "$out")" -ge 15 ] && ! grep -q '^FAIL' "$out"
+      - name: Upload built DLLs
+        if: github.ref_type == 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nioh4p-${{ github.ref_name }}
+          path: build/
+          retention-days: 14

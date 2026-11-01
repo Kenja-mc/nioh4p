@@ -25,6 +25,9 @@ remain unproven. Follow the instructions inside your package.
 Use a mission that everyone can access. Keep Secret Word Off for this test.
 Without Conditions is not a private search. Read the [full player instructions](package/README.md) before joining.
 
+For other mods that install a loader DLL, read
+[compatibility with other mods](package/README.md#compatibility-with-other-mods).
+
 On Linux or Steam Deck, if the mod does not load, use this Steam launch option:
 
 ```sh

@@ -38,6 +38,25 @@ Set your loader to load that file. Copy `nioh3p.ini` beside `nioh.exe`, not besi
 Install only one copy of the core. This package includes no external loader.
 Compatibility with a specific external loader is not proven.
 
+## Compatibility with other mods
+
+nioh4p adds `dinput8.dll`, `nioh3p.ini` and its own `DLLMods` add-ons, and
+changes no game file. Only the loader DLL can collide:
+
+- A mod that ships its own `dinput8.dll`, such as
+  [Camera Config](https://www.nexusmods.com/nioh/mods/29), cannot be extracted
+  over ours. Keep that mod's loader and install our core through the plugin
+  route above into its `DLLMods` folder; our core does not chainload foreign
+  DLLs, so the reverse order is not possible. This combination is untested.
+- Mods loaded through a `version.dll` ASI loader, such as
+  [Nioh1Fix](https://www.nexusmods.com/nioh/mods/38), keep their own loader and
+  do not overlap with our files. That mod's page states online play is at your
+  own risk.
+- 3DMigoto-based mods and save-file mods touch neither our files nor the
+  loader, and do not conflict.
+
+No third-party mod is bundled with this package.
+
 ## Add optional gameplay changes
 
 Each add-on has its own DLL and configuration file in `DLLMods` beside the game.
