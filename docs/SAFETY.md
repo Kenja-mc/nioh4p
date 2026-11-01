@@ -25,7 +25,7 @@ else.
 3. It fixes one game function that copies lobby settings. When that function
    copies a value onto itself, the stock code replaces the value with empty
    memory. The fix keeps the value, so the next visitor can find the lobby.
-4. Newer builds only: it lets more than one companion
+4. Releases from v1.1.0-rc1 on: it lets more than one companion
    join "Yokai Realm with a Companion" at the Torii Gate. Two game functions
    get a jump to the mod at their start. The host's copy sends the mission
    choice to every companion, not only the first one. A later companion's
