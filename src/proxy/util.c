@@ -66,6 +66,10 @@ int vfmt(char *dst, int cap, const char *f, va_list ap)
             break;
         }
         while (*f >= '0' && *f <= '9') width = width * 10 + (*f++ - '0');
+        /* Width padding lands in tmp[32] below; clamp so no format string
+         * can write past it (no caller uses a width above 8). */
+        if (width > (int)sizeof tmp - 1)
+            width = (int)sizeof tmp - 1;
         if (*f == '.') {
             f++;
             prec = 0;

@@ -1414,21 +1414,17 @@ static void hud_row3_hide_fallback_draws(void *row3)
         if (!node || !readable(node, 0xf0))
             continue;
         const char *const name = *(const char *const *)(node + 0xa8);
-        char namebuf[32];
-        /* One range probe per node instead of one per compared character. */
-        if (!name || !readable(name, sizeof namebuf))
+        /* One range probe per node: every compared byte stays inside it. */
+        if (!name || !readable(name, 32))
             continue;
-        for (int c = 0; c < (int)sizeof namebuf; c++)
-            namebuf[c] = name[c];
         int hit = 0;
         for (size_t k = 0; k < sizeof hud_row3_hide_nodes /
                                 sizeof hud_row3_hide_nodes[0]; k++) {
             const char *const want = hud_row3_hide_nodes[k];
             int j = 0;
-            while (want[j] && j < (int)sizeof namebuf - 1 &&
-                   namebuf[j] == want[j])
+            while (want[j] && j < 31 && name[j] == want[j])
                 j++;
-            if (!want[j] && j < (int)sizeof namebuf && !namebuf[j]) {
+            if (!want[j] && !name[j]) {
                 hit = 1;
                 break;
             }

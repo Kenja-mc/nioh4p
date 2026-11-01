@@ -182,7 +182,6 @@ int inline_install(const InlineHook *h);
 /* ---------------------------------------------------------------- eos.c */
 
 extern int g_eos_hooks;     /* successfully installed EOS entry-point hooks */
-extern int g_eos_polls;     /* install_eos_hooks calls that saw the module */
 
 int eos_module_seen(void);
 int eos_expected(void);

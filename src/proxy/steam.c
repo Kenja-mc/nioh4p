@@ -353,7 +353,7 @@ static int EOS_CALL det_SteamSetLobbyData(void *self, uint64_t lobby, const char
         LOG("Steam SetLobbyData: key=\"%.40s\" value \"%.40s\" -> \"ktol_session_unlock\" (force_unlock=1)",
             key, value);
     } else if (g_cfg.trace) {
-        LOG("Steam SetLobbyData: key=\"%s\" value=\"%s\"",
+        LOG("Steam SetLobbyData: key=\"%.40s\" value=\"%.40s\"",
             key ? key : "(null)", value ? value : "(null)");
     }
     PFN_SteamSetLobbyData o = (PFN_SteamSetLobbyData)g_steam[2].orig;
@@ -439,7 +439,7 @@ static int EOS_CALL det_SteamGetLobbyDataByIndex(void *self, uint64_t lobby, int
     SITE_NOTE("SteamGetLobbyDataByIndex");
     PFN_SteamGetLobbyDataByIndex o = (PFN_SteamGetLobbyDataByIndex)g_steam[10].orig;
     int r = o ? o(self, lobby, index, key, key_len, value, value_len) : 0;
-    LOG("Steam GetLobbyDataByIndex[%d] -> key=\"%s\" value=\"%s\"",
+    LOG("Steam GetLobbyDataByIndex[%d] -> key=\"%.40s\" value=\"%.40s\"",
         index, key ? key : "", value ? value : "");
     return r;
 }

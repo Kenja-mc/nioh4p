@@ -12,6 +12,8 @@ IMAGE_NT_HEADERS64 *nt(void)
     IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)g_base;
     if (dos->e_magic != IMAGE_DOS_SIGNATURE)
         return NULL;
+    if (dos->e_lfanew <= 0 || (uint32_t)dos->e_lfanew > 0x1000)
+        return NULL;
     IMAGE_NT_HEADERS64 *n = (IMAGE_NT_HEADERS64 *)(g_base + dos->e_lfanew);
     if (n->Signature != IMAGE_NT_SIGNATURE || n->OptionalHeader.Magic != 0x20b)
         return NULL;
