@@ -58,13 +58,16 @@ fi
 "$RC_BIN" /FO build/nioh3p.res src/proxy/nioh3p.rc
 "$CVTRES_BIN" /MACHINE:X64 /OUT:build/nioh3p.rc.obj build/nioh3p.res
 
-DLLFLAGS=(-shared -O2 -Wall -nostdlib "${SYSINC[@]}" -Wl,--entry=DllMain -lkernel32)
+# -lkernel32 goes after the objects at every link site: GNU ld discards an
+# archive before later objects reference it (zig cc happens to tolerate the
+# early position, mingw-w64 does not).
+DLLFLAGS=(-shared -O2 -Wall -nostdlib "${SYSINC[@]}" -Wl,--entry=DllMain)
 
 # build_dll <output> [defines...] <sources/defs...>
 build_dll() {
     local out=$1
     shift
-    "${CC[@]}" "${DLLFLAGS[@]}" "$@" -o "$out" build/nioh3p.rc.obj
+    "${CC[@]}" "${DLLFLAGS[@]}" "$@" -o "$out" build/nioh3p.rc.obj -lkernel32
 }
 
 # The core: the proxy modules (see src/proxy/nioh3p_internal.h), the add-on
@@ -129,10 +132,11 @@ mkdir -p "$SMOKE"
 # shipped DLL) plus the interface factory in the "steamclient" module.
 "${CC[@]}" "${DLLFLAGS[@]}" \
     -o "$SMOKE/steam_api64.dll" \
-    tools/testgame/fake_steam.c tools/testgame/fake_steam_thunks.S tools/testgame/fake_steam.def
+    tools/testgame/fake_steam.c tools/testgame/fake_steam_thunks.S tools/testgame/fake_steam.def \
+    -lkernel32
 "${CC[@]}" "${DLLFLAGS[@]}" \
     -o "$SMOKE/steamclient64.dll" \
-    tools/testgame/fake_steamclient.c tools/testgame/fake_steamclient.def
+    tools/testgame/fake_steamclient.c tools/testgame/fake_steamclient.def -lkernel32
 
 # import libraries and the harness itself; the .a files are regenerated every
 # run because a stale one silently hides new .def entries
@@ -149,7 +153,7 @@ mkdir -p "$SMOKE"
 OWNERSHIP=build/eos-ownership
 mkdir -p "$OWNERSHIP"
 "${CC[@]}" "${DLLFLAGS[@]}" \
-    -o "$OWNERSHIP/EOSSDK-Win64-Shipping.dll" tools/testgame/fake_eos_info.c
+    -o "$OWNERSHIP/EOSSDK-Win64-Shipping.dll" tools/testgame/fake_eos_info.c -lkernel32
 "$DLLTOOL" -m i386:x86-64 -d tools/testgame/fake_eos_info.def -l "$OWNERSHIP/libeos.a"
 "${CC[@]}" -O2 -Wall -nostdlib "${SYSINC[@]}" \
     -Wl,--entry=mainCRTStartup -Wl,--subsystem,console \
