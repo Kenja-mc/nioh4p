@@ -34,6 +34,8 @@ jobs:
           NIOH3P_PROTON: .github/scripts/wine-proton.sh
           SMOKE_WRAPPER: xvfb-run -a
           SMOKE_DIR: /tmp/smoke
+          WINEPREFIX: /tmp/smoke/pfx
+          WINEDEBUG: -all
         run: |
           tools/smoketest.sh ownership
           out=/tmp/smoke/proton.out
@@ -44,6 +46,8 @@ jobs:
           NIOH3P_PROTON: .github/scripts/wine-proton.sh
           SMOKE_WRAPPER: xvfb-run -a
           SMOKE_DIR: /tmp/smoke
+          WINEPREFIX: /tmp/smoke/pfx
+          WINEDEBUG: -all
         run: |
           tools/smoketest.sh enemy-health
           out=/tmp/smoke/proton.out
@@ -54,6 +58,8 @@ jobs:
           NIOH3P_PROTON: .github/scripts/wine-proton.sh
           SMOKE_WRAPPER: xvfb-run -a
           SMOKE_DIR: /tmp/smoke
+          WINEPREFIX: /tmp/smoke/pfx
+          WINEDEBUG: -all
         run: |
           tools/smoketest.sh enemy-health
           out=/tmp/smoke/proton.out
