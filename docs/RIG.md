@@ -123,7 +123,7 @@ Environment variables:
 
 Keys are never logged or printed. The driver sends one request per step. The model gets a quality-85 JPEG of the frame, not the 1.6 MB PNG from gamescope. On ten rig frames the answers matched, the upload was 1/15 of the size, and the median Luna latency fell from 2.3 s to 0.9 s. The driver re-shoots once if a low-confidence answer could change the action: the `screen` itself, or the `highlight` on a screen whose rules test the highlight. A low highlight on a waiting screen (searching, preparation, in mission) needs no second frame. In one three-client run this cut 65 of 119 steps from two requests to one. If the choice is still below 0.6, `screen` degrades to `other` (wait) and `highlight` degrades to `uncertain`. No Return rule matches then, so only safe moves and waits fire. The trace keeps the raw choice and confidence. Every step appends one JSON line to `$RIG/shots/coop-<timestamp>.jsonl` with the screenshot, answers, action and latency, and prints a one-line summary.
 
-Accuracy on rig screenshots: Mercury Decide classified 7/7 screens and 6/6 highlighted items. It rejected 3/3 mission-node negatives, so it never mistook a mission node for STARTING POINT. Luna drove the whole companion flow on 2026-10-25 for two, three and four clients, from a cold boot to a joined mission.
+Accuracy on rig screenshots: Mercury Decide classified 7/7 screens and 6/6 highlighted items. It rejected 3/3 mission-node negatives, so it never mistook a mission node for STARTING POINT. Luna drove the whole companion flow on for two, three and four clients, from a cold boot to a joined mission.
 
 A model-free classifier was measured against the 717 labeled frames of the earlier traces and rejected. Full-frame OCR (tesseract, 0.3 s) read the hint boxes but missed most screens without text, and a frame-hash cache matched only 13 % of frames at a threshold with no wrong labels, because the menu backgrounds animate. The rule tables stay deterministic. Only perception uses the model. An agent without a model can still drive one step at a time with `decide` and the `rig.py state` fields.
 
@@ -158,7 +158,7 @@ Safety rules:
 - `--relieve` (on `visit` only) pauses the `nioh.exe` of another visitor (matched by rig HOME) with `SIGSTOP` for 5 s. It then sends `SIGCONT` and waits 2 s after every step. `SIGCONT` runs from a `finally` block. The host is never paused.
 - The no-progress guard counts only steps that sent a key. Six keys with the same `(screen, highlight)` end the run. 150 steps or the 600 s wall clock (`--timeout`) also end it, instead of guessing more keys.
 
-Cost and latency: the Luna API reported `cost` 0.0 for every request in the 2026-10-25 traces, at about 2,300 input tokens per frame. A request takes about 1 s. A three-client Torii run from a cold boot to the mission takes about 5 minutes and 150 requests. Game loading takes more time than the API.
+Cost and latency: the Luna API reported `cost` 0.0 for every request in the traces, at about 2,300 input tokens per frame. A request takes about 1 s. A three-client Torii run from a cold boot to the mission takes about 5 minutes and 150 requests. Game loading takes more time than the API.
 
 ## Verified on this machine
 
@@ -182,7 +182,7 @@ The table below lists faults that each cost a debugging session. Each row gives 
 | external library ignored, `Loaded 0 apps` | entry `"0"` in `libraryfolders.vdf` is the root library and its path is not honoured; other entries need a `steamapps/libraryfolder.vdf` marker, and Steam rewrites the file on startup | clone the game into the root library |
 | Proton refuses to start: `FileNotFoundError: …/compatdata/485510/pfx.lock` | Proton creates the lock inside `compatdata/<appid>`, which must exist | `mkdir -p` it before launching |
 | direct launch disappears and Steam UI remains | a process trace is needed to identify the game exit; the UI alone is not evidence of loading | enable `WINEDEBUG=+timestamp,+pid,+tid,+process` with `PROTON_LOG=1`; inspect the game PID's create/terminate events |
-| `Presenter: ... VK_ERROR_SURFACE_LOST_KHR` on Xvfb | the game cannot present to that surface | keep Steam on Xvfb, run the game under headless gamescope |
+| `Presenter:... VK_ERROR_SURFACE_LOST_KHR` on Xvfb | the game cannot present to that surface | keep Steam on Xvfb, run the game under headless gamescope |
 | `Failed to initialize WSI` / DXGI factory creation failure | invalid `DXVK_WSI_DRIVER=xcb` override | remove it; the old recommendation was wrong |
 | game boots, finds no data (`Boot Path:` wrong) | Nioh resolves data relative to the working directory | `cd` to the game directory first |
 | no video settings, first run on a fresh prefix | `config.xml` is written by the launcher, and `nioh.exe` reads it | `setup.sh` seeds a 720p windowed low-detail one |
@@ -201,7 +201,7 @@ The table below lists faults that each cost a debugging session. Each row gives 
 - Every authenticated Steam account that the rig uses must be Invisible. Make sure that the label shows in its private-display Friends window before you use the account. `-silent` only hides the client and does not set presence. The active cloned client showed Invisible in the recorded screenshot.
 - Removals inside the rig go through `trash` or `trash-put`, never `rm`.
 
-## Direct LAN launch status (2026-10-20)
+## Direct LAN launch status 
 
 The separate `lan-a`, `lan-b` and `lan-c` directories are experimental emulator game copies. `setup.sh` manages the Steam-library copies shown above, not these directories. Slots a and b reach gameplay with the updated proxy. A cold direct launch first requested `steam://run/485510//` and exited with code 53. Leaving the cloned Linux Steam client running allowed later game launches with full `proton run`. Keep that client on its private Xvfb display (`tools/rig/run.sh b client`, with `Xvfb :10` already running), separate from the compositor of the game.
 
@@ -253,7 +253,7 @@ docker stop -t 120 nioh3p-winvm                 # shut it down cleanly
 - Silence from an IAT hook does not prove that `WinMain` returned, and it does not prove that no other module terminated the game. Match the process IDs and exit events of Wine. A surviving launcher process is not proof that the game is alive.
 - The Linux Steam process observed during this run belonged to the cloned root of slot b. A Steam-looking screen alone does not prove interaction with the real desktop Steam client of the user. Neither does `xalia.exe` alone.
 
-## Checkpoint (2026-10-21, player package)
+## Checkpoint (player package)
 
 This rig ran three-player co-op: host B plus visitors A and C in one mission. Each client rendered the others and moved independently, and an attack by a visitor was visible on the host. When the first visitor quit, the host and the second visitor stayed in co-op. Evidence and remaining gaps are in `FINDINGS.md` ("Host visitor allowance", "Three players in one mission").
 
@@ -270,7 +270,7 @@ This rig ran three-player co-op: host B plus visitors A and C in one mission. Ea
 
 To resume: start `Xvfb :10`, run `tools/rig/run.sh b client`, make sure that the Friends window shows Invisible, then run `tools/rig/run.sh {b,a,c} lan`.
 
-## Checkpoint (2026-10-23, four players)
+## Checkpoint (four players)
 
 This rig ran four-player co-op: host B plus visitors A, C and D in one mission. The branch is `four-player`. Its player build has SHA-256 prefix `6db5351d` and 38,400 bytes, and `./build.sh` produced it. The proxy on this branch also raises the shrine setter cap. It patches the byte at RVA `0xd5fb4c`, the immediate of the cmp at `0xd5fb4a` (`cmp $0x3,%ebx`, bytes `83 fb 03`), to 4 when the allowance is 3, so the online shrine site can now pass the value 3 past the setter's cap check. With allowance 2 the game bytes stay stock.
 

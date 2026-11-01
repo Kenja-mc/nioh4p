@@ -130,7 +130,7 @@ path from that binding to the handler was not traced.
 
 An earlier revision of this note said the game sets `manager+0x626` whenever
 co-op is active, "which is why the host loses the Pray prompt as soon as a
-companion is present". The 2026-10-28 HUD-only 4P run disproves that: on a
+companion is present". The HUD-only 4P run disproves that: on a
 4P `Deep in Shadows` client (checkpoint `manager+0x114 = 1`, four connected
 members) facing the starting shrine and `E1.6` produced no prompt, and the
 observed flags were `0x626 = 0`, `0x629 = 1`, `0x660 = 1`, `0x662 = 0`. So
@@ -213,7 +213,7 @@ entry line means "no return observed yet".
   established as the Lua boolean, and not proof the predicate answered true
   or false); `-2` marks the entry observation.
 
-Every field is read behind `readable()` checks. Each call site keeps separate
+Every field is read behind `readable` checks. Each call site keeps separate
 change state for its own enter and result stages, and each stage is hard
 bounded: after 64 change lines one suppression notice is logged and the stage
 goes quiet, so even a tuple alternating every frame cannot flood the log. In
@@ -334,7 +334,7 @@ also how the ids outside the documented set were named from the merged dump:
 | 54 | `0x140d6b9bf` | calls `0x140d5e880` with payload bytes 0-2, then sets `manager+0x6d4` |
 | 56 | `0x140d6baf7` | compares payload dword 0 against `manager+0x670` and stores into `manager+0x66c`, `+0x67c` |
 | 57 | `0x140d6bb3e` | reads payload dword 1 |
-| 77 | `0x140d6c0e6` | copies 128 payload bytes to `root+0x4c .. +0xcb` in eight `movups`, then sets `root+0xcc = 1` |
+| 77 | `0x140d6c0e6` | copies 128 payload bytes to `root+0x4c.. +0xcb` in eight `movups`, then sets `root+0xcc = 1` |
 
 Id 77 is the hook point for showing more than one companion: the whole profile
 lives in that one 128-byte window, which is why the second companion overwrites
@@ -404,7 +404,7 @@ boundary of what the dump can answer.
 
 ## Party HUD: why one companion bar
 
-Measured on 2026-10-26, three players in a Torii Gate mission (host `b` plus
+Measured with three players in a Torii Gate mission (host `b` plus
 visitors `a` and `c`, research build `fd6e7c07`, `trace=1`). The probe finds
 live menu elements by scanning for their vtable with `scan.exe`, which is a
 read-only qword search over the readable memory of `nioh.exe`.
@@ -524,7 +524,7 @@ The next step is the layout question in option 1, because it is offline and it
 decides whether the faithful path is cheap or expensive. `docs/RIG.md` records
 how to run a probe; `scan.exe` and the run above are the measurement tools.
 
-## The proxy now shows the second companion row (2026-10-26)
+## The proxy now shows the second companion row 
 
 Neither creation nor the layout data was needed. The hidden row only lacks two
 bits in its state word. The proxy hooks the `MultiPlayerGauge` constructor
@@ -545,7 +545,7 @@ Limit: the HUD has exactly two rows, so at four players one companion still has
 no row. Raising that needs a third element, which brings back the creation and
 layout questions above.
 
-## Party HUD: how a row owns its companion (static, 2026-10-27)
+## Party HUD: how a row owns its companion (static)
 
 All from the merged image dump; no live run has confirmed the rewritten third
 row. Offsets are `nioh.exe` RVAs unless a field is named.
@@ -591,7 +591,7 @@ HP `[data+0x20]` (script getters `Character::GetHostHpRate` and `GetHpRate`
 use the same fields). The assigner accepts a character when `+0xef0 != -1`,
 `+0x430 != 0`, `data != NULL` and `[data+0x10] != 1`.
 
-## Companion information card and the profile window: correction (static, 2026-10-28)
+## Companion information card and the profile window: correction (static)
 
 Read from the merged image dump only; nothing here was observed live. It
 replaces three earlier guesses in this file: that the `root+0x4c` window is what
@@ -605,7 +605,7 @@ layout the consumers read is: `0x74` bytes of per-mission state (cleared by the
 loop in `0x8f34d0`, queried per mission id by `0x8f3d90` and `0x8f3fc0`), a
 u32 minimum level at `+0x78` and a u32 maximum level at `+0x7c` (read by
 `0xd2c6e0`, which narrows the host's own range to the partner's). The one
-accessor is `0xd5ddf0()`: `&root[+0x4c]` when `root+0xcc == 1`, else NULL.
+accessor is `0xd5ddf0`: `&root[+0x4c]` when `root+0xcc == 1`, else NULL.
 Its callers are the mission list builders `0xd2b410` (random mission pick),
 `0xd396a0` (list filter), `0xd2c6e0` (level range), `0xd2ca30`, `0xd2d900`
 and the matching state machine `0xd29ed0`. With three visitors the host's
@@ -623,7 +623,7 @@ answer" (`root[0]==1 && root[4]==2 && sel<0`).
 - Member names: `0xd5d920(relative index)` maps the index with `0xd7a0d0` and
   returns the NUL-terminated name at `root + slot*0xa8 + 0x10f` (`0xd7a090`).
   The mission HUD uses it with `[character+0xef0]` (`0xc21240`).
-- Session members: `0xd66c60()+0xa8` is the lobby session object; `0xd72640
+- Session members: `0xd66c60+0xa8` is the lobby session object; `0xd72640
   (session, index)` returns a member, `0xd72a10(member)` its name, `0xd72b60`
   the local index. `0xd5a020` is the local name and `0xd59fc0(index)` a
   member's.
@@ -641,7 +641,7 @@ answer" (`root[0]==1 && root[4]==2 && sel<0`).
   slot 1 and session member 1, for a host and for a visitor alike.
 
 
-### The member index mapping is now proven (live + static, 2026-10-28)
+### The member index mapping is now proven (live + static)
 
 `0xd7a0d0(root, k)` is the game's own party-slot -> session-member map. Read
 out byte for byte it is: `k == 0` returns `root[0x3c8]`; `k > root[0x3c8]`
@@ -656,13 +656,13 @@ Three independent confirmations:
 - The HUD row name getter `0xc1ead0(char)` feeds `char+0xef0` (the character's
   party slot) straight into `0xd5d920`, i.e. the same map.
 - The formula reproduces every row name the three-player mission run printed
-  (docs above, 2026-10-26): host b (S=0) saw rows C and A, visitor a (S=1) saw
+  (docs above): host b (S=0) saw rows C and A, visitor a (S=1) saw
   B and C, visitor c (S=2) saw B and A.
 
 The mission HUD also uses this path for the row names; the root name records
 (`root + k*0xa8 + 0x10f`) were still all zero in the prep snapshots, so they
 are filled in mission only. The card name instead reads the session member
-array pointer (`[0xd66c60()+0xc0]`, stride 0xd0, UTF-8 name at +0x10), which
+array pointer (`[0xd66c60+0xc0]`, stride 0xd0, UTF-8 name at +0x10), which
 has names in prep too. The member count is NOT the u32 at manager+0xf4 (it
 read 0 on all four live clients): the count is u32[session+0xc0] on the
 CSessionP2p object at `[mgr+0xa8]` - the bound of the game's own name-index
@@ -670,7 +670,7 @@ scan `0xd72bb0` (`cmp %ebx,0xc0(%rcx)`, text.dis 3851335). `0xd72640` has no
 bounds check, so any member index must be derived from that count, never
 passed raw.
 
-### Live prep observations (four LAN clients, 2026-10-28)
+### Live prep observations (four LAN clients)
 
 - `0x755dc0` party array (`0x1418a0490`): slots 0/1 hold characters, slots 2/3
   NULL, although all four Steam clients sat in the same lobby. The party array
