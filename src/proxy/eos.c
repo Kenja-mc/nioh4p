@@ -45,7 +45,7 @@ static void EOS_CALL det_CreateLobby(void *handle, const void *opts, void *clien
         return;
     }
     if (o) {
-        LOG("EOS_Lobby_CreateLobby: api=%d max=%u perm=%d presence=%d invites=%d bucket=%s",
+        LOG("EOS_Lobby_CreateLobby: api=%d max=%u perm=%d presence=%d invites=%d bucket=%.64s",
             o->ApiVersion, o->MaxLobbyMembers, o->PermissionLevel, o->bPresenceEnabled,
             o->bAllowInvites, o->BucketId ? o->BucketId : "(null)");
         if (g_cfg.max_players && o->MaxLobbyMembers < g_cfg.max_players) {
@@ -220,23 +220,23 @@ static int32_t EOS_CALL det_AddAttribute(void *handle, const void *opts)
         const char *key = v->Key ? v->Key : "?";
         switch (v->ValueType) {
         case EOS_AT_BOOLEAN:
-            LOG("EOS_LobbyModification_AddAttribute: key=\"%s\" bool=%d vis=%d",
+            LOG("EOS_LobbyModification_AddAttribute: key=\"%.64s\" bool=%d vis=%d",
                 key, v->Value.AsBool, o->Visibility);
             break;
         case EOS_AT_INT64:
-            LOG("EOS_LobbyModification_AddAttribute: key=\"%s\" int64=%lld vis=%d",
+            LOG("EOS_LobbyModification_AddAttribute: key=\"%.64s\" int64=%lld vis=%d",
                 key, (long long)v->Value.AsInt64, o->Visibility);
             break;
         case EOS_AT_DOUBLE:
-            LOG("EOS_LobbyModification_AddAttribute: key=\"%s\" double=%.3f vis=%d",
+            LOG("EOS_LobbyModification_AddAttribute: key=\"%.64s\" double=%.3f vis=%d",
                 key, v->Value.AsDouble, o->Visibility);
             break;
         case EOS_AT_STRING:
-            LOG("EOS_LobbyModification_AddAttribute: key=\"%s\" string=\"%s\" vis=%d",
+            LOG("EOS_LobbyModification_AddAttribute: key=\"%.64s\" string=\"%.64s\" vis=%d",
                 key, v->Value.AsUtf8 ? v->Value.AsUtf8 : "", o->Visibility);
             break;
         default:
-            LOG("EOS_LobbyModification_AddAttribute: key=\"%s\" unknown type=%d vis=%d",
+            LOG("EOS_LobbyModification_AddAttribute: key=\"%.64s\" unknown type=%d vis=%d",
                 key, v->ValueType, o->Visibility);
             break;
         }
@@ -266,7 +266,7 @@ static int32_t EOS_CALL det_AddAttribute(void *handle, const void *opts)
 }
 
 int g_eos_hooks;     /* successfully installed EOS entry-point hooks */
-int g_eos_polls;     /* install_eos_hooks calls that saw the module */
+static int g_eos_polls;    /* install_eos_hooks calls that saw the module */
 
 typedef struct {
     const char *name;
