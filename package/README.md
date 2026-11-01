@@ -1,116 +1,109 @@
-# Nioh co-op live-test candidate
+# nioh4p player instructions
 
-This candidate lets three or four players enter one mission through the Torii
-Gate. The local rig reached a mission with both player counts, and a visitor's
-death was exercised there: the run fails for the whole party once the revive
-window passes, and every client reaches the result screen. Reviving a fallen
-companion, finishing a mission and comparing rewards still need a live Steam
-test. Every player must install the same candidate and use the same Steam game
-build.
+The core raises the co-op limit to three or four players.
+Every player needs the same game build and core mod.
+Use matching add-ons across the group.
 
-## Install
+This source build is still under test. Four local instances entered one mission with three companion bars on each screen.
+Four-account Steam play, mission completion, and the gameplay add-ons remain unproven.
+The preparation screen lists all four players. Companion information and results still use the limited stock layout.
+Do not treat this build as a finished release.
 
-1. Close Nioh.
-2. In Steam, right-click Nioh: Complete Edition, then choose Manage, then
-   Browse local files.
-3. Copy `dinput8.dll` and `nioh3p.ini` into that folder, next to `nioh.exe`.
-   If a `dinput8.dll` is already there, it belongs to another mod. Rename it to
-   `dinput8.dll.backup` first and do not overwrite it.
-4. Start the game from Steam.
+## Install the core
 
-On Linux and Steam Deck, use the same steps. If no log appears, add this
-launch option in Steam: `WINEDLLOVERRIDES="dinput8=n,b" %command%`.
+1. Back up your saves and close Nioh.
+2. In Steam, right-click Nioh: Complete Edition. Choose Manage, then Browse local files.
+3. Copy `dinput8.dll` and `nioh3p.ini` from `nioh4p-player.zip` beside `nioh.exe`.
+   If another mod uses `dinput8.dll`, use the plugin route below instead of overwriting it.
+4. For four players, set these values in every player's `nioh3p.ini`:
 
-## Play through the Torii Gate
+   ```ini
+   [nioh3p]
+   max_players=4
+   hud_row3=1
+   ```
 
-The default is three players, including the host. For four players, set
-`max_players=4` in every player's `nioh3p.ini` before starting Nioh.
-Keep the search filters at their shipped values.
+5. Start Nioh from Steam on every computer.
 
-1. Choose a mission that every player can access.
-2. Open the Torii Gate from the world map on every client.
-3. Choose Yokai Realm with a Companion on every client.
-4. Set every client to Without Conditions.
-5. Keep Secret Word Off on every client.
-6. Set each visitor's story-progress limit at or above the host's progress.
-7. Let the host choose Search first.
-8. Start every visitor's search together, while the host is still recruiting.
-9. Make sure that every player reaches the same mission and sees the others.
+The supplied configuration uses three players and disables the experimental third companion bar.
+On Linux or Steam Deck, if the mod does not load, use this Steam launch option:
 
-No Ochoko Cup is used. Join before the preparation countdown ends. Joining
-after mission start is not supported by this test procedure. The HUD shows one
-row per companion with that companion's own name, and it has two rows, so a
-fourth player has none. Make sure that the names belong to your group. Without Conditions is not a private lobby.
-
-Do not use Steam invites for the first test. The direct-invite path is
-experimental. If a player remains at "Waiting for mission to be chosen",
-cancel that search and form the group again. A Himorogi Fragment ends the
-mission for everyone and loses the user's Amrita.
-
-## Live-test sequence
-
-Back up each player's saves before the test. Start with three players.
-Record the mission name, player count and any failure with these steps:
-
-1. Move on each client and make sure that the other clients show that movement.
-2. Defeat an enemy and make sure that all clients agree on its death.
-3. Let one companion fall and revive that companion with the assist gauge.
-   If nobody revives within the window, the run fails for everyone and every
-   client shows the result screen. That is expected, not a fault.
-4. Finish the mission and compare each player's rewards and return screen.
-5. Form another group from the Torii Gate and enter another mission.
-6. Repeat with four players only after the three-player test passes.
-
-The shrine path remains available. The host starts a mission and offers an
-Ochoko Cup at a shrine. Visitors use Torii Gate, Random Encounters, Search.
-Let each visitor finish loading before the next visitor searches.
-
-## Make sure that the mod loaded
-
-Open `nioh3p.log` in the game folder. Make sure that it contains
-`preflight: exe=ok` and `game tokoyo: 3/3 companion hook(s) installed`
-for the player build.
-On the host, after recruitment starts, look for `game create request: raising
-max members 2 -> 3` (or `4`) and the visitor allowance lines.
-The preflight line alone does not prove that the companion hooks installed.
-
-If the log contains `preflight: exe=unsupported` or an incomplete companion
-hook count, stop the test and collect the log. Do not mix game or mod builds.
-
-## Why the mod is safe
-
-The mod passes DirectInput calls to the real Windows file. Inside the game,
-it raises lobby capacity and visitor allowance and preserves copied lobby
-settings. Two hooks send the host's mission choice to every companion and
-keep the mission-start counter in step. It opens no network connection of
-its own and never opens the save folder. The game still writes saves normally.
-With the shipped configuration, the mod writes `nioh3p.log` and
-`nioh3p.prev.log`. Research builds can also write memory dumps.
-
-The full explanation, with the checks you can repeat yourself, is in
-`docs/SAFETY.md` in the source repository.
-
-## If something goes wrong
-
-If the game does not start, delete `dinput8.dll`. The game starts normally
-again.
-
-This candidate is unsigned. Antivirus tools can flag DLLs that change game
-memory. Results for older releases do not establish that this candidate is safe.
-Compare its SHA-256 with the value supplied by the sender:
-
-```bat
-certutil -hashfile dinput8.dll SHA256
+```sh
+WINEDLLOVERRIDES="dinput8=n,b" %command%
 ```
 
-If antivirus blocks the candidate, stop and report the engine and detection
-name. Do not disable protection or exclude the game folder for this test.
+## Install the core as a plugin
 
-To send a log, close the game and send `nioh3p.log` from the game folder. Send
-`nioh3p.prev.log` too if the problem happened in the earlier launch. The log
-contains lobby IDs, search settings and file paths.
+If you already use a DLL loader, use `nioh4p-plugin.zip` instead of the standalone core.
+Copy its `DLLMods/nioh4p.dll` into the game's `DLLMods` folder.
+Set your loader to load that file. Copy `nioh3p.ini` beside `nioh.exe`, not beside the plugin.
+Install only one copy of the core. This package includes no external loader.
+Compatibility with a specific external loader is not proven.
 
-## Uninstall
+## Add optional gameplay changes
 
-Delete `dinput8.dll`, `nioh3p.ini` and the `nioh3p*.log` files from the game
-folder. Your saves are never touched.
+Each add-on has its own DLL and configuration file in `DLLMods` beside the game.
+The core loads these add-ons. No separate loader is needed for them.
+Their purposes are listed below. Rig-verified on 2026-11-01: every add-on
+loads and is accepted by the core on four clients, and the host's
+enemy-health, assist-gauge and shrine-respawn values publish to the
+session and are accepted by every visitor. In-combat behavior (scaled
+enemy health in a fight, the drain rate mid-mission, shrine respawn after
+a death) is still to be exercised.
+
+| Add-on | Purpose |
+| --- | --- |
+| `nioh4p-shrines` | Repeat shrine use during co-op |
+| `nioh4p-kodama` | Let shrine visitors record Kodama through the native save routine |
+| `nioh4p-enemy-health` | Adjust enemy health |
+| `nioh4p-assist-gauge` | Adjust continuous assist-gauge drain |
+| `nioh4p-shrine-respawn` | Return self-recovery to the last shrine used |
+
+1. Close Nioh.
+2. Copy the chosen add-on's DLL and INI from its zip into the game's `DLLMods` folder.
+3. Set its configuration, then restart the game on every computer.
+
+Each add-on reads the `[nioh4p]` section in its own INI.
+Set `enabled=0` to disable it. Missing keys use the supplied defaults.
+Changes take effect after a restart.
+The host controls these rules during a session:
+
+| File in `DLLMods` | Key | Default | Allowed values |
+| --- | --- | --- | --- |
+| `nioh4p-enemy-health.ini` | `enemy_hp_percent` | `100` | `25` to `400` |
+| `nioh4p-assist-gauge.ini` | `assist_drain_percent` | `100` | `0` to `1000` |
+| `nioh4p-shrine-respawn.ini` | `respawn_at_shrine` | `1` | `0` or `1` |
+
+At `100`, the percentage rules keep normal values. At `0`, continuous assist-gauge drain is disabled.
+Death, revive and recovery keep their native gauge costs.
+Without an active shrine-respawn add-on, the core keeps normal recovery.
+A shrine can lack the Pray prompt despite the shrine hooks. Checkpoint behavior across missions is also unproven.
+
+## Form a Torii Gate group
+
+1. Choose a mission that every player can access.
+2. Open Torii Gate, then Yokai Realm with a Companion on every computer.
+3. Choose Without Conditions and keep Secret Word Off.
+4. Set each visitor's story-progress limit at or above the host's progress.
+5. Let the host search first.
+6. Let every visitor search before the preparation countdown ends.
+7. Make sure that everyone enters the same mission and sees the other players.
+
+The host can select a fixed mission before searching. Visitors can use Without Conditions.
+This search is not private. Joining after the mission starts is not proven.
+Steam invites and other co-op modes need separate tests.
+A Himorogi Fragment ends the mission for everyone and loses the user's Amrita.
+
+## Problems and removal
+
+If the game fails to start, close it and remove only the mod files that you installed.
+Restore any other mod that you backed up. Keep your save backup because the game can save changes during modded play.
+
+Open `nioh3p.log` in the game folder. If it reports an unsupported executable, incomplete hooks, or `INCOMPLETE`, stop testing.
+Review this log and `nioh3p.prev.log` before sharing them. They can contain lobby IDs and file paths.
+If antivirus blocks a DLL, keep protection enabled and report the engine and detection name.
+
+To remove an add-on, close Nioh and remove that add-on's DLL from `DLLMods`.
+Keep its INI if you want to retain its configuration.
+To remove the core, remove its DLL and `nioh3p.ini`. Leave files from other mods in place.
+The source repository's `AGENTS.md` and `docs/SAFETY.md` contain build, test, and safety details.

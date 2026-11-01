@@ -6,5 +6,7 @@
 # local evidence (game logs with Steam IDs, crash artifacts)
 /.local/
 /NEXT.md
+# private unattended run state
+/.autonomous/
 __pycache__/
 *.pyc

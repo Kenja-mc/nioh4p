@@ -73,10 +73,236 @@ with a 14-byte absolute jump. They install at boot, when no session exists.
    increment flag `0x47`. Slot 1 keeps the counter in step with the host.
    Later companions follow the host and slot 1.
 
-The log shows `game tokoyo: 2/2 companion hook(s) installed` at boot, then
+The log shows `game tokoyo: N/N companion hook(s) installed` at boot (`N`
+includes the shared-world hooks below), then
 `game tokoyo: packet N also sent to companion slot S` on the host and
 `game tokoyo: companion slot S leaves the shared wait counter to slot 1` on
 the later companions.
+
+## Shared world: Kodama and shrine menus
+
+Added on `feature/shared-world-interactions`. The hooks install in the same
+prologue-hook table and act only in a co-op session with at least three
+connected members (session-root slot records `root+slot*0xa8+0xe8 == 2`;
+closed slots hold 3 and must not count). Both the Torii Gate companion path and
+the shrine-visitor path qualify. Solo and stock two-player missions keep every
+native gate. No new `nioh3p.ini` key is added.
+
+### Kodama
+
+The stock path is already mostly correct and is kept:
+
+- `Mission::SetStrayKodama` `0x140948e50` accepts role 0, or role 1 when
+  `manager+0x660` is set (Tokoyo); a shrine visitor is rejected by that native
+  role gate. It finds the selected gadget in the map at `manager+0x40`, checks
+  the local save with `0x1408ef1b0` and calls the native insertion
+  `0x140905bc0`. It sends no packet.
+- `0x140905bc0` appends the collection ID to `save+0x15c2e4/+0x15c2e8`
+  (maximum 512, duplicate check). The save object is per client.
+- `Gadget::CreateStrayKodama` `0x140896560` has no co-op role gate; the
+  mission script decides which placements exist on each client.
+
+The hook therefore does not replace the native decision. Only for the client
+the native role gate rejects (role 1 while `manager+0x660` is clear: the
+shrine visitor) it checks the selected Kodama in the gadget map (key low
+32 = `0x44c`, collection ID at `DataGadget+0xb4`), checks this client's save
+with the same linear scan, and only if the ID is absent repeats the native
+insertion `0x140905bc0(save, id)` immediately before the call. The host and a
+Tokoyo visitor keep the original order and the pure native path. The
+insertion is guarded by its plaintext prologue bytes (first 16 bytes:
+`41 54 48 83 ec 40 4c 63 89 e4 c2 15 00 4c 8b e1`), because executable
+memory alone does not prove the function on a machine with encrypted code
+pages. That ordering matches the native accept path, which inserts first and
+then runs the completion tail (`0x1408edb60` writing the per-mission result
+to script VM+0x328): on the reject path the tail would otherwise compute
+from the pre-insertion save. `0x140905bc0` marks the save dirty itself:
+`movb $1,(save)` at `0x140905dd2`, the same dirty byte the shrine setter
+`0x1408ff270` writes at `0x1408ff283`. It never writes another client's save
+and sends no packet. The build logs which path credited the save.
+
+### Shrine
+
+`Mission::IsYashiroActive` `0x1409488a0` returns false when `manager+0x626`
+is set, and in Tokoyo also when `manager+0x662` is set. `0x662` is set by the
+event handler at `0x1407bf723`; **[INFERENCE]** `Gadget::SetYashiroOnlineDoneAccess`
+(`0x140899120`) is what marks the shrine used and leads to it, but the event-id
+path from that binding to the handler was not traced.
+
+An earlier revision of this note said the game sets `manager+0x626` whenever
+co-op is active, "which is why the host loses the Pray prompt as soon as a
+companion is present". The 2026-10-28 HUD-only 4P run disproves that: on a
+4P `Deep in Shadows` client (checkpoint `manager+0x114 = 1`, four connected
+members) facing the starting shrine and `E1.6` produced no prompt, and the
+observed flags were `0x626 = 0`, `0x629 = 1`, `0x660 = 1`, `0x662 = 0`. So
+`0x626` is not always set in co-op, what writes it was never traced, and in
+that sample neither `0x626` nor `0x662` explains the missing prompt. The
+native predicate also returns `0x629` unchanged when the selected object is
+absent, not kind 2, or its `obj+0x380` richdata pointer is null, so a stale
+or empty selection (`0x14191e290` pointing at object `0x14b8a40` with
+`obj+0x380 = 0` was observed outside the binding window; that does not prove
+the richdata state during the script call) is equally consistent with the
+no-prompt sample. Which condition actually caused it is exactly what the
+research diagnostics below are meant to answer.
+
+The hook requires the selected interaction object (kind 2),
+`richdata+0x1a82 != 0` and `manager+0x629 != 0`, then clears
+`manager+0x626` (and `manager+0x662` only when `manager+0x660` says Tokoyo,
+because the native predicate reads `0x662` only in that case) only for the
+duration of the native `IsYashiroActive` call and restores them immediately.
+The binding writes its
+answer into the script argument, so letting the native code compute the answer
+is what makes the mission script see true; returning 1 from the detour alone
+would not. The real `Mission::YashiroOpenMenu` `0x140949620` is still what
+opens the menu; the proxy adds no prompt or replacement menu. A separate hook
+logs that the menu weakref at `manager+0xa90` was published, for the live
+probe only.
+
+### Research-only shrine diagnostics (`NIOH3P_RESEARCH` + `trace=1`)
+
+Added on `feature/shared-world-interactions` to explain the no-prompt sample
+above. Both hooks are compiled only with `NIOH3P_RESEARCH` and do nothing at
+`trace=0`; they observe and never write game state, and every detour returns
+the original's return word unchanged.
+
+**Hook contract**
+
+| site | bytes replaced (n) | relocation |
+|---|---|---|
+| `Mission::IsYashiroActive` `0x9488a0` | existing hook, 14 bytes (`sub $0x158,%rsp; mov cookie,%rax`), unchanged | existing `world_reloc_cookie` rebuild |
+| new: native shrine interaction predicate `0x949090` (name unresolved; `text.dis` has no direct call to the address, so it is reached like the other yashiro bindings) | 17 bytes: `40 53` push %rbx, `57` push %rdi, `48 81 ec a8 01 00 00` sub $0x1a8,%rsp, `48 8b 05 f7 ee ea 00` mov cookie,%rax | `relocate_world_predicate`: the first 10 bytes verbatim, then a `movabs` of the same security-cookie slot `0x1417f7f98`; execution resumes at `0x9490a1` (`xor %rsp,%rax`) |
+
+Both prologues were validated instruction-boundary by instruction-boundary
+against `text.dis`; no branch in either body re-enters the replaced bytes, and
+`0x949090` ends at `0x14094935a` (`ret`, then `int3` padding to
+`YashiroAccessFunction` at `0x140949360`). The predicate's body returns
+`movzwl 0x17c(%rsp)` — the frame+0x10c field of its own script frame
+(`rsp+0x70`). **Neither function's returned word is established as the Lua
+boolean.** `IsYashiroActive` returns `movzwl 0x13c(%rsp)` at `0x140948950`,
+and `0x140ddfd00` — the completion glue it calls at `0x14094894b` — reads the
+computed answer byte (`movzbl (%rdx)`, here `rsp+0x20`), pushes it into the
+VM through `0x1404603b0`, and only does `incl 0x10c(%frame)` afterwards; the
+returned word is that same incremented frame+0x10c counter/descriptor. The
+traced body of `0x949090` never calls the glue at all, so nothing in
+`text.dis` establishes what writes its word or whether it is ever a boolean.
+The log therefore records the raw word as `native_return` and it proves
+nothing by itself about the predicate's true/false answer; the Lua-visible
+answer is what the glue pushes through `0x1404603b0`.
+
+**Observation points**: `IsYashiroActive` entry (before every gate, so a
+client outside the 3+ co-op gate still reports what the native predicate saw)
+and result (after the hook restored the latches, so the flags are the real
+ones); `0x949090` entry and result the same way. `native_return = -2` on an
+entry line means "no return observed yet".
+
+**Log line** (`world-research: <site> obj=… kind=… rich=… id=… access=… role=… coop626=… active629=… tokoyo660=… done662=… native_return=…`):
+
+- `obj` — `*(0x14191e290)`, the current interaction object pointer; `0`
+  absent/unreadable.
+- `kind` — word at `obj+4`; `0xffffffff` when unreadable. The shrine predicates
+  require `2`.
+- `rich` — the raw pointer at `obj+0x380` (the value the native body reads);
+  `0` means the field is absent, unreadable or genuinely null — exactly the
+  stale-selection case the sample showed.
+- `id` — `rich+0x1a68` shrine id; `0xffffffff` when unreadable or `rich` is 0.
+- `access` — byte `rich+0x1a82`; `-1` when unreadable.
+- `role` — `manager+0x5b0`; `-1` without a manager. `coop626` `active629`
+  `tokoyo660` `done662` — `manager+0x626/0x629/0x660/0x662`, `-1` without a
+  manager.
+- `native_return` — the raw word the native function returned in eax (see the
+  return-semantics note above: a frame+0x10c descriptor/counter, not
+  established as the Lua boolean, and not proof the predicate answered true
+  or false); `-2` marks the entry observation.
+
+Every field is read behind `readable()` checks. Each call site keeps separate
+change state for its own enter and result stages, and each stage is hard
+bounded: after 64 change lines one suppression notice is logged and the stage
+goes quiet, so even a tuple alternating every frame cannot flood the log. In
+the no-prompt sample the expected entry line is
+`obj=0x14b8a40 kind=2 rich=0 id=0xffffffff access=-1 … coop626=0 active629=1
+tokoyo660=1 done662=0`, which would localise the failure to the null
+`richdata` during the script call rather than the co-op latches.
+
+### Checkpoint for respawn
+
+`Mission::YashiroAccessFunction` `0x140949360` already calls
+`0x1408ff270(save, shrine id)` in every mode. That sets bit `1 << id` in
+`save+0x15682c` and marks the save dirty. Only the non-Tokoyo branch also
+stores the ID in `manager+0x114`; the Tokoyo branch skips it.
+
+The hook records the ID after the native call only when the selected gadget is
+unchanged, the ID is not `-1` and the native visited bit (masked to the five
+shift bits exactly as `0x8ff270` does) is now set. It does not require the
+access flag afterwards: the native call and the visited bit already prove the
+shrine was used. It then mirrors the native non-Tokoyo store
+`manager+0x114 = id` and publishes it through:
+
+    int nioh3p_world_last_shrine(uint32_t *id);
+
+The function returns 1 when a shrine was accepted and the published ID still
+equals the live native checkpoint `manager+0x114` — exactly what the stock
+death action would consume right now — and 0 otherwise. That equality is not
+a freshness proof: shrine IDs repeat across missions (0 and 1), and whether
+the game resets `manager+0x114` on mission change is untested. If the native
+field is stale after a mission change, this accessor is stale with it, by
+design. It is game-thread written and poll-safe.
+The stock death action at `0xa84a8b` reads
+`manager+0x114` and calls `0x14087de00(manager, id)`. Verified in the
+disassembly: that setter walks the trees at `manager+0x60`/`manager+0x50`
+keyed by the ID, and on a hit stores the position at `manager+0x600`, the
+angle at `+0x610`, sets `+0x5f0=1`, writes the position marker `+0x614=-1`
+and `+0x618=0x0101`; on a tree miss it writes nothing. The marker `-1` is
+what distinguishes this setter from the ID-based sibling `0x87df80`, which
+stores its ID at `+0x614` instead — nothing in this branch writes `+0x614`.
+It is not a full respawn or enemy reset. This branch does not call any
+respawn function.
+
+### Limits and live proof still required
+
+- The hooks only activate with three or more connected session slots, in either
+  co-op mode. They do not change ordinary single-player or two-player behaviour.
+- `IsYashiroActive` clears `manager+0x626` (and `manager+0x662` in Tokoyo)
+  only around the native call and restores them immediately, after the
+  shrine's own gates have passed. Observed call context: between the latch
+  reads at `0x140948914`/`0x14094892f` the native body runs only the binding
+  glue `0x140ddf4e0`/`0x140ddfd00`, neither of which references the latches,
+  and every other reader and writer of `0x626`/`0x662` in text.dis is
+  game-thread mission/script code. The window is a few game-thread
+  instructions on one thread; a concurrent reader on another thread could
+  still observe zero. Nothing is left cleared.
+- `0x140905bc0` marks the save dirty itself (`save[0]=1` at `0x140905dd2`),
+  like every other save-field setter; the game's normal save points still own
+  persistence. The live test must prove that a visitor's credit survives a
+  return to the hub and a relaunch.
+- The `manager+0x114` freshness question is open: after finishing a mission
+  where a shrine was used, read `manager+0x114` at the next mission's start.
+  If the game clears or moves it, `nioh3p_world_last_shrine` correctly
+  reports none until a new shrine is used; if the game leaves the old ID and
+  the next mission reuses it, both stay stale together and the consumer sees
+  what the native respawn path sees. Record which happens.
+- `manager+0x662` has no clearing write in the whole binary (seven
+  references: five reads, the setter at `0x1407bf723`). The predicate survives
+  that by clearing it around the native call. The Tokoyo host assist branch in
+  `YashiroAccessFunction` pays out only when `0x662` is clear
+  (`jne 0x140949554` at `0x1409494c6`), so later uses still do not refill
+  assist. Resetting that latch permanently is not done here.
+- Nothing in this section is live-proven yet.
+
+Live scenarios for the parent:
+
+1. Four players in one Tokoyo mission, each with a different local save. Visit
+   the same Kodama with A, then B, then C. Every client must still see it until
+   its own collection and the log must show either the native path or the
+   `0x905bc0` fallback once per client. `save+0x15c2e4` must grow only on the
+   client that collected, and B/C must keep A's older IDs.
+2. At one shrine with all four present, hold E on each client. Each must get
+   the real menu, close it and get it again. The log must show
+   `world: shrine N usable in co-op` and `world: shrine N menu opened` on every
+   client, repeatedly.
+3. Pray once on each client, then read `manager+0x114` and
+   `nioh3p_world_last_shrine` on each: both must be the same shrine ID, and
+   `save+0x15682c` must have the bit. Kill a character and check which native
+   path the death uses (`0xa84a8b` or the `0xd6b2xx` packet branch). Only the
+   former consumes `manager+0x114`.
 
 ## Useful state (read-only, `tools/rig/rig.py state`)
 
@@ -166,8 +392,8 @@ xrefs. Addresses have to come from a live pointer or a packet.
 
 | Feature | Search target | What one session has to provide |
 | --- | --- | --- |
-| Kodama for everyone | `Character::InteractionStrayKodama`, `Gadget::RequestStrayKodama`, `Gadget::CreateStrayKodama` | the packet produced when a visitor picks one up, and whether the flag travels as raw 71 |
-| Shrines for everyone | the Pray prompt predicate; no class name found, so start from the shader/UI string and the interact radius | whether a visitor's pray sends anything, and what the host does with it |
+| Kodama for everyone | `Mission::SetStrayKodama` `0x140948e50`, insertion `0x140905bc0`, `Mission::HasStrayKodama` `0x140947f60` | mechanism implemented in "Shared world"; live test must show one save count/ID set grows only on the collecting client and every other client keeps seeing its own uncollected Kodama |
+| Shrines for everyone | `Mission::IsYashiroActive` `0x1409488a0`, `YashiroOpenMenu` `0x140949620`, `YashiroAccessFunction` `0x140949360` | live test must open the real menu repeatedly on all four clients and show `manager+0x114` / `nioh3p_world_last_shrine` carry the same accepted shrine ID |
 | Assist gauge and revive | `CoopHeaderGauge@Menu` (`0x14129b3f8`), `CoopPlayerGauge@Menu`, `TokoyoCoopGauge@Menu` (`0x14129b3f8` is the gauge; see classmap for the other two) | one death in a three-player party: which raw id carries it, and what `sel`/`allow` do around it |
 | Enemy scaling | the mission-setup reader of the party size; member records are at `root + slot*0xa8` | enemy HP at 2, 3 and 4 players, read with `rig.py state` or a memory poller |
 | Rejoin | `0x140d7b234` and `root+0x39c`, plus the `integer_82` equality filter | done: the probe shows the allowance is not consumed per admission, so this is the mission-start limit, not the counter |
@@ -318,3 +544,241 @@ rows with the right names — host `b` saw `Nioh-LAN-C` and `Nioh-LAN-A`, visito
 Limit: the HUD has exactly two rows, so at four players one companion still has
 no row. Raising that needs a third element, which brings back the creation and
 layout questions above.
+
+## Party HUD: how a row owns its companion (static, 2026-10-27)
+
+All from the merged image dump; no live run has confirmed the rewritten third
+row. Offsets are `nioh.exe` RVAs unless a field is named.
+
+State block (`0x78` bytes, A `0x1b46a90`, B `0x1b46b08`):
+
+| Offset | Meaning |
+| --- | --- |
+| `+0x00` | state: 0 empty, 1 bound, 2 showing, 3 and 4 fading (dispatcher `0xc1f500`) |
+| `+0x08`, `+0x10` | HP current and maximum of the shown companion |
+| `+0x20` | float, -1.0 reset value (`0xc1e310`); `0xc1fb20` zeroes the static one for the id's block |
+| `+0x30` | **reference node** `{character, prev, next}`, 0x18 bytes, up to `+0x48` |
+| `+0x48..+0x60` | four sprite pointers |
+| `+0x68`, `+0x70`, `+0x74`, `+0x76` | fade timer, shown name id, flags |
+
+Reference node: the nodes of one character form a doubly linked list headed at
+`[character+0xf40]`. `0x140753ad0(node)` pushes at the head (`old head.prev =
+node; node.next = old head`), `0x140756bc0(node)` unlinks (and rewrites the head
+when `prev` is NULL), and the character release at `0x1407535d7` walks the list
+and zeroes every node. The static party slots (`0x18a0490`, stride `0x18`) are
+nodes of the same kind. A node is linked by address; copying its bytes to
+another address leaves the neighbours pointing at the old one.
+
+Block-argument entry points (no static block used): assigner `0xc21240(row,
+arg, block)` (excludes the static nodes at `0x141b46ac0` and `0x141b46b38`
+only, binds through `0xc1e400(row, block, character)`, then places the row at
+anchor group `0x5f` for any id other than `0x75`), `0xc1e400` (bind and
+reset), `0xc1e310(block)` (unbind and reset), `0xc1e680`, `0xc20c50`,
+`0xc20a00`, `0xc20580`, `0xc20300`, `0xc1fe60`. The destructor `0xc1e2d0` and
+the constructor's base `0xbf30a0` use no block. Entry points that pick A or B
+by element id: `0xc1eba0` init, `0xc1e9c0` release, `0xc1f500` update,
+`0xc210c0` frame, `0xc1f040`, `0xc1f140`, `0xc1ea90`, `0xc1edd0`, `0xc1f480`,
+`0xc1ee40`, the constructor `0xc1e230` (resets the static block) and the tail
+of `0xc1fb20` (which zeroes `A+0x20` for id `0x73`).
+
+Sprite readiness: `0x140dd93e0(sprite)` is true when `[sprite+0x28]` and
+`[[sprite+0x28]+0x28]` are non-NULL and the container's `+0x2ac` counter is 0.
+The class frame slot checks it; the update slot and the sprite API
+(`0x140dd6130` jumps to `0x140532620` with `rcx = [[sprite+0x28]+0x28]`) do not.
+
+Character data: `data = [character+0x240]`, maximum HP `[data+0x18]`, current
+HP `[data+0x20]` (script getters `Character::GetHostHpRate` and `GetHpRate`
+use the same fields). The assigner accepts a character when `+0xef0 != -1`,
+`+0x430 != 0`, `data != NULL` and `[data+0x10] != 1`.
+
+## Companion information card and the profile window: correction (static, 2026-10-28)
+
+Read from the merged image dump only; nothing here was observed live. It
+replaces three earlier guesses in this file: that the `root+0x4c` window is what
+the "Companion information" panel shows, that `root+0x4e8` selects which
+companion it shows, and that per-sender profile storage would fix the panel.
+
+**The `root+0x4c..0xcb` window is mission-compatibility data, not a card.**
+Packet 77 (128 bytes, `0xd6c0e6`) is built by `0x8f34d0` / `0x8eeac0` and sent
+by `0xd62a30` to every other member (`target 4`) when `root+0xcc == 0`. The
+layout the consumers read is: `0x74` bytes of per-mission state (cleared by the
+loop in `0x8f34d0`, queried per mission id by `0x8f3d90` and `0x8f3fc0`), a
+u32 minimum level at `+0x78` and a u32 maximum level at `+0x7c` (read by
+`0xd2c6e0`, which narrows the host's own range to the partner's). The one
+accessor is `0xd5ddf0()`: `&root[+0x4c]` when `root+0xcc == 1`, else NULL.
+Its callers are the mission list builders `0xd2b410` (random mission pick),
+`0xd396a0` (list filter), `0xd2c6e0` (level range), `0xd2ca30`, `0xd2d900`
+and the matching state machine `0xd29ed0`. With three visitors the host's
+window holds only the last sender's data, so the mission filter and the level
+range follow one companion. That is a rules question (intersection of all
+companions), not a display one.
+
+**`root+0x4e8` is a dialog result, not a companion selector.** `0xd7c940`
+stores it; its only writers are `0xd63190`, called from the Matching menu
+(`0xd29ad0`, state 7) and from `0xc93760` with `[param+0xa4]`, the index the
+player chose in a confirmation dialog. `0xd5e900` tests it for "waiting for the
+answer" (`root[0]==1 && root[4]==2 && sel<0`).
+
+**Where a companion's name and card come from.**
+- Member names: `0xd5d920(relative index)` maps the index with `0xd7a0d0` and
+  returns the NUL-terminated name at `root + slot*0xa8 + 0x10f` (`0xd7a090`).
+  The mission HUD uses it with `[character+0xef0]` (`0xc21240`).
+- Session members: `0xd66c60()+0xa8` is the lobby session object; `0xd72640
+  (session, index)` returns a member, `0xd72a10(member)` its name, `0xd72b60`
+  the local index. `0xd5a020` is the local name and `0xd59fc0(index)` a
+  member's.
+- The card is `PlayerOnlineState@Menu` (`0x141279ac8`). `0xc6c080(card, parent,
+  slot, anim)` stores `slot` at `card+0x70`, `anim` at `+0x74` and runs the
+  refresh `0xc6c180`. With `+0x70 == 0` it prints the local name (`0xd5d280`);
+  otherwise it prints the name of **session member 1** - the immediate in
+  `0xc6c4fb` is `mov $1,%ecx; call 0xd59fc0` and does not use `+0x70` - and
+  reads the party character `0x755dc0(+0x70)` for level and title.
+- The container `0xc83bc0(holder, slot, parent)` (holder is `[0x14189f400+0x7d8]`)
+  stores `slot` at `+0x74`, resolves the character with `0x755dc0(slot)` and
+  data `[char+0x240]`, picks a card variant from `+0x70` and calls `0xc6c080`
+  with that slot. Its caller `0xd2fda0` passes the constant `1`: the
+  `lea 0x1(%r8),%edx` at `0xd2fdd4`. So the native card is hard-wired to party
+  slot 1 and session member 1, for a host and for a visitor alike.
+
+
+### The member index mapping is now proven (live + static, 2026-10-28)
+
+`0xd7a0d0(root, k)` is the game's own party-slot -> session-member map. Read
+out byte for byte it is: `k == 0` returns `root[0x3c8]`; `k > root[0x3c8]`
+returns `k`; otherwise `k - 1`. `root[0x3c8]` (u8) is the local player's own
+absolute session index. So for party slot `k` in 1..3 the session member that
+carries that companion is `m(k) = (k <= S) ? k - 1 : k` with `S = root[0x3c8]`.
+
+Three independent confirmations:
+
+- Live roots from the four-client prep run: the host's `root[0x3c8] = 0`
+  (`b-root.bin`), the first visitor's `= 1` (`a-root.bin`).
+- The HUD row name getter `0xc1ead0(char)` feeds `char+0xef0` (the character's
+  party slot) straight into `0xd5d920`, i.e. the same map.
+- The formula reproduces every row name the three-player mission run printed
+  (docs above, 2026-10-26): host b (S=0) saw rows C and A, visitor a (S=1) saw
+  B and C, visitor c (S=2) saw B and A.
+
+The mission HUD also uses this path for the row names; the root name records
+(`root + k*0xa8 + 0x10f`) were still all zero in the prep snapshots, so they
+are filled in mission only. The card name instead reads the session member
+array pointer (`[0xd66c60()+0xc0]`, stride 0xd0, UTF-8 name at +0x10), which
+has names in prep too. The member count is NOT the u32 at manager+0xf4 (it
+read 0 on all four live clients): the count is u32[session+0xc0] on the
+CSessionP2p object at `[mgr+0xa8]` - the bound of the game's own name-index
+scan `0xd72bb0` (`cmp %ebx,0xc0(%rcx)`, text.dis 3851335). `0xd72640` has no
+bounds check, so any member index must be derived from that count, never
+passed raw.
+
+### Live prep observations (four LAN clients, 2026-10-28)
+
+- `0x755dc0` party array (`0x1418a0490`): slots 0/1 hold characters, slots 2/3
+  NULL, although all four Steam clients sat in the same lobby. The party array
+  tracks admitted companions, not Steam lobby members; slots 2/3 must not be
+  relied on in prep (`a-party.bin`/`b-party.bin`).
+- The panel holder (`[0x14189f400+0x7d8]`, element id 0xfb at `+0x8`, live
+  0x6dfcce60) with the panel open: `+0x60 = 2`, `+0x70 = 0` (status variant),
+  `+0x74 = 1` (party slot) - `b-holder-open.bin`.
+- `root+0x3c0 == 0xE` in prep while the screen still counts down (parent's
+  screenshot: 16 s). `0xE` there is therefore NOT a mission marker. It is the
+  gate the connected-slot predicate `0xd7af80` requires
+  (`cmpl $0xe,0x3c0(%rcx)`), i.e. a lobby/prep phase value; the connected bits
+  (record `+0x104` bit 0) were 0 for every record in both root snapshots, so
+  at that instant the root records did not reflect the Steam lobby members.
+- The panel the menu opens is the full status window (Core/Battle stats, 3D
+  preview), the container's variant 0; the small `PlayerOnlineState` card is
+  variant 4 and needs `[0x14189f420]+0x18 != 0` (0xc83c94..0xc83ca6 forces
+  variant 0 when that byte is 0). No live surface with the card variant has
+  been captured yet.
+
+### Preparation roster
+
+The roster uses the native ready-action description, not the action labels or
+the companion status card. The action updater `0xd2ce40` owns labels
+`0xb`..`0xe` and their dim flags. It remains unmodified.
+
+#### Native update and description
+
+The preparation class vtable at `0x14129bf28` contains destructor `0xd2aa80`,
+open `0xd2b5e0`, close `0xd2b360`, and frame update `0xd2d900` at `+0x18`.
+The update dispatches on `self+0x60`. State 2 reaches `0xd2dc3d` and calls
+description builder `0xd2e1f0` each frame at `0xd2dca1`.
+
+The builder updates widget `self+0x88` through virtual method `+0x30`.
+It then checks dirty method `+0x148`, unless its forced argument is set.
+Selection getter `+0x50` returns action index 0 for the ready action.
+Only that action reaches the localized long-text write at `0xd2e341`.
+The other actions keep their native description hashes.
+
+The raw setter is `0xddaf90(sprite, slot, utf16, charsIncludingNul)`.
+The sprite is `self+0x68` and the description slot is `0xf`.
+The call opcode is at `0xd2e341`; its rel32 operand is at
+`0xd2e342`..`0xd2e345`. The aligned patch window starts at `0xd2e340`.
+
+`0xd2ce40` is not a frame callback. In state 2, its call at `0xd2dc6d`
+requires the one-shot flag `0x141b46fc8`. Function `0xd2aea0` sets that flag
+and `0xd2dc8c` clears it. A hook there missed later member changes.
+
+#### Current hooks
+
+`install_prep_roster` redirects the raw call through a nearby thunk.
+It checks the 16-byte patch window, setter prologue, and UTF-8 converter
+prologue before publishing the call change.
+
+The frame hook replaces the first 14 bytes of `0xd2d900`.
+Its trampoline copies `mov r11,rsp; push rbp; push rdi; push r14;
+lea rbp,[r11-0x108]`. These instructions use no RIP-relative address.
+The existing atomic 16-byte publisher preserves the next two native bytes.
+The detour forwards both arguments and preserves the native return value.
+Its ready flag is published only after the raw call hook is installed.
+
+`det_PrepHelpText` caches the actual localized ready text, bounded to 256
+UTF-16 units including its NUL, and the sprite that owns it.
+`det_PrepUpdate` runs the native frame once. It checks state 2 and re-reads
+the sprite and widget after that call, because the native code can close them.
+On a changed member set with the ready action selected, it sends the cached
+stock text directly through the roster renderer.
+It does not call the description builder again or repeat widget updates.
+Other selections retain their native help. Returning to ready uses the
+normal native description path. The active sprite is cleared after the
+detour; invalid context clears the rendered-member cache.
+
+#### Members and text bounds
+
+The gates require `max_players >= 3`, Tokoyo mode
+`[0x14191de34] == 1`, and loader phase `[manager+0x5d0] < 0xC`.
+The mode byte and `root+0x3c0 == 0xE` also hold in the mission, so they do
+not establish preparation by themselves.
+
+The session manager is at `base+0x17900b0`. Its member-array pointer is at
+`+0xc0`, record stride is `0xd0`, and each UTF-8 name starts at `+0x10`.
+The capacity at `CSession+0xc0` includes empty slots. The renderer counts
+nonempty names within that capacity, bounded to four slots, and skips the
+local index at `root+0x3c8` when listing companions.
+The party array cannot supply the prep roster: slots 2 and 3 were NULL in
+the observed four-player preparation screen.
+
+Names are bounded to 63 bytes. ASCII controls are removed before native
+UTF-8 conversion through `0xddf4c0`; C0/C1 and U+2028/U+2029 are removed
+after conversion. Each name is limited to 16 UTF-16 units with a
+surrogate-safe ellipsis. The combined buffer holds 384 units.
+The prefix counts all joined players, including the local player.
+Logs record counts, not names or platform IDs.
+
+#### Evidence and acceptance
+
+Build e7470c4d showed correct roster text after manual cursor refresh.
+Build c3e43358 admitted all four LAN players but failed automatic refresh:
+B/C kept stock text, A kept a three-player count and omitted D, and D showed
+four players. The `c3-initial-prep-*` and `c3-settled-prep-*` captures preserve
+that failure. All four then showed three bars in `c3-core-four-hud-*`.
+
+Build 68be2037 moves refresh to `0xd2d900` and keeps raw cached-text rendering.
+Its build and all six isolated harness cases pass. All four initial native
+LAN preparation screens showed the correct count and three peer names without
+cursor refresh (`frame68-initial-prep-{b,c,a,d}.png`). Action labels stayed
+native. All four entered the mission with three companion bars and no roster
+overlay (`frame68-four-hud-*`). The other-action help attempt reached the
+mission transition before capture, so it proves no menu behavior.
+Other-action help, departure refresh and the exit screen still need captures.
+The native companion information card still shows only its first companion.
