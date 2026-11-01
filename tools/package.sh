@@ -12,6 +12,8 @@
 #   dist/nioh4p-enemy-health.zip     DLLMods/<name>.ini in the zip, with
 #   dist/nioh4p-assist-gauge.zip     README.md at the zip root
 #   dist/nioh4p-shrine-respawn.zip
+#   dist/nioh4p-all.zip              the standalone core plus every add-on,
+#                                    ready to extract into the game folder
 #
 # Each zip mirrors the paths inside the game folder: the core standalone files
 # belong next to nioh.exe, while the plugin and add-on files belong in the
@@ -101,6 +103,19 @@ for id in $ADDONS; do
         "package/addons/$name.ini" "DLLMods/$name.ini" \
         package/README.md README.md
 done
+
+# One zip with everything: the standalone core plus every add-on, laid out for
+# extraction into the game folder. Group members who install this zip need no
+# other package.
+all_args=(build/dinput8.dll dinput8.dll
+    nioh3p.ini nioh3p.ini
+    package/README.md README.md)
+for id in $ADDONS; do
+    name="nioh4p-$id"
+    all_args+=("build/addons/$name.dll" "DLLMods/$name.dll"
+        "package/addons/$name.ini" "DLLMods/$name.ini")
+done
+stage_zip nioh4p-all.zip "${all_args[@]}"
 
 echo
 echo "== sha256 =="
