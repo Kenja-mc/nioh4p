@@ -29,83 +29,71 @@ Fill each `<…>` placeholder before publishing.
   installs the mod.
 - Permissions: players may use the mod and share the page link; no re-uploads,
   no monetization, no paid mod packs.
-- Credits: `<your name>`. Source and test notes: `<repo URL>`.
+- Live page (draft, unpublished): https://www.nexusmods.com/nioh/mods/43 -
+  nine files uploaded (main `All-in-one (core and add-ons)` 1.1.3 + eight
+  optionals), category Gameplay, tags Gameplay + Utilities for Players,
+  description BBCode pasted, permissions preset applied, third-party = none.
+  Four early optional entries show version `1` (rename/fix via their Update
+  menu). Publish waits on Media images.
+- Credits: `A3delta`. Source and test notes: https://github.com/Kenja-mc/nioh4p
 
 ## 2. Description (paste as BBCode)
 
 ```bbcode
 [size=5]Play Nioh with up to four players[/size]
 Nioh's co-op is a host plus one visitor. This mod raises the game's own lobby
-size to four and adds the fourth player's health bar - for now a plain
-gauge with no name label, and its fill does not track its own companion -
-so a group of two, three or four can enter one mission through the Torii
-Gate ("Yokai Realm with a Companion"). Every player installs the mod. No
-game files are modified.
+to four and adds the fourth player's health bar (a plain gauge for now), so
+two, three or four players can take one mission through the Torii Gate
+("Yokai Realm with a Companion"). Every player installs the mod; no game
+files are modified.
 
 [size=4]Install[/size]
 [list=1]
 [*]Close the game.
 [*]In Steam: right-click Nioh, choose Manage, then Browse local files.
-[*]Extract [font=Courier New]nioh4p-all.zip[/font] into that folder. It carries everything, laid out for the game directory.
-[*]If another mod already provides [font=Courier New]dinput8.dll[/font], read the plugin section of the included README instead of overwriting it.
+[*]Extract [font=Courier New]nioh4p-all.zip[/font] into that folder. It carries everything.
+[*]If another mod already provides [font=Courier New]dinput8.dll[/font], use the plugin route in the included README instead of overwriting it.
 [*]Start the game from Steam on every PC.
 [/list]
-The defaults fit four players, and a three-player group can leave everything
-as it is. Linux / Steam Deck: if the mod does not load, set the Steam launch
-option [font=Courier New]WINEDLLOVERRIDES="dinput8=n,b" %command%[/font].
+Linux / Steam Deck: if the mod does not load, set the Steam launch option
+[font=Courier New]WINEDLLOVERRIDES="dinput8=n,b" %command%[/font].
 
 [size=4]Play[/size]
 [list]
-[*]Pick a mission that everyone owns.
-[*]Host: Torii Gate, then Yokai Realm with a Companion. Search first.
-[*]Visitors: the same menu. Search before the preparation countdown ends.
-[*]Keep Secret Word off and use Without Conditions.
-[*]You should all land in the same mission and see the companion health
-bars (the fourth player's bar is the plain gauge).
+[*]Everyone: Torii Gate, Yokai Realm with a Companion, Without Conditions, Secret Word off.
+[*]Host searches first; visitors search before the preparation countdown ends.
 [/list]
-
-[size=4]Optional add-ons[/size]
-The all-in-one zip includes five optional gameplay changes, each with its own
-settings file in [font=Courier New]DLLMods[/font]:
-[list]
-[*][font=Courier New]nioh4p-shrines[/font] - use a shrine again during co-op.
-[*][font=Courier New]nioh4p-kodama[/font] - visitors record Kodama through the native save routine.
-[*][font=Courier New]nioh4p-enemy-health[/font] - scale enemy health for a bigger group.
-[*][font=Courier New]nioh4p-assist-gauge[/font] - adjust how fast the shared gauge drains.
-[*][font=Courier New]nioh4p-shrine-respawn[/font] - self-recovery returns you to the last shrine you used.
-[/list]
-Each one can be turned off with [font=Courier New]enabled=0[/font] in its
-settings file; delete its DLL to remove it. All five are verified to load and
-publish their settings; their behavior in a live fight is still under test.
 
 [size=4]Check that it loaded[/size]
-The log's first lines contain [font=Courier New]preflight: exe=ok[/font]. If
-it says [font=Courier New]exe=unsupported[/font], your game build differs from
-the tested one and the mod left the game unmodified - update the game on every
-PC.
+The log's first lines contain [font=Courier New]preflight: exe=ok[/font].
+If it says [font=Courier New]exe=unsupported[/font], your game build differs -
+update the game on every PC.
+
+[size=4]Optional add-ons[/size]
+Five optional changes ship in the all-in-one zip, each with its own settings
+file in [font=Courier New]DLLMods[/font]: shrine reuse, visitor Kodama,
+enemy-health scaling, assist-gauge drain and shrine respawn. Turn one off
+with [font=Courier New]enabled=0[/font]; delete its DLL to remove it. Their
+behavior in a live fight is still under test.
 
 [size=4]Antivirus[/size]
-The DLL is unsigned and patches game memory inside its own process, so some
-scanners flag it generically: the predecessor build scored 5 detections out of
-71 engines, all generic heuristics, with no sandbox findings. If your
-antivirus blocks it, keep protection enabled and report the engine and
-detection name - or delete the mod files and the game is stock again.
-VirusTotal (core dinput8.dll): https://www.virustotal.com/gui/file/2d1cdddce6134fefd019f18da62848fd969394aa35d6094c004ef4ab102655e5 - 8/71 generic-heuristic flags, 63 undetected (predecessor: 5/71)
+The DLL is unsigned and patches game memory inside the game's own process,
+so some scanners flag it generically (currently 8 of 71 engines, all
+heuristics). VirusTotal: <link>. If yours blocks it, keep protection on and
+report the detection - or delete the mod files and the game is stock again.
 
-[size=4]Known limits[/size]
+[size=4]Limits[/size]
 [list]
-[*]The preparation screen lists all four players; the in-mission status card still shows only one companion.
-[*]The fourth player's health bar is a plain gauge: no name label, and its fill does not track its own companion.
-[*]Joining after the mission started is unproven. Steam invites are unproven.
-[*]Mission completion, rewards and the revive flow with four players are unproven.
-[*]The add-ons' behavior in a live fight is untested; loading and settings publication are verified.
+[*]The fourth health bar is a plain gauge: no name, and its fill does not track its own companion.
+[*]The in-mission status card still shows only one companion.
+[*]Internet play with four Steam accounts, mission completion and revives are unproven.
 [/list]
 
 [size=4]Uninstall[/size]
-Delete the files you installed: [font=Courier New]dinput8.dll[/font],
-[font=Courier New]nioh3p.ini[/font], the [font=Courier New]DLLMods\nioh4p*[/font]
-files and [font=Courier New]nioh3p*.log[/font]. Keep the save backup you made:
-modded play can save game changes, for example collected Kodama.
+Delete [font=Courier New]dinput8.dll[/font], [font=Courier New]nioh3p.ini[/font],
+[font=Courier New]DLLMods\nioh4p*[/font] and [font=Courier New]nioh3p*.log[/font].
+Keep your save backup: modded play can save game changes, for example
+collected Kodama.
 
 [size=2]Not affiliated with or endorsed by Koei Tecmo or Team Ninja.[/size]
 ```

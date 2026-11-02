@@ -55,19 +55,19 @@ for f in "${files[@]}"; do
     base=$(basename "$f")
     [ "$(stat -c%s "$f")" -lt 32000000 ] || { echo "::error::$base is over the 32 MB public-API limit"; exit 1; }
     # A file VT already knows returns its report directly; only upload once.
-    if ! vt "$auth" -o "$WORK/r-$sha.json" "$API/files/$sha"; then
+    if ! vt "${auth[@]}" -o "$WORK/r-$sha.json" "$API/files/$sha"; then
         [ "$first" = 1 ] || sleep 20
         first=0
-        vt "$auth" -o "$WORK/up-$sha.json" -F "file=@$f" "$API/files"
+        vt "${auth[@]}" -o "$WORK/up-$sha.json" -F "file=@$f" "$API/files"
         aid=$(jq -r '.data.id' "$WORK/up-$sha.json")
         # Poll the analysis; the verdicts land on the file object afterwards.
         for _ in $(seq 1 20); do
             sleep 20
-            vt "$auth" -o "$WORK/an-$sha.json" "$API/analyses/$aid" || continue
+            vt "${auth[@]}" -o "$WORK/an-$sha.json" "$API/analyses/$aid" || continue
             [ "$(jq -r '.data.attributes.status' "$WORK/an-$sha.json")" = completed ] && break
         done
         sleep 20
-        vt "$auth" -o "$WORK/r-$sha.json" "$API/files/$sha" || { echo "::warning::no report for $base"; continue; }
+        vt "${auth[@]}" -o "$WORK/r-$sha.json" "$API/files/$sha" || { echo "::warning::no report for $base"; continue; }
     fi
     m=$(jq -r '.data.attributes.last_analysis_stats.malicious // "unknown"' "$WORK/r-$sha.json")
     s=$(jq -r '.data.attributes.last_analysis_stats.suspicious // "unknown"' "$WORK/r-$sha.json")
