@@ -90,7 +90,7 @@ scanners flag it generically: the predecessor build scored 5 detections out of
 71 engines, all generic heuristics, with no sandbox findings. If your
 antivirus blocks it, keep protection enabled and report the engine and
 detection name - or delete the mod files and the game is stock again.
-VirusTotal: `<link>`
+VirusTotal (core dinput8.dll): https://www.virustotal.com/gui/file/2d1cdddce6134fefd019f18da62848fd969394aa35d6094c004ef4ab102655e5 - 8/71 generic-heuristic flags, 63 undetected (predecessor: 5/71)
 
 [size=4]Known limits[/size]
 [list]
