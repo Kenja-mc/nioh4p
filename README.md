@@ -37,11 +37,15 @@ WINEDLLOVERRIDES="dinput8=n,b" %command%
 ```
 
 Optional add-ons separate shrine use, Kodama collection, enemy health, assist-gauge drain, and shrine recovery from the core.
-Install only the add-ons that your group wants. Their live behavior is still under test.
+The all-in-one zip ships all of them enabled; delete an add-on's DLL, or set `enabled=0` in its INI, to turn one off.
+Their live behavior is still under test.
 
 The mod is unsigned. If antivirus blocks it, keep protection enabled and report the detection.
 Review logs before sharing them. They can contain lobby IDs and file paths.
-To uninstall, close Nioh and remove only the mod files that you installed.
+To uninstall, close Nioh and remove only the mod files that you installed:
+`dinput8.dll`, `nioh3p.ini`, the `DLLMods\nioh4p*` files and the `nioh3p*.log` logs.
+
+Not affiliated with or endorsed by Koei Tecmo or Team Ninja.
 
 [Releases](https://github.com/Kenja-mc/nioh4p/releases) ·
 [Safety](docs/SAFETY.md) ·

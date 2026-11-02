@@ -4,7 +4,7 @@ The core raises the co-op limit to three or four players.
 Every player needs the same game build and core mod.
 Use matching add-ons across the group.
 
-This source build is still under test. Four local instances entered one mission with three companion bars on each screen.
+This release build is still under test. Four local instances entered one mission with three companion bars on each screen.
 Four-account Steam play, mission completion, and the gameplay add-ons remain unproven.
 The preparation screen lists all four players. Companion information and results still use the limited stock layout.
 
@@ -65,9 +65,9 @@ The core loads these add-ons. No separate loader is needed for them.
 Their purposes are listed below. Rig-verified: every add-on
 loads and is accepted by the core on four clients, and the host's
 enemy-health, assist-gauge and shrine-respawn values publish to the
-session and are accepted by every visitor. In-combat behavior (scaled
-enemy health in a fight, the drain rate mid-mission, shrine respawn after
-a death) is still to be exercised.
+session. The full visitor-acceptance lifecycle has not been observed
+live, and in-combat behavior (scaled enemy health in a fight, the drain
+rate mid-mission, shrine respawn after a death) is still to be exercised.
 
 | Add-on | Purpose |
 | --- | --- |
@@ -123,5 +123,6 @@ If antivirus blocks a DLL, keep protection enabled and report the engine and det
 
 To remove an add-on, close Nioh and remove that add-on's DLL from `DLLMods`.
 Keep its INI if you want to retain its configuration.
-To remove the core, remove its DLL and `nioh3p.ini`. Leave files from other mods in place.
-The source repository's `AGENTS.md` and `docs/SAFETY.md` contain build, test, and safety details.
+To remove the core, remove its DLL and `nioh3p.ini`, and the `nioh3p*.log` logs. Leave files from other mods in place.
+Source, releases and safety notes: https://github.com/Kenja-mc/nioh4p
+Not affiliated with or endorsed by Koei Tecmo or Team Ninja.
