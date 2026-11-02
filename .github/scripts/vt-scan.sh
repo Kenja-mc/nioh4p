@@ -46,7 +46,7 @@ if [ -z "${VT_API_KEY:-}" ]; then
 fi
 auth=(-H "x-apikey: $VT_API_KEY")
 
-vt() { curl -sf --retry 3 --retry-delay 20 "$@"; }
+vt() { curl -sf --fail-with-body --retry 3 --retry-delay 20 "$@"; }
 
 results=()
 first=1
