@@ -7,8 +7,8 @@
 #define RT_MANIFEST 24
 
 1 VERSIONINFO
- FILEVERSION 1,1,1,0
- PRODUCTVERSION 1,1,1,0
+ FILEVERSION 1,1,2,0
+ PRODUCTVERSION 1,1,2,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS 0x40004L
@@ -21,11 +21,11 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "nioh4p\0"
             VALUE "FileDescription", "Nioh co-op extension\0"
-            VALUE "FileVersion", "1.1.1.0\0"
+            VALUE "FileVersion", "1.1.2.0\0"
             VALUE "InternalName", "nioh4p\0"
             VALUE "LegalCopyright", "open-source mod, no warranty\0"
             VALUE "ProductName", "nioh4p\0"
-            VALUE "ProductVersion", "1.1.1.0\0"
+            VALUE "ProductVersion", "1.1.2.0\0"
         END
     END
     BLOCK "VarFileInfo"
@@ -44,7 +44,7 @@ END
 BEGIN
     "<?xml version=""1.0"" encoding=""UTF-8"" standalone=""yes""?>"
     "<assembly xmlns=""urn:schemas-microsoft-com:asm.v1"" manifestVersion=""1.0"">"
-    "<assemblyIdentity type=""win32"" name=""nioh4p.extension"" version=""1.1.1.0"" processorArchitecture=""amd64""/>"
+    "<assemblyIdentity type=""win32"" name=""nioh4p.extension"" version=""1.1.2.0"" processorArchitecture=""amd64""/>"
     "<trustInfo xmlns=""urn:schemas-microsoft-com:asm.v3"">"
     "<security><requestedPrivileges>"
     "<requestedExecutionLevel level=""asInvoker"" uiAccess=""false""/>"

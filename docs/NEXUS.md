@@ -20,7 +20,7 @@ Fill each `<…>` placeholder before publishing.
 
 - Game: Nioh (Complete Edition), Nexus game id `nioh`
 - Mod name: `Four Player Co-op (Torii Gate)`
-- Version: `1.1.1` - matches the VERSIONINFO inside `dinput8.dll`
+- Version: `1.1.2` - matches the VERSIONINFO inside `dinput8.dll`
 - Category: Gameplay
 - Tags: `Co-op`, `Multiplayer`, `Utility`, `DLL`
 - Summary (<= 200 chars): `Play Nioh missions with up to four players through the Torii Gate. Raises the game's own lobby size, adds the fourth player's health bar, and comes with optional gameplay add-ons.`
@@ -102,12 +102,12 @@ modded play can save game changes, for example collected Kodama.
 
 ## 3. Files tab
 
-- Main file: `nioh4p-all.zip` (version `1.1.1`, category Main). One zip, no
+- Main file: `nioh4p-all.zip` (version `1.1.2`, category Main). One zip, no
   nested archives.
 - Optional files: `nioh4p-player.zip` (core only) and the five
   `nioh4p-<addon>.zip` per-piece add-ons, for players who do not want the
   whole set. `nioh4p-plugin.zip` for external-loader setups.
-- An optional `nioh4p-1.1.1-source.zip` with `src/`, `build.sh` and
+- An optional `nioh4p-1.1.2-source.zip` with `src/`, `build.sh` and
   `tools/pechecksum.py` helps vendor reviews and users.
 - Do not include dumps, logs or test tools.
 
@@ -123,7 +123,7 @@ modded play can save game changes, for example collected Kodama.
 ## 5. Pre-publish checklist
 
 - [ ] Freeze the release hash: core `dinput8.dll` SHA-256
-      `ff1fd7b7dbdb0f4216ec56ead3d4c91219a4b93faaf6dd8c2f99c35c727d68bb`.
+      `ac803dd69f4fb666f62aa1caf51eddf417acaca4a9a9af1908741a01f3581b7f`.
 - [ ] Scan that DLL on VirusTotal and put the link in the description. Expect
       a handful of generic-heuristic flags like the predecessor's 5/71. The
       `virustotal-scan` workflow uploads every release zip and DLL
