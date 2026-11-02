@@ -1,6 +1,8 @@
 # nioh4p
 
 Three- and four-player co-op for Nioh: Complete Edition on Steam.
+
+![Four players in one mission](docs/img/four-players.png)
 Every player needs the same game build and core mod.
 
 A four-player group has entered one Torii Gate mission on a four-instance
