@@ -4,9 +4,11 @@ Three- and four-player co-op for Nioh: Complete Edition on Steam.
 Every player needs the same game build and core mod.
 
 A four-player group has entered one Torii Gate mission on a four-instance
-test setup, with three companion bars on every screen. Four-account play over
-the internet, mission completion, and the gameplay add-ons' combat behavior
-remain unproven. Follow the instructions inside your package.
+test setup, with three companion bars on every screen. The extra bar is a
+plain gauge for now: no name label, and its fill does not track its own
+companion. Four-account play over the internet, mission completion, and the
+gameplay add-ons' combat behavior remain unproven. Follow the instructions
+inside your package.
 
 ## Install and play
 
