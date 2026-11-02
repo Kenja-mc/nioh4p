@@ -29,6 +29,13 @@ jobs:
           LLVM_RC: llvm-rc-18
           LLVM_CVTRES: llvm-cvtres-18
         run: ./build.sh --harness
+      - name: Initialize the wine prefix
+        env:
+          WINEPREFIX: /tmp/smoke/pfx
+          WINEDEBUG: -all
+        run: |
+          .github/scripts/wine-proton.sh runinprefix wineboot -i || true
+          .github/scripts/wine-proton.sh runinprefix cmd /c "echo prefix ok" || true
       - name: "Fixture: EOS CopyInfo ownership (research build)"
         env:
           NIOH3P_PROTON: ${{ github.workspace }}/.github/scripts/wine-proton.sh
@@ -37,7 +44,7 @@ jobs:
           WINEPREFIX: /tmp/smoke/pfx
           WINEDEBUG: -all
         run: |
-          tools/smoketest.sh ownership
+          tools/smoketest.sh ownership || { tail -40 /tmp/smoke/proton.out; exit 1; }
           out=/tmp/smoke/proton.out
           grep -q '^PASS' "$out" && ! grep -q '^FAIL' "$out"
       - name: "Fixture: enemy-health add-on (player build)"

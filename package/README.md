@@ -18,9 +18,10 @@ extract it into the game folder and skip the per-package steps below.
 3. Copy `dinput8.dll` and `nioh3p.ini` from `nioh4p-player.zip` beside `nioh.exe`.
    If another mod uses `dinput8.dll`, use the plugin route below instead of overwriting it.
 4. The supplied `nioh3p.ini` already allows four players and shows the third
-   companion bar (the fourth player's health bar). A three-player group can
-   keep both: set `max_players=3`, or leave everything as it is - the extra
-   bar stays hidden until a fourth player is present.
+   companion bar (the fourth player's health bar). That extra bar is a plain
+   gauge for now: no name label, and its fill does not track its own
+   companion. A three-player group can leave it as it is - the extra bar
+   stays hidden until a fourth player is present.
 
 5. Start Nioh from Steam on every computer.
 
