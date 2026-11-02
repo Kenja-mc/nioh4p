@@ -4,6 +4,10 @@ name: build-and-test
 # harness fixtures (ownership, enemy-health in both modes) under plain wine.
 # The proxy fixture and the game itself need the real Steam install and stay
 # rig-side; this is the regression net, not the gameplay gate.
+#
+# Each fixture step owns its own wine prefix and stops the prefix's
+# wineserver when it ends: a lingering server from the previous step can
+# wedge the next game launch until the step timeout.
 on:
   push:
     branches: [master]
@@ -29,21 +33,16 @@ jobs:
           LLVM_RC: llvm-rc-18
           LLVM_CVTRES: llvm-cvtres-18
         run: ./build.sh --harness
-      - name: Initialize the wine prefix
-        env:
-          WINEPREFIX: /tmp/smoke/pfx
-          WINEDEBUG: -all
-        run: |
-          .github/scripts/wine-proton.sh runinprefix wineboot -i || true
-          .github/scripts/wine-proton.sh runinprefix cmd /c "echo prefix ok" || true
       - name: "Fixture: EOS CopyInfo ownership (research build)"
         env:
           NIOH3P_PROTON: ${{ github.workspace }}/.github/scripts/wine-proton.sh
           SMOKE_WRAPPER: xvfb-run -a
           SMOKE_DIR: /tmp/smoke
-          WINEPREFIX: /tmp/smoke/pfx
+          WINEPREFIX: /tmp/smoke/pfx-own
           WINEDEBUG: -all
         run: |
+          trap '.github/scripts/wine-proton.sh killprefix || true; pkill -x Xvfb || true' EXIT
+          .github/scripts/wine-proton.sh bootprefix
           tools/smoketest.sh ownership || { tail -40 /tmp/smoke/proton.out; exit 1; }
           out=/tmp/smoke/proton.out
           grep -q '^PASS' "$out" && ! grep -q '^FAIL' "$out"
@@ -53,9 +52,11 @@ jobs:
           NIOH3P_PROTON: ${{ github.workspace }}/.github/scripts/wine-proton.sh
           SMOKE_WRAPPER: xvfb-run -a
           SMOKE_DIR: /tmp/smoke
-          WINEPREFIX: /tmp/smoke/pfx
+          WINEPREFIX: /tmp/smoke/pfx-eh0
           WINEDEBUG: -all
         run: |
+          trap '.github/scripts/wine-proton.sh killprefix || true; pkill -x Xvfb || true' EXIT
+          .github/scripts/wine-proton.sh bootprefix
           tools/smoketest.sh enemy-health
           out=/tmp/smoke/proton.out
           [ "$(grep -c '^PASS' "$out")" -ge 15 ] && ! grep -q '^FAIL' "$out"
@@ -65,9 +66,11 @@ jobs:
           NIOH3P_PROTON: ${{ github.workspace }}/.github/scripts/wine-proton.sh
           SMOKE_WRAPPER: xvfb-run -a
           SMOKE_DIR: /tmp/smoke
-          WINEPREFIX: /tmp/smoke/pfx
+          WINEPREFIX: /tmp/smoke/pfx-eh1
           WINEDEBUG: -all
         run: |
+          trap '.github/scripts/wine-proton.sh killprefix || true; pkill -x Xvfb || true' EXIT
+          .github/scripts/wine-proton.sh bootprefix
           tools/smoketest.sh enemy-health
           out=/tmp/smoke/proton.out
           [ "$(grep -c '^PASS' "$out")" -ge 15 ] && ! grep -q '^FAIL' "$out"
