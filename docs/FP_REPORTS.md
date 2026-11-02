@@ -1,4 +1,4 @@
-# False-positive reports for `dinput8.dll` (not submitted yet)
+# False-positive reports for `dinput8.dll` (Bitdefender + Cynet reported 2026-11-02)
 
 The v1.1.3 player build `2d1cdddc…` is flagged by 8 of ~75 engines on
 VirusTotal. All eight are one detection family, not eight opinions:

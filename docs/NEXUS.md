@@ -78,8 +78,8 @@ behavior in a live fight is still under test.
 
 [size=4]Antivirus[/size]
 The DLL is unsigned and patches game memory inside the game's own process,
-so some scanners flag it generically (currently 8 of 71 engines, all
-heuristics). VirusTotal: <link>. If yours blocks it, keep protection on and
+so some scanners flag it generically (currently 8 of 75 engines, all
+heuristics). VirusTotal: https://www.virustotal.com/gui/file/2d1cdddce6134fefd019f18da62848fd969394aa35d6094c004ef4ab102655e5. If yours blocks it, keep protection on and
 report the detection - or delete the mod files and the game is stock again.
 
 [size=4]Limits[/size]
