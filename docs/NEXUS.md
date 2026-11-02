@@ -109,11 +109,11 @@ collected Kodama.
   `tools/pechecksum.py` helps vendor reviews and users.
 - Do not include dumps, logs or test tools.
 
-## 4. Images (capture fresh; rig screenshots show test accounts)
+## 4. Images (uploaded 2026-11-02 from test-rig captures; generic account names only)
 
-1. Four characters together in a mission (main image).
-2. The HUD showing all three companion bars (the third is the plain gauge).
-3. The preparation screen listing four players.
+1. Four characters together in a mission (main image) - `docs/img/four-players.png`, set as the page thumbnail.
+2. The HUD showing all three companion bars (the third is the plain gauge) - `docs/img/hud-bars.png`.
+3. The preparation roster (host plus three companions) - `docs/img/preparation-roster.png`, cropped to remove the rig performance overlay.
 4. The visitor search list showing the host session.
 5. First lines of `nioh3p.log` with the `preflight:` line. Nothing needs
    blurring; the line contains only paths.
