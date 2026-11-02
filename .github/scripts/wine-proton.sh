@@ -29,12 +29,15 @@ runinprefix)
     exec "$loader" "$@"
     ;;
 bootprefix)
-    # Create or upgrade $WINEPREFIX. On a wine64-only install wineboot's
-    # wow64 probing can fail (no syswow64); that is harmless for the x64
-    # fixtures, so both probes stay best-effort.
+    # Create or upgrade $WINEPREFIX. wine does not create missing parent
+    # directories (the first wineboot fails with "chdir: No such file or
+    # directory" and the fixture then boots the prefix mid-run), so the
+    # directory must exist first. On a wine64-only install wineboot's wow64
+    # probing can fail (no syswow64); that is harmless for the x64 fixtures,
+    # so the boot itself stays best-effort and CI's canary checks the result.
     loader="$(find_loader)" || { echo "wine-proton shim: no wine loader found" >&2; exit 127; }
+    mkdir -p "${WINEPREFIX:?WINEPREFIX must be set}" || exit 1
     "$loader" wineboot -i >/dev/null 2>&1 || true
-    "$loader" cmd /c "echo prefix ok" >/dev/null 2>&1 || true
     ;;
 killprefix)
     # Stop this prefix's wineserver so the next fixture starts clean; a

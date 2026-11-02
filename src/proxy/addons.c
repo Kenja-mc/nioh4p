@@ -1,3 +1,4 @@
+#include "nioh3p_internal.h"
 #include "addons.h"
 #include "../common/freestanding.h"
 
@@ -14,7 +15,7 @@ static const char *const addon_names[NIOH4P_ADDON_COUNT] = {
 };
 static Nioh4pCoreApi g_api;
 static LoadedAddon g_loaded[NIOH4P_ADDON_COUNT];
-static unsigned g_count, g_hook_count;
+static unsigned g_count, g_addon_hook_total;
 static int (*g_install_hook)(const Nioh4pHook *hook);
 
 static int descriptor_valid(const Nioh4pAddon *addon, unsigned id)
@@ -26,7 +27,7 @@ static int descriptor_valid(const Nioh4pAddon *addon, unsigned id)
     if (!addon->enabled)
         return 1;
     if ((!addon->hook_count && !addon->install_patch) ||
-        addon->hook_count > NIOH4P_MAX_ADDON_HOOKS - g_hook_count ||
+        addon->hook_count > NIOH4P_MAX_ADDON_HOOKS - g_addon_hook_total ||
         (addon->hook_count && !g_api.readable(addon->hooks,
                             addon->hook_count * sizeof *addon->hooks)))
         return 0;
@@ -41,6 +42,17 @@ static int descriptor_valid(const Nioh4pAddon *addon, unsigned id)
         const Nioh4pHook *hook = &addon->hooks[i];
         if (hook->n < 14 || hook->n > sizeof hook->bytes ||
             (hook->rva & 15) || !hook->detour || !hook->orig || !hook->name)
+            return 0;
+        /* name and detour must be consumable by the core's hook installer:
+         * a malformed descriptor is rejected here instead of crashing the
+         * game through a wild LOG("%s") or a jump to an unmapped address. */
+        int named = 0;
+        for (unsigned c = 0; c < 32 && g_api.readable(hook->name + c, 1); c++)
+            if (!hook->name[c]) {
+                named = 1;
+                break;
+            }
+        if (!named || !executable_ptr(hook->detour))
             return 0;
         for (unsigned j = 0; j < i; j++)
             if (addon->hooks[j].rva == hook->rva)
@@ -109,8 +121,8 @@ unsigned nioh4p_load_addons(const Nioh4pCoreApi *api, const char *game_directory
         loaded->module = module;
         loaded->descriptor = addon;
         loaded->name = addon_names[id];
-        loaded->first_hook = g_hook_count;
-        g_hook_count += addon->hook_count;
+        loaded->first_hook = g_addon_hook_total;
+        g_addon_hook_total += addon->hook_count;
         if (id == NIOH4P_ENEMY_HEALTH) local_rules->enemy_hp_pct = addon->local_value;
         else if (id == NIOH4P_ASSIST_GAUGE) local_rules->assist_drain_pct = addon->local_value;
         else if (id == NIOH4P_SHRINE_RESPAWN) local_rules->respawn_shrine = addon->local_value;

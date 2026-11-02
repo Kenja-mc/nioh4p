@@ -235,6 +235,18 @@ static DWORD WINAPI worker(LPVOID unused)
     if (g_cfg.hook_eos && mod_active) {
         for (int i = 0; i < 24; i++) {          /* 2 minutes of restoration watch */
             Sleep(5000);
+            /* A slow machine (HDD, antivirus scanning each DLL) can map
+             * EOSSDK-Win64-Shipping.dll or steam_api64.dll after the fast
+             * loader poll above gave up. Retry here so a late module still
+             * gets its hooks instead of silently running a stock lobby. */
+            if (eos_unresolved() && !eos_module_seen()) {
+                install_eos_hooks();
+                if (!eos_unresolved())
+                    LOG("eos: module mapped late; %d hook(s) installed by the watch",
+                        g_eos_hooks);
+            }
+            if (!g_steam_ready)
+                install_steam_hooks();
             int fixed = steam_repair();
             fixed += repair_slots(&g_game_create_param_hook);
             for (int k = 0; k < g_hook_count; k++)

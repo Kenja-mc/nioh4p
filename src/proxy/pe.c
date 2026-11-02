@@ -207,7 +207,8 @@ int manifest_resource_present(HMODULE self)
 {
     uint8_t *base = (uint8_t *)self;
     IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)base;
-    if (!dos || dos->e_magic != IMAGE_DOS_SIGNATURE)
+    if (!dos || dos->e_magic != IMAGE_DOS_SIGNATURE ||
+        dos->e_lfanew <= 0 || dos->e_lfanew > 0x1000)
         return 0;
     IMAGE_NT_HEADERS64 *n = (IMAGE_NT_HEADERS64 *)(base + dos->e_lfanew);
     if (n->Signature != IMAGE_NT_SIGNATURE)

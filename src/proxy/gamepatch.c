@@ -35,6 +35,9 @@ void install_game_capacity_hook(void)
         return;
     }
     g_game_create_param_hook.orig = vtable[2];
+    /* repair_slots re-applies a slot only when it holds the original value
+     * again: publish that value, or a protector's restore goes unnoticed. */
+    g_game_create_param_hook.target = vtable[2];
     if (add_slot(&g_game_create_param_hook, &vtable[2]))
         LOG("game capacity hook: create request is clamped before native member allocation");
 }
