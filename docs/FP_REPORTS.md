@@ -1,4 +1,4 @@
-# False-positive reports for `dinput8.dll` (Bitdefender + Cynet reported 2026-11-02)
+# False-positive reports for `dinput8.dll` (Bitdefender + Cynet reported 2026-11-02; Bitdefender confirmed 2026-11-04)
 
 The v1.1.3 player build `2d1cdddc…` is flagged by 8 of ~75 engines on
 VirusTotal. All eight are one detection family, not eight opinions:
@@ -10,8 +10,9 @@ VirusTotal. All eight are one detection family, not eight opinions:
 
 The v1.1.0 build was flagged by a different set (Avast/AVG, Avira,
 WithSecure, Cynet); those vendors do not flag this build. Filing with
-Bitdefender and Cynet covers every current flag. Only the vendor can
-whitelist a hash.
+Bitdefender and Cynet covers every current flag. Bitdefender confirmed
+the false positive on 2026-11-04; Cynet's report is still open. Only the
+vendor can whitelist a hash.
 
 Shared facts (attach to every report):
 
@@ -44,6 +45,11 @@ the SHA-256.
 > detection is shown by your engine licensees (ALYac, Arcabit, Emsisoft,
 > GData, MicroWorld-eScan, VIPRE); please whitelist the hash engine-side so
 > the fix reaches them.
+
+Confirmed false positive (2026-11-04): Bitdefender replied that
+`Gen:Variant.Yogi.106039` on this file is a false positive. The removal
+should reach the licensees as their engines update; re-scan the hash on
+VirusTotal before quoting detection counts anywhere.
 
 ## Cynet (CTX): `dll.unknown.yogi`
 
