@@ -127,8 +127,10 @@ collected Kodama.
       `virustotal-scan` workflow uploads every release zip and DLL
       automatically once the repository has the `VT_API_KEY` secret; its run
       summary carries the report links.
-- [ ] File the false-positive reports (Avast/AVG, Avira, WithSecure, Cynet -
-      drafts in `docs/FP_REPORTS.md`) and keep the ticket numbers.
+- [ ] File the false-positive reports and keep the ticket numbers. Bitdefender
+      — the engine behind seven of the eight flags — confirmed the false
+      positive on 2026-11-04; Cynet is still open. Drafts in
+      `docs/FP_REPORTS.md`.
 - [ ] Ask one Windows friend to install the mod and send their `preflight:`
       line.
 - [ ] Set page permissions and credits; proofread the description.
@@ -144,3 +146,20 @@ Bump the DLL version (`src/proxy/nioh3p.rc`) with every release that changes a
 binary, and keep it equal to the Nexus page version. A rebuild makes a new
 hash and a new Nexus file entry; old files stay up for the users who have
 them.
+
+## 7. Automation (GitHub Actions, dormant until armed)
+
+Two workflows sit next to `ci.yml` in `.github/workflows/`.
+
+- `virustotal-scan` — fires on every release publish, or is dispatched with a
+  tag: scans each release zip and the DLLs inside them through the free
+  public API and posts a verdict table with report links to the run summary.
+  Without the `VT_API_KEY` secret it warns and does nothing.
+- `nexusmods-upload` — manual only, and armed only when the repository
+  variable `NEXUS_UPLOADS_ENABLED` is `true` and the `NEXUS_API_KEY` secret
+  is set. It downloads one release asset, prints its SHA-256, and adds it as
+  a new version of an existing file entry (`file_id` input; optional
+  description, changelog and page-version bump). The v3 upload API is beta
+  and cannot create file entries, so first uploads stay on the web UI (§1,
+  §6); use the workflow for re-uploads and version bumps of the existing
+  entries.

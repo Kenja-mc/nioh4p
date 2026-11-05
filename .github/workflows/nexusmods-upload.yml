@@ -1,0 +1,107 @@
+name: nexusmods-upload
+
+# Uploads one release zip to an existing file entry on the Nexus Mods page
+# (nexusmods.com/nioh/mods/43). Dispatch-only: it never runs on push or
+# release, and it refuses to run until the repository variable
+# NEXUS_UPLOADS_ENABLED is "true" and the NEXUS_API_KEY secret exists. Both
+# stay unset until an upload should actually go out.
+#
+# The v3 upload API (open beta) can only add a version to a file entry that
+# already exists. The first upload of a file — the normal case per
+# docs/NEXUS.md §6 — still goes through the Nexus web UI; this workflow
+# covers re-uploads and version bumps of an existing entry.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to upload from (e.g. v1.1.3)
+        required: true
+      asset:
+        description: Release zip to upload (e.g. nioh4p-all.zip)
+        required: true
+      file_id:
+        description: Nexus file entry id to update (see the page's Files tab)
+        required: true
+      version:
+        description: Version string (must match src/proxy/nioh3p.rc)
+        required: true
+      description:
+        description: File description shown on the Files tab
+        required: false
+        default: ''
+      changelog:
+        description: Optional changelog entry for this version
+        required: false
+        default: ''
+      update_mod_version:
+        description: Also set the page version to this file's version
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the switches
+        env:
+          ENABLED: ${{ vars.NEXUS_UPLOADS_ENABLED }}
+          KEY_SET: ${{ secrets.NEXUS_API_KEY != '' }}
+        run: |
+          if [ "$ENABLED" != "true" ]; then
+            echo "::error::Dormant: set the repository variable NEXUS_UPLOADS_ENABLED=true to arm this workflow."
+            exit 1
+          fi
+          if [ "$KEY_SET" != "true" ]; then
+            echo "::error::The NEXUS_API_KEY secret is not set."
+            exit 1
+          fi
+
+      - name: Download the release asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+          ASSET: ${{ inputs.asset }}
+        run: |
+          mkdir upload
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern "$ASSET" --dir upload --clobber
+          test -f "upload/$ASSET" || { echo "::error::$ASSET is not an asset of release $TAG"; exit 1; }
+          unzip -t "upload/$ASSET" > /dev/null
+          sha256sum "upload/$ASSET"
+
+      - name: Upload to Nexus Mods
+        id: nexus
+        uses: Nexus-Mods/upload-action@98532f7670c27cbecc78fae03fa3e278147827e2 # v1.0.0-beta.11
+        with:
+          api_key: ${{ secrets.NEXUS_API_KEY }}
+          file_id: ${{ inputs.file_id }}
+          filename: upload/${{ inputs.asset }}
+          version: ${{ inputs.version }}
+          description: ${{ inputs.description }}
+          category: main
+          mod_id: '43'
+          changelog: ${{ inputs.changelog }}
+          update_mod_version: ${{ inputs.update_mod_version }}
+
+      - name: Summarize
+        env:
+          VERSION_ID: ${{ steps.nexus.outputs.version_id }}
+          TAG: ${{ inputs.tag }}
+          ASSET: ${{ inputs.asset }}
+          FILE_ID: ${{ inputs.file_id }}
+        run: |
+          {
+            echo "## Nexus Mods upload — \`$ASSET\` from \`$TAG\`"
+            echo
+            echo "- file entry: nioh/mods/43, file id \`$FILE_ID\`"
+            echo "- uploaded version id: \`$VERSION_ID\`"
+            echo
+            echo "Check the Files tab: the new version's description, category Main"
+            echo "and mod-manager flags must match docs/NEXUS.md §3. A file's first"
+            echo "entry is created through the web UI (docs/NEXUS.md §6); this API"
+            echo "cannot create entries."
+          } >> "$GITHUB_STEP_SUMMARY"
